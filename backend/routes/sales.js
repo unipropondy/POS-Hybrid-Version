@@ -211,6 +211,58 @@ const sanitizeGuid = (value, fallback = DEFAULT_GUID) => {
   return toGuidOrNull(value) || fallback;
 };
 
+const resolveCashierUserId = async (poolOrTx, inputCashierId) => {
+  try {
+    const textVal = String(inputCashierId || "").trim();
+
+    // 1. If valid GUID, check if exists in UserMaster
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(textVal)) {
+      const req1 = poolOrTx.request();
+      req1.input("GuidVal", sql.UniqueIdentifier, textVal);
+      const res1 = await req1.query("SELECT TOP 1 UserId FROM UserMaster WHERE UserId = @GuidVal");
+      if (res1.recordset.length > 0) {
+        return res1.recordset[0].UserId;
+      }
+    }
+
+    // 2. If username, usercode, or fullname passed (e.g. "admin", "123", "javi", "owner", "javith")
+    if (textVal && textVal !== "0" && textVal !== "00000000-0000-0000-0000-000000000000") {
+      const req2 = poolOrTx.request();
+      req2.input("StrVal", sql.NVarChar(100), textVal);
+      const res2 = await req2.query(`
+        SELECT TOP 1 UserId FROM UserMaster 
+        WHERE LOWER(LTRIM(RTRIM(UserName))) = LOWER(LTRIM(RTRIM(@StrVal)))
+           OR LOWER(LTRIM(RTRIM(UserCode))) = LOWER(LTRIM(RTRIM(@StrVal)))
+           OR LOWER(LTRIM(RTRIM(FullName))) = LOWER(LTRIM(RTRIM(@StrVal)))
+      `);
+      if (res2.recordset.length > 0) {
+        return res2.recordset[0].UserId;
+      }
+    }
+
+    // 3. Fallback: Get active admin/cashier user from UserMaster so CashierId is NEVER empty!
+    const reqFallback = poolOrTx.request();
+    const fallbackRes = await reqFallback.query(`
+      SELECT TOP 1 UserId FROM UserMaster 
+      WHERE UserGroupId = 'DFCF23EE-F6F4-4885-8D26-0056C657595F' OR UserGroupId = 'E6EAA22D-44ED-420F-96CA-5468F0D25DB4'
+      ORDER BY CreatedDate ASC
+    `);
+    if (fallbackRes.recordset.length > 0) {
+      return fallbackRes.recordset[0].UserId;
+    }
+
+    const anyUserRes = await poolOrTx.request().query("SELECT TOP 1 UserId FROM UserMaster ORDER BY CreatedDate ASC");
+    if (anyUserRes.recordset.length > 0) {
+      return anyUserRes.recordset[0].UserId;
+    }
+
+    return DEFAULT_GUID;
+  } catch (err) {
+    console.error("Error resolving cashier user ID:", err);
+    return DEFAULT_GUID;
+  }
+};
+
 const validateSalePayload = ({ totalAmount, paymentMethod, items, payments }) => {
   if (payments && Array.isArray(payments) && payments.length > 0) {
     let sum = 0;
@@ -1817,6 +1869,8 @@ router.post("/save", async (req, res) => {
     let hasRemaining = false;
 
     await runInTransaction(async (transaction) => {
+      const validCashierGuid = await resolveCashierUserId(transaction, cashierId);
+
       if (clientSettlementId) {
         settlementId = clientSettlementId;
       } else {
@@ -2028,11 +2082,11 @@ router.post("/save", async (req, res) => {
       .input("TableNo", sql.NVarChar(50), tableNo || null)
       .input("Section", sql.NVarChar(100), section || null)
       .input("MemberId", sql.UniqueIdentifier, toGuidOrNull(memberId))
-      .input("CashierID", sql.UniqueIdentifier, toGuidOrNull(cashierId))
+      .input("CashierID", sql.UniqueIdentifier, validCashierGuid)
       .input("BusinessUnitId", sql.UniqueIdentifier, sanitizeGuid(businessUnitId))
       .input("SysAmount", sql.Money, totalAmount || 0)
       .input("ManualAmount", sql.Money, totalAmount || 0)
-      .input("CreatedBy", sql.UniqueIdentifier, sanitizeGuid(cashierId))
+      .input("CreatedBy", sql.UniqueIdentifier, validCashierGuid)
       .input("CreatedOn", sql.DateTime, now)
       .input("SER_NAME", sql.NVarChar(255), req.body.serverName || null)
       .input("MobileNo", sql.NVarChar(50), req.body.mobileNo || req.body.MobileNo || orderMobileNo || null)
@@ -2302,7 +2356,7 @@ router.post("/save", async (req, res) => {
             payments,
             transaction,
             businessUnitId: sanitizeGuid(businessUnitId),
-            cashierId: sanitizeGuid(cashierId),
+            cashierId: validCashierGuid,
             orderId: guidOrderId,
             now,
             receiptCount
@@ -2338,7 +2392,7 @@ router.post("/save", async (req, res) => {
                 .input("PaidAmount", sql.Decimal(18, 2), finalMemberAmount)
                 .input("OutstandingAmount", sql.Decimal(18, 2), finalCreditAmount)
                 .input("Status", sql.NVarChar(20), finalCreditAmount > 0 ? 'OPEN' : 'PAID')
-                .input("CreatedBy", sql.UniqueIdentifier, toGuidOrNull(cashierId))
+                .input("CreatedBy", sql.UniqueIdentifier, validCashierGuid)
                 .input("startDate", sql.Date, formattedStartDate)
                 .query(`
                   INSERT INTO CustomerCreditTransactions (MemberId, SettlementId, BillNo, TransactionType, BillAmount, PaidAmount, OutstandingAmount, Status, Remarks, CreatedBy, CustomerType, start_date)
@@ -2359,7 +2413,7 @@ router.post("/save", async (req, res) => {
                 .input("PaidAmount", sql.Decimal(18, 2), 0)
                 .input("OutstandingAmount", sql.Decimal(18, 2), totalCreditAndMember)
                 .input("Status", sql.NVarChar(20), 'OPEN')
-                .input("CreatedBy", sql.UniqueIdentifier, toGuidOrNull(cashierId))
+                .input("CreatedBy", sql.UniqueIdentifier, validCashierGuid)
                 .input("startDate", sql.Date, formattedStartDate)
                 .query(`
                   INSERT INTO CustomerCreditTransactions (MemberId, SettlementId, BillNo, TransactionType, BillAmount, PaidAmount, OutstandingAmount, Status, Remarks, CreatedBy, CustomerType, start_date)
@@ -2395,8 +2449,8 @@ router.post("/save", async (req, res) => {
             .input("ReferenceNumber", sql.VarChar(100), null)
             .input("Remarks", sql.VarChar(500), paymentMethod || "")
             .input("BusinessUnitId", sql.UniqueIdentifier, sanitizeGuid(businessUnitId))
-            .input("CreatedBy", sql.UniqueIdentifier, sanitizeGuid(cashierId))
-            .input("ModifiedBy", sql.UniqueIdentifier, sanitizeGuid(cashierId))
+            .input("CreatedBy", sql.UniqueIdentifier, validCashierGuid)
+            .input("ModifiedBy", sql.UniqueIdentifier, validCashierGuid)
             .input("startDate", sql.Date, formattedStartDate)
             .query(`
               -- 🛡️ ATOMIC SYNC: Populating both tables in one go for report integrity
