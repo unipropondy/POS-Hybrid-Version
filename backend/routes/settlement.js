@@ -5,20 +5,28 @@ const { sql, poolPromise } = require("../config/db");
 // ===== TOTAL SALES =====
 router.get("/total-sales/:terminal", async (req, res) => {
   try {
-    console.log("🔥🔥🔥 TOTAL SALES ROUTE HIT NEW FILE");
-    const { fromDate, toDate } = req.query;
+    const { fromDate, toDate, userId } = req.query;
     const pool = await poolPromise;
     const request = pool.request();
 
-    let dateFilter = "start_date = CAST(GETDATE() AS DATE)";
+    let dateFilter = "ric.start_date = CAST(GETDATE() AS DATE)";
 
     if (fromDate && toDate) {
       const fDate = fromDate.replace(/[^0-9T:.-]/g, '');
       const tDate = toDate.replace(/[^0-9T:.-]/g, '');
-      dateFilter = `start_date BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE)`;
+      dateFilter = `ric.start_date BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE)`;
     }
-    console.log("🔥🔥🔥 TOTAL SALES ROUTE HIT NEW FILE,fromDate", fromDate);
-    console.log("🔥🔥🔥 TOTAL SALES ROUTE HIT NEW FILE,toDate", toDate);
+
+    let userFilter = "";
+    if (userId && userId !== "ALL" && userId !== "0") {
+      request.input("UserId", sql.VarChar, userId);
+      userFilter = `AND (
+        TRY_CAST(sh.CashierId AS UNIQUEIDENTIFIER) = @UserId 
+        OR CAST(sh.CashierId AS NVARCHAR(50)) = @UserId
+        OR LOWER(LTRIM(RTRIM(sh.CashierId))) = LOWER(LTRIM(RTRIM(@UserId)))
+      )`;
+    }
+
     const result = await request.query(`
       SELECT
         ISNULL(SUM(sh.SubTotal),0) AS SubTotal,
@@ -40,9 +48,9 @@ router.get("/total-sales/:terminal", async (req, res) => {
             FROM RestaurantInvoiceCur
             WHERE ${dateFilter}
         )
+        ${userFilter}
     `);
     const data = result.recordset[0] || {};
-    console.log("🔥 TOTAL SALES API =>", data);
     res.json(data);
   } catch (err) {
     console.error("❌ TOTAL SALES ERROR:", err);
@@ -54,37 +62,58 @@ router.get("/total-sales/:terminal", async (req, res) => {
 router.get("/payment/:terminal/:userId", async (req, res) => {
   try {
     const { fromDate, toDate } = req.query;
+    const { terminal, userId } = req.params;
     const pool = await poolPromise;
     const request = pool.request();
 
-    request.input("TerminalCode", sql.VarChar, req.params.terminal);
-    request.input("UserId", sql.VarChar, req.params.userId);
+    request.input("TerminalCode", sql.VarChar, terminal);
 
-    let dateFilter = "start_date = CAST(GETDATE() AS DATE)";
+    let dateFilter = "p.start_date = CAST(GETDATE() AS DATE)";
     if (fromDate && toDate) {
       const fDate = fromDate.replace(/[^0-9T:.-]/g, '');
       const tDate = toDate.replace(/[^0-9T:.-]/g, '');
-      dateFilter = `start_date BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE)`;
+      dateFilter = `p.start_date BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE)`;
+    }
+
+    let userFilter = "";
+    if (userId && userId !== "ALL" && userId !== "0") {
+      request.input("UserIdParam", sql.VarChar, userId);
+      userFilter = `AND (
+        TRY_CAST(sh.CashierId AS UNIQUEIDENTIFIER) = @UserIdParam 
+        OR CAST(sh.CashierId AS NVARCHAR(50)) = @UserIdParam
+        OR LOWER(LTRIM(RTRIM(sh.CashierId))) = LOWER(LTRIM(RTRIM(@UserIdParam)))
+        OR LOWER(LTRIM(RTRIM(p.CreatedBy))) = LOWER(LTRIM(RTRIM(@UserIdParam)))
+      )`;
     }
 
     // Fetch active bill payments — EXCLUDE CREDIT paymode (deferred/unpaid, not cash received)
     const billsResult = await request.query(`
       SELECT
-        LTRIM(RTRIM(ISNULL(Remarks, ''))) AS PaymodeName,
-        ISNULL(SUM(Amount), 0) AS Amount,
+        LTRIM(RTRIM(ISNULL(p.Remarks, ''))) AS PaymodeName,
+        ISNULL(SUM(p.Amount), 0) AS Amount,
         COUNT(*) AS PayCount
-      FROM PaymentDetailCur
+      FROM PaymentDetailCur p
+      LEFT JOIN SettlementHeader sh ON p.RestaurantBillId = sh.SettlementID
       WHERE ${dateFilter}
-        AND UPPER(LTRIM(RTRIM(ISNULL(Remarks, '')))) NOT IN ('CREDIT', 'MEMBER')
-        AND (RestaurantBillId IS NULL OR RestaurantBillId NOT IN (
+        AND UPPER(LTRIM(RTRIM(ISNULL(p.Remarks, '')))) NOT IN ('CREDIT', 'MEMBER')
+        AND (p.RestaurantBillId IS NULL OR p.RestaurantBillId NOT IN (
             SELECT RestaurantBillId 
             FROM RestaurantInvoiceCur 
             WHERE StatusCode = 4 AND RestaurantBillId IS NOT NULL
         ))
-      GROUP BY LTRIM(RTRIM(ISNULL(Remarks, '')))
+        ${userFilter}
+      GROUP BY LTRIM(RTRIM(ISNULL(p.Remarks, '')))
     `);
 
     // Fetch credit outstanding & issued amounts separately for Credit Activity tracking
+    let creditUserFilter = "";
+    if (userId && userId !== "ALL" && userId !== "0") {
+      creditUserFilter = `AND (
+        TRY_CAST(CreatedBy AS UNIQUEIDENTIFIER) = @UserIdParam 
+        OR CAST(CreatedBy AS NVARCHAR(50)) = @UserIdParam
+        OR LOWER(LTRIM(RTRIM(CreatedBy))) = LOWER(LTRIM(RTRIM(@UserIdParam)))
+      )`;
+    }
     const creditOutstandingResult = await request.query(`
       SELECT
         ISNULL(CustomerType, 'CREDIT') AS PaymodeName,
@@ -94,11 +123,20 @@ router.get("/payment/:terminal/:userId", async (req, res) => {
         COUNT(*) AS PayCount
       FROM CustomerCreditTransactions
       WHERE TransactionType = 'CREDIT_SALE'
-        AND ${dateFilter.replace(/start_date/g, 'COALESCE(start_date, CAST(CreatedDate AS DATE))')}
+        AND ${dateFilter.replace(/p\.start_date/g, 'COALESCE(start_date, CAST(CreatedDate AS DATE))')}
+        ${creditUserFilter}
       GROUP BY ISNULL(CustomerType, 'CREDIT')
     `);
 
     // Fetch non-cash ledger collections (e.g. PAYNOW, NETS, CARD paid on receivables screen)
+    let ledgerUserFilter = "";
+    if (userId && userId !== "ALL" && userId !== "0") {
+      ledgerUserFilter = `AND (
+        TRY_CAST(ptd.CreatedBy AS UNIQUEIDENTIFIER) = @UserIdParam 
+        OR CAST(ptd.CreatedBy AS NVARCHAR(50)) = @UserIdParam
+        OR LOWER(LTRIM(RTRIM(ptd.CreatedBy))) = LOWER(LTRIM(RTRIM(@UserIdParam)))
+      )`;
+    }
     const ledgerResult = await request.query(`
       SELECT
         pm.PayMode AS PaymodeName,
@@ -108,7 +146,8 @@ router.get("/payment/:terminal/:userId", async (req, res) => {
       INNER JOIN Paymode pm ON ptd.PayModeId = pm.Position
       WHERE ptd.ReferenceType = 'MEMBER'
         AND UPPER(pm.PayMode) NOT LIKE '%CASH%'
-        AND ${dateFilter.replace(/start_date/g, 'CAST(ptd.CreatedDate AS DATE)')}
+        AND ${dateFilter.replace(/p\.start_date/g, 'CAST(ptd.CreatedDate AS DATE)')}
+        ${ledgerUserFilter}
       GROUP BY pm.PayMode
     `);
 
@@ -130,50 +169,33 @@ router.get("/payment/:terminal/:userId", async (req, res) => {
       return raw;
     };
 
-    // Aggregate cash/non-cash movements (excludes CREDIT deferred payments)
+    // Aggregate cash/non-cash movements
     const aggregated = {};
     
-    // 1. Process direct checkout payments
     (billsResult.recordset || []).forEach(row => {
       const normName = normalizePayMode(row.PaymodeName);
       if (!aggregated[normName]) {
-        aggregated[normName] = {
-          PaymodeName: normName,
-          Amount: 0,
-          PayCount: 0
-        };
+        aggregated[normName] = { PaymodeName: normName, Amount: 0, PayCount: 0 };
       }
       aggregated[normName].Amount += parseFloat(row.Amount) || 0;
       aggregated[normName].PayCount += parseInt(row.PayCount, 10) || 0;
     });
 
-    // 2. Process non-cash ledger payments separately (prefixed so they don't merge)
     (ledgerResult.recordset || []).forEach(row => {
       const normName = normalizePayMode(row.PaymodeName);
       const ledgerName = `Credit Settlement - ${normName}`;
       if (!aggregated[ledgerName]) {
-        aggregated[ledgerName] = {
-          PaymodeName: ledgerName,
-          Amount: 0,
-          PayCount: 0
-        };
+        aggregated[ledgerName] = { PaymodeName: ledgerName, Amount: 0, PayCount: 0 };
       }
       aggregated[ledgerName].Amount += parseFloat(row.Amount) || 0;
       aggregated[ledgerName].PayCount += parseInt(row.PayCount, 10) || 0;
     });
 
-    // Aggregate credit outstanding (deferred bills — shown separately on screen, NOT in total movements)
     const creditAggregated = {};
     (creditOutstandingResult.recordset || []).forEach(row => {
       const normName = normalizePayMode(row.PaymodeName);
       if (!creditAggregated[normName]) {
-        creditAggregated[normName] = { 
-          PaymodeName: normName, 
-          Amount: 0, 
-          BilledAmount: 0,
-          PaidAmount: 0,
-          PayCount: 0 
-        };
+        creditAggregated[normName] = { PaymodeName: normName, Amount: 0, BilledAmount: 0, PaidAmount: 0, PayCount: 0 };
       }
       creditAggregated[normName].Amount += parseFloat(row.Amount) || 0;
       creditAggregated[normName].BilledAmount += parseFloat(row.BilledAmount) || 0;

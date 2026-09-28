@@ -1,9 +1,34 @@
 const express = require("express");
 const router = express.Router();
+const { poolPromise } = require("../config/db");
+// Public payment-methods endpoint: returns all active paymodes from dbo.Paymode
+router.get("/payment-methods", async (req, res) => {
+    try {
+      const pool = await poolPromise;
+      const result = await pool.request().query(`
+        SELECT 
+          RTRIM(LTRIM(PayMode))       as payMode,
+          RTRIM(LTRIM(Description))   as description,
+          Position,
+          Active        as active,
+          DeviceSN,
+          DeviceSalt,
+          YeahPayEnabled,
+          ISNULL(Commission, 0)      as commission,
+          ISNULL(ServiceCharge, 0)   as serviceCharge,
+          ISNULL(IsEntertainment, 0) as isEntertainment,
+          ISNULL(IsVoucher, 0)       as isVoucher
+        FROM [dbo].[Paymode] 
+        ORDER BY Position ASC
+      `);
+      res.json(result.recordset || []);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+});
+
 const { authenticateToken } = require("../middleware/auth");
 router.use(authenticateToken);
-
-const { poolPromise } = require("../config/db");
 
 router.use(async (req, res, next) => {
   // Pass through query params untouched from client
@@ -259,6 +284,7 @@ router.get("/all", async (req, res) => {
              sh.CashierId, 
              sh.BillNo, 
              sh.SER_NAME,
+             ISNULL(um.FullName, ISNULL(um.UserName, 'Unknown')) AS CashierName,
              ${normalizeReportPayModeSql("sts.PayMode")} as PayMode,
              ISNULL(sts.SysAmount, sh.SysAmount) as SysAmount,
              ISNULL(sts.ManualAmount, sh.ManualAmount) as ManualAmount,
@@ -299,6 +325,7 @@ router.get("/all", async (req, res) => {
            LEFT JOIN CreditCustomerMaster ccm ON sh.MemberId = ccm.CustomerId
            LEFT JOIN MemberMaster mm_sale ON cct_sale.MemberId = mm_sale.MemberId
            LEFT JOIN CreditCustomerMaster ccm_sale ON cct_sale.MemberId = ccm_sale.CustomerId
+           LEFT JOIN UserMaster um ON TRY_CAST(sh.CashierId AS UNIQUEIDENTIFIER) = um.UserId
            WHERE ${shWhere}
  
            UNION ALL
@@ -314,7 +341,8 @@ router.get("/all", async (req, res) => {
             CAST(cct.CreatedBy AS VARCHAR(50)) AS CashierId,
             cct.Remarks AS BillNo,
             'Cashier' AS SER_NAME,
-            cct.PaymentMethod AS PayMode,
+             ISNULL(um.FullName, ISNULL(um.UserName, 'Unknown')) AS CashierName,
+             cct.PaymentMethod AS PayMode,
             cct.PaidAmount AS SysAmount,
             cct.PaidAmount AS ManualAmount,
             cct.PaidAmount AS SubTotal,
@@ -344,7 +372,8 @@ router.get("/all", async (req, res) => {
           FROM CustomerCreditTransactions cct
           LEFT JOIN CreditCustomerMaster m ON cct.MemberId = m.CustomerId
           LEFT JOIN MemberMaster mm ON cct.MemberId = mm.MemberId
-          WHERE cct.TransactionType = 'PAYMENT' AND ${cctWhere}
+           LEFT JOIN UserMaster um ON TRY_CAST(cct.CreatedBy AS UNIQUEIDENTIFIER) = um.UserId
+           WHERE cct.TransactionType = 'PAYMENT' AND ${cctWhere}
         ) CombinedSales
         ORDER BY SettlementDate DESC
       `;
@@ -362,6 +391,7 @@ router.get("/all", async (req, res) => {
              sh.CashierId, 
              sh.BillNo, 
              sh.SER_NAME,
+             ISNULL(um.FullName, ISNULL(um.UserName, 'Unknown')) AS CashierName,
              ${normalizeReportPayModeSql("sts.PayMode")} as PayMode,
              ISNULL(sts.SysAmount, sh.SysAmount) as SysAmount,
              ISNULL(sts.ManualAmount, sh.ManualAmount) as ManualAmount,
@@ -402,6 +432,7 @@ router.get("/all", async (req, res) => {
            LEFT JOIN CreditCustomerMaster ccm ON sh.MemberId = ccm.CustomerId
            LEFT JOIN MemberMaster mm_sale ON cct_sale.MemberId = mm_sale.MemberId
            LEFT JOIN CreditCustomerMaster ccm_sale ON cct_sale.MemberId = ccm_sale.CustomerId
+           LEFT JOIN UserMaster um ON TRY_CAST(sh.CashierId AS UNIQUEIDENTIFIER) = um.UserId
  
            UNION ALL
  
@@ -416,7 +447,8 @@ router.get("/all", async (req, res) => {
              CAST(cct.CreatedBy AS VARCHAR(50)) AS CashierId,
             cct.Remarks AS BillNo,
             'Cashier' AS SER_NAME,
-            cct.PaymentMethod AS PayMode,
+             ISNULL(um.FullName, ISNULL(um.UserName, 'Unknown')) AS CashierName,
+             cct.PaymentMethod AS PayMode,
             cct.PaidAmount AS SysAmount,
             cct.PaidAmount AS ManualAmount,
             cct.PaidAmount AS SubTotal,
@@ -446,8 +478,9 @@ router.get("/all", async (req, res) => {
           FROM CustomerCreditTransactions cct
           LEFT JOIN CreditCustomerMaster m ON cct.MemberId = m.CustomerId
           LEFT JOIN MemberMaster mm ON cct.MemberId = mm.MemberId
-          WHERE cct.TransactionType = 'PAYMENT'
-        ) CombinedSales
+           LEFT JOIN UserMaster um ON TRY_CAST(cct.CreatedBy AS UNIQUEIDENTIFIER) = um.UserId
+           WHERE cct.TransactionType = 'PAYMENT'
+         ) CombinedSales
         ORDER BY SettlementDate DESC
       `;
     }
@@ -847,6 +880,155 @@ router.get("/detail/:id/rewards", async (req, res) => {
 });
 
 
+/* ================= LOGIN-WISE SALES REPORT ================= */
+router.get("/login-wise-sales", async (req, res) => {
+  try {
+    res.set("Cache-Control", "no-store");
+    const pool = await poolPromise;
+    const filter = req.query.filter || "daily";
+    const date = req.query.date;
+    const { startDate, endDate } = req.query;
+    const dateWhere = getReportDateWhereSql(filter, "sh.LastSettlementDate", date, startDate, endDate);
+    console.log(`[REPORT API] type=login-wise-sales filter=${filter} date=${date || 'today'} range=${startDate || ''}..${endDate || ''}`);
+
+    const result = await pool.request().query(`
+      SELECT
+        u.UserId AS CashierId,
+        ISNULL(NULLIF(LTRIM(RTRIM(u.FullName)), ''), u.UserName) AS CashierName,
+        ISNULL(u.UserName, '-') AS UserLogin,
+        ISNULL(u.UserCode, '-') AS UserCode,
+        ISNULL(g.UserGroupCode, 'CASHIER') AS RoleCode,
+        ISNULL(g.UserGroupName, 'Cashier') AS RoleName,
+        COUNT(DISTINCT sh.SettlementID) AS TotalBills,
+        ISNULL(SUM(sh.SubTotal), 0) AS TotalSubTotal,
+        ISNULL(SUM(sh.DiscountAmount), 0) AS TotalDiscount,
+        ISNULL(SUM(sh.ServiceCharge), 0) AS TotalServiceCharge,
+        ISNULL(SUM(sh.TotalTax), 0) AS TotalTax,
+        ISNULL(SUM(sh.TakeawayCharge), 0) AS TotalTakeaway,
+        ISNULL(SUM(sh.VoidItemAmount), 0) AS TotalVoidAmount,
+        ISNULL(SUM(sh.VoidItemQty), 0) AS TotalVoidQty,
+        ISNULL(SUM(sh.RoundedBy), 0) AS TotalRounded,
+        ISNULL(SUM(ISNULL(sts.SysAmount, sh.SysAmount)), 0) AS TotalSales,
+        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('CASH','CAS','1') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS CashAmount,
+        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('CARD','VISA','MASTER','MASTERCARD','AMEX') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS CardAmount,
+        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('PAYNOW','3') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS PayNowAmount,
+        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('NETS','2') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS NetsAmount,
+        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('MEMBER','5') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS MemberAmount,
+        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('CREDIT','6') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS CreditAmount,
+        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('GRAB','10') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS GrabAmount,
+        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('FOODPANDA','9') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS FoodPandaAmount,
+        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('UPI','4','GPAY') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS UpiAmount,
+        ISNULL(SUM(CASE WHEN UPPER(ISNULL(sts.PayMode,'')) LIKE 'YEAHPAY%' THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS YeahPayAmount,
+        ISNULL(SUM(CASE WHEN sh.IsCancelled = 1 THEN 1 ELSE 0 END), 0) AS CancelledBills
+      FROM (
+        SELECT CAST(UserId AS NVARCHAR(50)) AS UserId, UserName, FullName, UserCode, UserGroupid FROM UserMaster
+      ) u
+      LEFT JOIN UserGroupMaster g ON u.UserGroupid = g.UserGroupId
+      LEFT JOIN SettlementHeader sh ON (
+        TRY_CAST(sh.CashierId AS UNIQUEIDENTIFIER) = u.UserId 
+        OR CAST(sh.CashierId AS NVARCHAR(50)) = u.UserId
+        OR LOWER(LTRIM(RTRIM(sh.CashierId))) = LOWER(LTRIM(RTRIM(u.UserName)))
+        OR LOWER(LTRIM(RTRIM(sh.CashierId))) = LOWER(LTRIM(RTRIM(u.UserCode)))
+        OR LOWER(LTRIM(RTRIM(sh.CashierId))) = LOWER(LTRIM(RTRIM(u.FullName)))
+      ) AND (${dateWhere})
+      LEFT JOIN SettlementTotalSales sts ON sh.SettlementID = sts.SettlementID
+      GROUP BY
+        u.UserId, u.UserName, u.FullName, u.UserCode,
+        g.UserGroupCode, g.UserGroupName
+
+      UNION ALL
+
+      SELECT
+        CAST(sh.CashierId AS NVARCHAR(50)) AS CashierId,
+        'Unknown / Unassigned' AS CashierName,
+        '-' AS UserLogin,
+        '-' AS UserCode,
+        'UNKNOWN' AS RoleCode,
+        'Unknown' AS RoleName,
+        COUNT(DISTINCT sh.SettlementID) AS TotalBills,
+        ISNULL(SUM(sh.SubTotal), 0) AS TotalSubTotal,
+        ISNULL(SUM(sh.DiscountAmount), 0) AS TotalDiscount,
+        ISNULL(SUM(sh.ServiceCharge), 0) AS TotalServiceCharge,
+        ISNULL(SUM(sh.TotalTax), 0) AS TotalTax,
+        ISNULL(SUM(sh.TakeawayCharge), 0) AS TotalTakeaway,
+        ISNULL(SUM(sh.VoidItemAmount), 0) AS TotalVoidAmount,
+        ISNULL(SUM(sh.VoidItemQty), 0) AS TotalVoidQty,
+        ISNULL(SUM(sh.RoundedBy), 0) AS TotalRounded,
+        ISNULL(SUM(ISNULL(sts.SysAmount, sh.SysAmount)), 0) AS TotalSales,
+        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('CASH','CAS','1') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS CashAmount,
+        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('CARD','VISA','MASTER','MASTERCARD','AMEX') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS CardAmount,
+        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('PAYNOW','3') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS PayNowAmount,
+        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('NETS','2') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS NetsAmount,
+        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('MEMBER','5') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS MemberAmount,
+        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('CREDIT','6') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS CreditAmount,
+        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('GRAB','10') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS GrabAmount,
+        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('FOODPANDA','9') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS FoodPandaAmount,
+        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('UPI','4','GPAY') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS UpiAmount,
+        ISNULL(SUM(CASE WHEN UPPER(ISNULL(sts.PayMode,'')) LIKE 'YEAHPAY%' THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS YeahPayAmount,
+        ISNULL(SUM(CASE WHEN sh.IsCancelled = 1 THEN 1 ELSE 0 END), 0) AS CancelledBills
+      FROM SettlementHeader sh
+      LEFT JOIN SettlementTotalSales sts ON sh.SettlementID = sts.SettlementID
+      WHERE (${dateWhere}) 
+        AND (
+          sh.CashierId IS NULL 
+          OR (
+            TRY_CAST(sh.CashierId AS UNIQUEIDENTIFIER) NOT IN (SELECT UserId FROM UserMaster WHERE UserId IS NOT NULL)
+            AND LOWER(LTRIM(RTRIM(sh.CashierId))) NOT IN (SELECT LOWER(LTRIM(RTRIM(UserName))) FROM UserMaster WHERE UserName IS NOT NULL)
+            AND LOWER(LTRIM(RTRIM(sh.CashierId))) NOT IN (SELECT LOWER(LTRIM(RTRIM(UserCode))) FROM UserMaster WHERE UserCode IS NOT NULL)
+            AND LOWER(LTRIM(RTRIM(sh.CashierId))) NOT IN (SELECT LOWER(LTRIM(RTRIM(FullName))) FROM UserMaster WHERE FullName IS NOT NULL)
+          )
+        )
+      GROUP BY CAST(sh.CashierId AS NVARCHAR(50))
+      ORDER BY TotalSales DESC, CashierName ASC
+    `);
+
+    console.log(`[REPORT API] type=login-wise-sales rows=${result.recordset.length}`);
+    res.json(result.recordset || []);
+  } catch (err) {
+    console.error("[REPORT API] login-wise-sales error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ================= LOGIN-WISE SETTLEMENT REPORT ================= */
+router.get("/login-wise-settlement", async (req, res) => {
+  try {
+    res.set("Cache-Control", "no-store");
+    const pool = await poolPromise;
+    const filter = req.query.filter || "daily";
+    const date = req.query.date;
+    const { startDate, endDate } = req.query;
+    const dateWhere = getReportDateWhereSql(filter, "sh.LastSettlementDate", date, startDate, endDate);
+    console.log(`[REPORT API] type=login-wise-settlement filter=${filter} date=${date || 'today'} range=${startDate || ''}..${endDate || ''}`);
+
+    const result = await pool.request().query(`
+      SELECT
+        CAST(sh.CashierId AS NVARCHAR(50)) AS CashierId,
+        ISNULL(um.FullName, ISNULL(um.UserName, 'Unknown / QR')) AS CashierName,
+        ISNULL(um.UserName, '-') AS UserLogin,
+        LTRIM(RTRIM(ISNULL(sts.PayMode, 'CASH'))) AS PayMode,
+        SUM(ISNULL(sts.SysAmount, 0)) AS SysAmount,
+        SUM(ISNULL(sts.ManualAmount, 0)) AS ManualAmount,
+        COUNT(DISTINCT sh.SettlementID) AS ReceiptCount
+      FROM SettlementHeader sh
+      INNER JOIN SettlementTotalSales sts ON sh.SettlementID = sts.SettlementID
+      LEFT JOIN UserMaster um ON TRY_CAST(sh.CashierId AS UNIQUEIDENTIFIER) = um.UserId
+      WHERE ${dateWhere}
+        AND ISNULL(sh.IsCancelled, 0) = 0
+      GROUP BY
+        CAST(sh.CashierId AS NVARCHAR(50)),
+        um.FullName, um.UserName,
+        LTRIM(RTRIM(ISNULL(sts.PayMode, 'CASH')))
+      ORDER BY CashierName, PayMode
+    `);
+
+    console.log(`[REPORT API] type=login-wise-settlement rows=${result.recordset.length}`);
+    res.json(result.recordset || []);
+  } catch (err) {
+    console.error("[REPORT API] login-wise-settlement error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 router.get("/category", async (req, res) => {
   try {
@@ -2894,30 +3076,6 @@ router.get("/payment-history", async (req, res) => {
 
 // routes/sales.js
 
-router.get("/payment-methods", async (req, res) => {
-    try {
-      const pool = await poolPromise;
-      const result = await pool.request().query(`
-        SELECT 
-          RTRIM(LTRIM(PayMode))       as payMode,
-          RTRIM(LTRIM(Description))   as description,
-          Position,
-          Active        as active,
-          DeviceSN,
-          DeviceSalt,
-          YeahPayEnabled,
-          ISNULL(Commission, 0)      as commission,
-          ISNULL(ServiceCharge, 0)   as serviceCharge,
-          ISNULL(IsEntertainment, 0) as isEntertainment,
-          ISNULL(IsVoucher, 0)       as isVoucher
-        FROM [dbo].[Paymode] 
-        ORDER BY Position ASC
-      `);
-      res.json(result.recordset || []);
-    } catch (err) {
-      res.status(500).json({ error: err.message });
-    }
-});
 
 // Kept for backward compatibility — all fields now also returned by /payment-methods above.
 router.get("/payment-detail/:payMode", async (req, res) => {

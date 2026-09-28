@@ -210,6 +210,27 @@ export default function SalesReport() {
   const [dishReport, setDishReport] = useState<any[]>([]);
   const [settlementReport, setSettlementReport] = useState<any[]>([]);
   const [artistTargetReport, setArtistTargetReport] = useState<any[]>([]);
+  const [selectedCashierId, setSelectedCashierId] = useState<string>("ALL");
+  const [showUserDropdown, setShowUserDropdown] = useState(false);
+  const [operatorsList, setOperatorsList] = useState<any[]>([]);
+
+  const availableOperators = useMemo(() => {
+    if (operatorsList.length > 0) return operatorsList;
+    const map = new Map();
+    sales.forEach((s) => {
+      if (s.CashierId && !map.has(String(s.CashierId))) {
+        map.set(String(s.CashierId), {
+          CashierId: String(s.CashierId),
+          CashierName: s.UserName || s.CashierName || `User ${s.CashierId}`,
+          UserLogin: s.UserLogin || "-",
+          RoleName: s.RoleName || "Cashier",
+          TotalSales: 0,
+        });
+      }
+    });
+    return Array.from(map.values());
+  }, [operatorsList, sales]);
+
   const [loadingReport, setLoadingReport] = useState(false);
   const [showPrintPrompt, setShowPrintPrompt] = useState(false);
   const [isReprinting, setIsReprinting] = useState(false);
@@ -456,6 +477,22 @@ export default function SalesReport() {
     }
   };
 
+  const fetchOperators = async () => {
+    try {
+      const res = await fetch(
+        `${API_URL}/api/reports/login-wise-sales?filter=${selectedFilter.toLowerCase()}&date=${selectedDate}`
+      );
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setOperatorsList(data);
+        }
+      }
+    } catch (e) {
+      console.error("Failed to fetch operators list:", e);
+    }
+  };
+
   const fetchData = async () => {
     try {
       if (sales.length === 0) setLoading(true);
@@ -480,6 +517,7 @@ export default function SalesReport() {
         fetchSales(), 
         fetchSummary(), 
         fetchPaymentMethods(),
+        fetchOperators(),
         detailReportType ? fetchDetailReport(detailReportType, selectedFilter) : Promise.resolve()
       ]);
     } catch (error) {
@@ -1210,7 +1248,8 @@ export default function SalesReport() {
 
   const filteredSales = useMemo(() => {
     const filtered = baseFilteredSales.filter((s) => {
-      return showCancelledOrders || !s.IsCancelled;
+      const cashierMatch = selectedCashierId === "ALL" || String(s.CashierId) === String(selectedCashierId);
+      return (showCancelledOrders || !s.IsCancelled) && cashierMatch;
     });
 
     if (sortOrder === "NEWEST") {
@@ -1222,11 +1261,12 @@ export default function SalesReport() {
     } else {
       return [...filtered].sort((a, b) => b.SysAmount - a.SysAmount);
     }
-  }, [baseFilteredSales, showCancelledOrders, sortOrder]);
+  }, [baseFilteredSales, showCancelledOrders, sortOrder, selectedCashierId]);
 
   const filteredMetrics = useMemo(() => {
     const processedBills = new Set<string>();
-    return dateScopedSales.reduce(
+    const scoped = selectedCashierId === "ALL" ? dateScopedSales : dateScopedSales.filter(s => String(s.CashierId) === String(selectedCashierId));
+    return scoped.reduce(
       (acc, s) => {
         const isSubsequentSplit = s.SettlementID && s.SettlementID.includes("-") && s.SettlementID.split("-").length > 5 && s.SettlementID.split("-").pop().match(/^\d+$/);
 
@@ -1316,7 +1356,7 @@ export default function SalesReport() {
         TakeawayCharge: 0,
       },
     );
-  }, [dateScopedSales]);
+  }, [dateScopedSales, selectedCashierId]);
 
   const avgOrder = useMemo(() => {
     if (!filteredMetrics.TotalTransactions) return 0;
@@ -1961,6 +2001,8 @@ export default function SalesReport() {
     if (!detailReportType) {
       return null;
     }
+
+
 
     const isSettlement = detailReportType === "SETTLEMENT";
     const isArtistTarget = detailReportType === "ARTIST_TARGET";
@@ -2673,6 +2715,202 @@ export default function SalesReport() {
 
 
 
+
+
+      {/* ── USER / CASHIER SHIFT FILTER BAR (DROPDOWN - LIKE SETTLEMENT SCREEN) ── */}
+      <View style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: Theme.bgCard,
+        padding: 10,
+        borderRadius: 12,
+        borderWidth: 1.5,
+        borderColor: Theme.border,
+        marginBottom: 15,
+        gap: 12,
+      }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <Ionicons name="people-outline" size={18} color={Theme.primary} />
+          <Text style={{ fontFamily: Fonts.bold, fontSize: 13, color: Theme.textPrimary }}>
+            SALES REPORT VIEW:
+          </Text>
+        </View>
+
+        {/* Dropdown Trigger */}
+        <TouchableOpacity
+          onPress={() => setShowUserDropdown(true)}
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            backgroundColor: Theme.bgInput,
+            paddingHorizontal: 16,
+            paddingVertical: 10,
+            borderRadius: 10,
+            borderWidth: 1.5,
+            borderColor: Theme.primary,
+            minWidth: 260,
+            maxWidth: '100%',
+            gap: 10
+          }}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+            {selectedCashierId === "ALL" ? (
+              <>
+                <Ionicons name="globe-outline" size={16} color={Theme.primary} />
+                <Text style={{ fontFamily: Fonts.bold, fontSize: 13, color: Theme.textPrimary }}>
+                  Whole Sales (All Users)
+                </Text>
+              </>
+            ) : (
+              (() => {
+                const sel = availableOperators.find(op => String(op.CashierId) === String(selectedCashierId));
+                return (
+                  <>
+                    <Ionicons name="person-circle-outline" size={18} color={Theme.primary} />
+                    <Text style={{ fontFamily: Fonts.bold, fontSize: 13, color: Theme.textPrimary }} numberOfLines={1}>
+                      {sel ? `${sel.CashierName} ${sel.UserLogin && sel.UserLogin !== '-' ? `(@${sel.UserLogin})` : ''}` : `User ID: ${selectedCashierId}`}
+                    </Text>
+                  </>
+                );
+              })()
+            )}
+          </View>
+          <Ionicons name="chevron-down" size={18} color={Theme.primary} />
+        </TouchableOpacity>
+      </View>
+
+      {/* Operator Dropdown Options Modal */}
+      <Modal
+        visible={showUserDropdown}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowUserDropdown(false)}
+      >
+        <TouchableOpacity
+          activeOpacity={1}
+          onPress={() => setShowUserDropdown(false)}
+          style={{
+            flex: 1,
+            backgroundColor: 'rgba(0,0,0,0.4)',
+            justifyContent: 'center',
+            alignItems: 'center',
+            padding: 20
+          }}
+        >
+          <TouchableOpacity
+            activeOpacity={1}
+            style={{
+              width: SCREEN_W >= 600 ? 420 : '95%',
+              maxHeight: '70%',
+              backgroundColor: Theme.bgCard,
+              borderRadius: 16,
+              padding: 16,
+              borderWidth: 1.5,
+              borderColor: Theme.border,
+              ...Platform.select({
+                web: { boxShadow: '0 10px 25px rgba(0,0,0,0.2)' }
+              }) as any
+            }}
+          >
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: Theme.border }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Ionicons name="filter-outline" size={20} color={Theme.primary} />
+                <Text style={{ fontFamily: Fonts.bold, fontSize: 15, color: Theme.textPrimary }}>
+                  Select User Sales View
+                </Text>
+              </View>
+              <TouchableOpacity onPress={() => setShowUserDropdown(false)}>
+                <Ionicons name="close" size={20} color={Theme.textMuted} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={{ maxHeight: 350 }}>
+              {/* Whole Sales Option */}
+              <TouchableOpacity
+                onPress={() => {
+                  setSelectedCashierId("ALL");
+                  setShowUserDropdown(false);
+                }}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  padding: 12,
+                  borderRadius: 10,
+                  backgroundColor: selectedCashierId === "ALL" ? (Theme.primary + '15') : 'transparent',
+                  marginBottom: 6,
+                  borderWidth: 1,
+                  borderColor: selectedCashierId === "ALL" ? Theme.primary : 'transparent'
+                }}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <Ionicons name="globe-outline" size={18} color={selectedCashierId === "ALL" ? Theme.primary : Theme.textSecondary} />
+                  <Text style={{ fontFamily: Fonts.bold, fontSize: 13, color: selectedCashierId === "ALL" ? Theme.primary : Theme.textPrimary }}>
+                    Whole Sales (All Users)
+                  </Text>
+                </View>
+                {selectedCashierId === "ALL" && (
+                  <Ionicons name="checkmark-circle" size={18} color={Theme.primary} />
+                )}
+              </TouchableOpacity>
+
+              {/* Individual Users Options */}
+              {availableOperators
+                .filter((op) => {
+                  const role = String(op.RoleName || op.RoleCode || op.UserGroupName || '').toUpperCase();
+                  const login = String(op.UserLogin || op.UserName || '').toUpperCase();
+                  const name = String(op.CashierName || op.FullName || '').toUpperCase();
+                  // Exclude waiter, void, kds user groups / usernames
+                  if (role.includes('WAITER') || role.includes('KDS') || role.includes('VOID') || role.includes('KITCHEN')) return false;
+                  if (login.startsWith('WAITER') || login.startsWith('KDS') || login.startsWith('VOID') || login.startsWith('LOKI')) return false;
+                  if (name.includes('WAITER') || name.includes('KDS') || name.includes('VOID')) return false;
+                  return true;
+                })
+                .map((op) => {
+                const isSel = String(selectedCashierId) === String(op.CashierId);
+                const userNetSales = Number(op.TotalSales ?? op.TotalNetSales ?? op.TotalSubTotal ?? 0);
+                return (
+                  <TouchableOpacity
+                    key={`sales-dropdown-op-${op.CashierId}`}
+                    onPress={() => {
+                      setSelectedCashierId(String(op.CashierId));
+                      setShowUserDropdown(false);
+                    }}
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: 12,
+                      borderRadius: 10,
+                      backgroundColor: isSel ? (Theme.primary + '15') : 'transparent',
+                      marginBottom: 6,
+                      borderWidth: 1,
+                      borderColor: isSel ? Theme.primary : 'transparent'
+                    }}
+                  >
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                      <Ionicons name="person-circle-outline" size={20} color={isSel ? Theme.primary : Theme.textSecondary} />
+                      <View>
+                        <Text style={{ fontFamily: Fonts.bold, fontSize: 13, color: isSel ? Theme.primary : Theme.textPrimary }}>
+                          {op.CashierName} {op.UserLogin && op.UserLogin !== '-' ? `(@${op.UserLogin})` : ''}
+                        </Text>
+                        <Text style={{ fontFamily: Fonts.regular, fontSize: 11, color: Theme.textMuted }}>
+                          Role: {op.RoleName || op.RoleCode || 'Cashier'} {userNetSales > 0 ? `• Sales: ₹${userNetSales.toLocaleString('en-IN', { minimumFractionDigits: 2 })}` : ''}
+                        </Text>
+                      </View>
+                    </View>
+                    {isSel && (
+                      <Ionicons name="checkmark-circle" size={18} color={Theme.primary} />
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
       {/* Metrics Grid */}
       <View style={styles.metricsGrid}>
         {SCREEN_W >= 600 ? (
@@ -2812,6 +3050,7 @@ export default function SalesReport() {
             Item Sales Report
           </Text>
         </TouchableOpacity>
+
       </View>
 
       {renderDetailReport()}
@@ -5718,6 +5957,18 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 10,
   },
+  emptyContainer: {
+    minHeight: 120,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    paddingVertical: 24,
+  },
+  emptyText: {
+    color: Theme.textMuted,
+    fontFamily: Fonts.medium,
+    fontSize: 13,
+  },
   reportTable: {
     width: "100%",
     minWidth: 360,
@@ -5813,6 +6064,43 @@ const styles = StyleSheet.create({
     width: 80,
     textAlign: "right",
     flexShrink: 0,
+  },
+  tableHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  tableHeaderCell: {
+    color: Theme.textSecondary,
+    fontFamily: Fonts.bold,
+    fontSize: 12,
+    textTransform: "uppercase",
+  },
+  tableDataRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: Theme.border + "40",
+  },
+  tableCellPrimary: {
+    color: Theme.textPrimary,
+    fontFamily: Fonts.bold,
+    fontSize: 13,
+  },
+  tableCellSecondary: {
+    color: Theme.textMuted,
+    fontFamily: Fonts.regular,
+    fontSize: 11,
+    marginTop: 2,
+  },
+  tableCellNum: {
+    color: Theme.textPrimary,
+    fontFamily: Fonts.bold,
+    fontSize: 13,
+    textAlign: "right",
   },
   chartsScrollContent: {
     paddingRight: 16,
@@ -6054,7 +6342,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     backgroundColor: "rgba(0,0,0,0.4)",
   },
-  modalDismiss: { ...StyleSheet.absoluteFillObject },
+  modalDismiss: { ...StyleSheet.absoluteFill },
   modalContent: {
     width: "92%",
     maxWidth: 400,

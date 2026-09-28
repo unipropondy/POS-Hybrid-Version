@@ -589,6 +589,9 @@ export default function SettlementScreen() {
   const [creditOutstanding, setCreditOutstanding] = useState<any[]>([]);
   const [transactions, setTransactions] = useState<any[]>([]);
   const [sales, setSales] = useState<any[]>([]);
+  const [loginWiseSales, setLoginWiseSales] = useState<any[]>([]);
+  const [selectedCashierId, setSelectedCashierId] = useState<string>("ALL");
+  const [showUserDropdown, setShowUserDropdown] = useState(false);
 
   // Cash Out State
   const [cashOutEntries, setCashOutEntries] = useState<any[]>([]);
@@ -821,13 +824,13 @@ const fetchDayHistory = async () => {
 
   useEffect(() => {
     if (selectedTerminal) fetchData();
-  }, [selectedTerminal, selectedDate, selectedEndDate, isRangeMode]);
+  }, [selectedTerminal, selectedDate, selectedEndDate, isRangeMode, selectedCashierId]);
 
   // Re-fetch every time this screen comes into focus (fixes stale data on navigate)
   useFocusEffect(
     useCallback(() => {
       if (selectedTerminal) fetchData();
-    }, [selectedTerminal, selectedDate, selectedEndDate, isRangeMode])
+    }, [selectedTerminal, selectedDate, selectedEndDate, isRangeMode, selectedCashierId])
   );
 
   // Socket-based instant sync: re-fetch when a settlement action or sale completes
@@ -841,7 +844,7 @@ const fetchDayHistory = async () => {
       socket.off('settlement_updated', handleSettlementUpdate);
       socket.off('order_closed', handleSettlementUpdate);
     };
-  }, [selectedTerminal, selectedDate, selectedEndDate, isRangeMode]);
+  }, [selectedTerminal, selectedDate, selectedEndDate, isRangeMode, selectedCashierId]);
 
   const fetchData = async () => {
     try {
@@ -850,19 +853,21 @@ const fetchDayHistory = async () => {
       const dateStr = getLocalDateStr(selectedDate); // e.g. "2026-07-22"
       const endDateStr = isRangeMode ? getLocalDateStr(selectedEndDate) : dateStr;
 
-      const totalRes = await API.get(`/settlement/total-sales/${selectedTerminal}?fromDate=${dateStr}&toDate=${endDateStr}`).catch(() => ({ data: {} }));
-      const payRes = await API.get(`/settlement/payment/${selectedTerminal}/${userId}?fromDate=${dateStr}&toDate=${endDateStr}`).catch(() => ({ data: [] }));
-      const transRes = await API.get(`/settlement/transactions/${selectedTerminal}/${userId}?fromDate=${dateStr}&toDate=${endDateStr}`).catch(() => ({ data: [] }));
-      const salesRes = await API.get(`/settlement/sales-summary/${selectedTerminal}?fromDate=${dateStr}&toDate=${endDateStr}`).catch(() => ({ data: [] }));
+      const totalRes = await API.get(`/settlement/total-sales/${selectedTerminal}?fromDate=${dateStr}&toDate=${endDateStr}&userId=${selectedCashierId}`).catch(() => ({ data: {} }));
+      const payRes = await API.get(`/settlement/payment/${selectedTerminal}/${selectedCashierId}?fromDate=${dateStr}&toDate=${endDateStr}`).catch(() => ({ data: [] }));
+      const transRes = await API.get(`/settlement/transactions/${selectedTerminal}/${selectedCashierId}?fromDate=${dateStr}&toDate=${endDateStr}`).catch(() => ({ data: [] }));
+      const salesRes = await API.get(`/settlement/sales-summary/${selectedTerminal}?fromDate=${dateStr}&toDate=${endDateStr}&userId=${selectedCashierId}`).catch(() => ({ data: [] }));
 
       const outId = selectedTerminal === "ALL" ? 1 : selectedTerminal;
       const openRes = await API.get(`/settlement/opening-cash?outletId=${outId}&date=${dateStr}`, { headers: { Authorization: `Bearer ${useAuthStore.getState().token}` } }).catch(() => ({ data: null }));
       const denomsRes = await API.get(`/settlement/denominations?type=OPEN&date=${dateStr}&screenType=CB`, { headers: { Authorization: `Bearer ${useAuthStore.getState().token}` } }).catch(() => ({ data: null }));
       const closeDenomsRes = await API.get(`/settlement/denominations?type=CLOSE&date=${dateStr}&screenType=CB`, { headers: { Authorization: `Bearer ${useAuthStore.getState().token}` } }).catch(() => ({ data: null }));
-      const cashOutRes = await API.get(`/settlement/cash-out/${selectedTerminal}?fromDate=${dateStr}&toDate=${endDateStr}`, { headers: { Authorization: `Bearer ${useAuthStore.getState().token}` } }).catch(() => ({ data: null }));
-      const cashInRes = await API.get(`/settlement/cash-in/${selectedTerminal}?fromDate=${dateStr}&toDate=${endDateStr}`, { headers: { Authorization: `Bearer ${useAuthStore.getState().token}` } }).catch(() => ({ data: null }));
+      const cashOutRes = await API.get(`/settlement/cash-out/${selectedTerminal}?fromDate=${dateStr}&toDate=${endDateStr}&userId=${selectedCashierId}`, { headers: { Authorization: `Bearer ${useAuthStore.getState().token}` } }).catch(() => ({ data: null }));
+      const cashInRes = await API.get(`/settlement/cash-in/${selectedTerminal}?fromDate=${dateStr}&toDate=${endDateStr}&userId=${selectedCashierId}`, { headers: { Authorization: `Bearer ${useAuthStore.getState().token}` } }).catch(() => ({ data: null }));
       const cashBoxRes = await API.get(`/settlement/artist-cashbox?fromDate=${dateStr}&toDate=${endDateStr}`, { headers: { Authorization: `Bearer ${useAuthStore.getState().token}` } }).catch(() => ({ data: null }));
       const dayLogRes = await API.get(`/settlement/day-log?date=${dateStr}`).catch(() => ({ data: null }));
+      const usersSettleRes = await API.get(`/settlement/users-settlement?fromDate=${dateStr}&toDate=${endDateStr}`, { headers: { Authorization: `Bearer ${useAuthStore.getState().token}` } }).catch(() => ({ data: null }));
+      const loginWiseRes = await API.get(`/reports/login-wise-sales?filter=custom&startDate=${dateStr}&endDate=${endDateStr}`).catch(() => ({ data: [] }));
 
       setTotalSales(totalRes.data || {});
       const payData = payRes.data;
@@ -879,6 +884,14 @@ const fetchDayHistory = async () => {
       setCashInEntries(cashInRes.data?.data || []);
       setCashBoxEntries(cashBoxRes.data?.data || []);
       setDayLog(dayLogRes.data?.data || null);
+
+      let finalUsers: any[] = [];
+      if (usersSettleRes.data?.success && Array.isArray(usersSettleRes.data.data) && usersSettleRes.data.data.length > 0) {
+        finalUsers = usersSettleRes.data.data;
+      } else if (Array.isArray(loginWiseRes.data)) {
+        finalUsers = loginWiseRes.data;
+      }
+      setLoginWiseSales(finalUsers);
 
       if (openRes.data?.data?.total) {
         setOpeningCash(openRes.data.data.total.toString());
@@ -1519,6 +1532,9 @@ const fetchDayHistory = async () => {
       ];
       const printPaymentsTotal = printPayments.reduce((sum, p) => sum + (parseFloat(p.Amount) || 0), 0);
 
+      const selectedUserObj = loginWiseSales.find(r => r.CashierId === selectedCashierId);
+      const reportTitle = selectedCashierId === "ALL" ? "SETTLEMENT REPORT" : `SETTLEMENT REPORT (${(selectedUserObj?.CashierName || 'USER').toUpperCase()})`;
+
       // 2. Format HTML aligned to 80mm width with centered print-out look
       const html = `
         <html>
@@ -1573,7 +1589,7 @@ const fetchDayHistory = async () => {
           <body>
             <div class="report-wrapper">
               <div class="divider">========================================</div>
-              <div class="title">SETTLEMENT REPORT</div>
+              <div class="title">${reportTitle}</div>
               <div class="divider">========================================</div>
               
               <div class="info-block">
@@ -2250,6 +2266,200 @@ const fetchDayHistory = async () => {
               </View>
             )}
 
+            {/* ── USER / CASHIER SHIFT FILTER BAR (DROPDOWN) ── */}
+            <View style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              backgroundColor: Theme.bgCard,
+              padding: 10,
+              borderRadius: 12,
+              borderWidth: 1.5,
+              borderColor: Theme.border,
+              marginBottom: 15,
+              gap: 12,
+            }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Ionicons name="people-outline" size={18} color={Theme.primary} />
+                <Text style={{ fontFamily: Fonts.bold, fontSize: 13, color: Theme.textPrimary }}>
+                  SETTLEMENT VIEW:
+                </Text>
+              </View>
+
+              {/* Dropdown Trigger */}
+              <TouchableOpacity
+                onPress={() => setShowUserDropdown(true)}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  backgroundColor: Theme.bgInput,
+                  paddingHorizontal: 16,
+                  paddingVertical: 10,
+                  borderRadius: 10,
+                  borderWidth: 1.5,
+                  borderColor: Theme.primary,
+                  minWidth: 260,
+                  maxWidth: '100%',
+                  gap: 10
+                }}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+                  {selectedCashierId === "ALL" ? (
+                    <>
+                      <Ionicons name="globe-outline" size={16} color={Theme.primary} />
+                      <Text style={{ fontFamily: Fonts.bold, fontSize: 13, color: Theme.textPrimary }}>
+                        Whole Settlement (All Users)
+                      </Text>
+                    </>
+                  ) : (
+                    (() => {
+                      const sel = loginWiseSales.find(op => op.CashierId === selectedCashierId);
+                      return (
+                        <>
+                          <Ionicons name="person-circle-outline" size={18} color={Theme.primary} />
+                          <Text style={{ fontFamily: Fonts.bold, fontSize: 13, color: Theme.textPrimary }} numberOfLines={1}>
+                            {sel ? `${sel.CashierName} ${sel.UserLogin !== '-' ? `(@${sel.UserLogin})` : ''}` : `User ID: ${selectedCashierId}`}
+                          </Text>
+                        </>
+                      );
+                    })()
+                  )}
+                </View>
+                <Ionicons name="chevron-down" size={18} color={Theme.primary} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Dropdown Options Modal */}
+            <Modal
+              visible={showUserDropdown}
+              transparent
+              animationType="fade"
+              onRequestClose={() => setShowUserDropdown(false)}
+            >
+              <TouchableOpacity
+                activeOpacity={1}
+                onPress={() => setShowUserDropdown(false)}
+                style={{
+                  flex: 1,
+                  backgroundColor: 'rgba(0,0,0,0.4)',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  padding: 20
+                }}
+              >
+                <TouchableOpacity
+                  activeOpacity={1}
+                  style={{
+                    width: isTablet ? 420 : '95%',
+                    maxHeight: '70%',
+                    backgroundColor: Theme.bgCard,
+                    borderRadius: 16,
+                    padding: 16,
+                    borderWidth: 1.5,
+                    borderColor: Theme.border,
+                    ...Platform.select({
+                      web: { boxShadow: '0 10px 25px rgba(0,0,0,0.2)' }
+                    }) as any
+                  }}
+                >
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: Theme.border }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <Ionicons name="filter-outline" size={20} color={Theme.primary} />
+                      <Text style={{ fontFamily: Fonts.bold, fontSize: 15, color: Theme.textPrimary }}>
+                        Select User Settlement
+                      </Text>
+                    </View>
+                    <TouchableOpacity onPress={() => setShowUserDropdown(false)}>
+                      <Ionicons name="close" size={20} color={Theme.textMuted} />
+                    </TouchableOpacity>
+                  </View>
+
+                  <ScrollView style={{ maxHeight: 350 }}>
+                    {/* All Users Option */}
+                    <TouchableOpacity
+                      onPress={() => {
+                        setSelectedCashierId("ALL");
+                        setShowUserDropdown(false);
+                      }}
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        padding: 12,
+                        borderRadius: 10,
+                        backgroundColor: selectedCashierId === "ALL" ? (Theme.primary + '15') : 'transparent',
+                        marginBottom: 6,
+                        borderWidth: 1,
+                        borderColor: selectedCashierId === "ALL" ? Theme.primary : 'transparent'
+                      }}
+                    >
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                        <Ionicons name="globe-outline" size={18} color={selectedCashierId === "ALL" ? Theme.primary : Theme.textSecondary} />
+                        <Text style={{ fontFamily: Fonts.bold, fontSize: 13, color: selectedCashierId === "ALL" ? Theme.primary : Theme.textPrimary }}>
+                          Whole Settlement (All Users)
+                        </Text>
+                      </View>
+                      {selectedCashierId === "ALL" && (
+                        <Ionicons name="checkmark-circle" size={18} color={Theme.primary} />
+                      )}
+                    </TouchableOpacity>
+
+                    {/* Individual Users Options (Admin & Cashier usergroups only) */}
+                    {loginWiseSales
+                      .filter((op) => {
+                        const role = String(op.RoleName || '').toUpperCase();
+                        const login = String(op.UserLogin || '').toUpperCase();
+                        const name = String(op.CashierName || '').toUpperCase();
+                        // Exclude waiter, void, kds user groups / usernames
+                        if (role.includes('WAITER') || role.includes('KDS') || role.includes('VOID') || role.includes('KITCHEN')) return false;
+                        if (login.startsWith('WAITER') || login.startsWith('KDS') || login.startsWith('VOID') || login.startsWith('LOKI')) return false;
+                        if (name.includes('WAITER') || name.includes('KDS') || name.includes('VOID')) return false;
+                        return true;
+                      })
+                      .map((op) => {
+                      const isSel = selectedCashierId === op.CashierId;
+                      const userNetSales = Number(op.TotalNetSales ?? op.TotalSales ?? op.TotalSubTotal ?? 0);
+                      return (
+                        <TouchableOpacity
+                          key={`settle-dropdown-op-${op.CashierId}`}
+                          onPress={() => {
+                            setSelectedCashierId(op.CashierId);
+                            setShowUserDropdown(false);
+                          }}
+                          style={{
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            padding: 12,
+                            borderRadius: 10,
+                            backgroundColor: isSel ? (Theme.primary + '15') : 'transparent',
+                            marginBottom: 6,
+                            borderWidth: 1,
+                            borderColor: isSel ? Theme.primary : 'transparent'
+                          }}
+                        >
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                            <Ionicons name="person-circle-outline" size={20} color={isSel ? Theme.primary : Theme.textSecondary} />
+                            <View>
+                              <Text style={{ fontFamily: Fonts.bold, fontSize: 13, color: isSel ? Theme.primary : Theme.textPrimary }}>
+                                {op.CashierName} {op.UserLogin !== '-' ? `(@${op.UserLogin})` : ''}
+                              </Text>
+                              <Text style={{ fontFamily: Fonts.regular, fontSize: 11, color: Theme.textMuted }}>
+                                Role: {op.RoleName || 'Cashier'} • Sales: ₹{userNetSales.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                              </Text>
+                            </View>
+                          </View>
+                          {isSel && (
+                            <Ionicons name="checkmark-circle" size={18} color={Theme.primary} />
+                          )}
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </ScrollView>
+                </TouchableOpacity>
+              </TouchableOpacity>
+            </Modal>
+
             {/* Top Overview Cards */}
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 15 }}>
               <TouchableOpacity
@@ -2309,7 +2519,9 @@ const fetchDayHistory = async () => {
                   <Ionicons name="trending-up-outline" size={isTablet ? 16 : 14} color={Theme.success} />
                   <Text style={{ fontFamily: Fonts.bold, color: Theme.success, fontSize: isTablet ? 12 : 11 }}>Net Sales</Text>
                 </View>
-                <Text style={{ fontFamily: Fonts.black, fontSize: isTablet ? 22 : 16, color: Theme.success, marginTop: 5 }} numberOfLines={1} adjustsFontSizeToFit>{formatCurrency(netSales)}</Text>
+                <Text style={{ fontFamily: Fonts.black, fontSize: isTablet ? 22 : 16, color: Theme.success, marginTop: 5 }} numberOfLines={1} adjustsFontSizeToFit>
+                  {formatCurrency(selectedCashierId === "ALL" ? netSales : (loginWiseSales.find(r => r.CashierId === selectedCashierId)?.TotalSales || 0))}
+                </Text>
               </View>
 
               <TouchableOpacity
@@ -2332,55 +2544,69 @@ const fetchDayHistory = async () => {
               {/* === SUMMARY === */}
               <View style={[styles.card, isTablet && styles.cardTablet]}>
                 <View style={styles.cardHeader}>
-                  <Text style={styles.cardHeaderTitle}>SUMMARY</Text>
+                  <Text style={styles.cardHeaderTitle}>
+                    {selectedCashierId === "ALL" ? "SUMMARY (WHOLE OUTLET)" : `SUMMARY (${loginWiseSales.find(r => r.CashierId === selectedCashierId)?.CashierName || 'USER'})`}
+                  </Text>
                 </View>
                 <View style={styles.tableHeader}>
                   <Text style={[styles.tableHeaderText, { flex: 1 }]}>Details</Text>
                   <Text style={[styles.tableHeaderText, { flex: 1, textAlign: "right" }]}>Amount</Text>
                 </View>
                 <View style={[styles.cardBody, { flex: 1 }]}>
-                  <View style={styles.row}>
-                    <Text style={styles.rowLabel}>Sales Total</Text>
-                     <Text style={styles.rowValue}>{formatCurrency(totalSales.SubTotal)}</Text>
-                  </View>
-                  <View style={styles.row}>
-                    <Text style={[styles.rowLabel, (parseFloat(totalSales.DiscountAmount) || 0) > 0 && { color: Theme.danger }]}>Total Discount</Text>
-                    <Text style={[styles.rowValue, (parseFloat(totalSales.DiscountAmount) || 0) > 0 && { color: Theme.danger }]}>
-                      {(parseFloat(totalSales.DiscountAmount) || 0) > 0 ? `-${formatCurrency(totalSales.DiscountAmount)}` : formatCurrency(totalSales.DiscountAmount)}
-                    </Text>
-                  </View>
-                  <View style={styles.row}>
-                    <Text style={styles.rowLabel}>Service Charge</Text>
-                    <Text style={styles.rowValue}>{formatCurrency(totalSales.ServiceCharge)}</Text>
-                  </View>
-                  {(parseFloat(totalSales.AdditionalServiceCharge) || 0) !== 0 && (
-                    <View style={styles.row}>
-                      <Text style={styles.rowLabel}>Add. Service Charge</Text>
-                      <Text style={styles.rowValue}>{formatCurrency(totalSales.AdditionalServiceCharge)}</Text>
-                    </View>
-                  )}
-                  {(parseFloat(totalSales.TakeawayCharge) || 0) !== 0 && (
-                    <View style={styles.row}>
-                      <Text style={styles.rowLabel}>Takeaway Charge</Text>
-                      <Text style={styles.rowValue}>{formatCurrency(totalSales.TakeawayCharge)}</Text>
-                    </View>
-                  )}
-                  <View style={styles.row}>
-                    <Text style={styles.rowLabel}>GST</Text>
-                    <Text style={styles.rowValue}>{formatCurrency(displayGST)}</Text>
-                  </View>
-                  <View style={styles.row}>
-                    <Text style={styles.rowLabel}>Round Off</Text>
-                    <Text style={styles.rowValue}>{formatCurrency(displayRoundOff)}</Text>
-                  </View>
-                  <View style={styles.row}>
-                    <Text style={styles.rowLabel}>Tips</Text>
-                    <Text style={styles.rowValue}>{formatCurrency(totalSales.Tips)}</Text>
-                  </View>
+                  {(() => {
+                    const selRecord = loginWiseSales.find(r => r.CashierId === selectedCashierId);
+                    const subT = totalSales.SubTotal !== undefined ? totalSales.SubTotal : (selRecord?.TotalSubTotal || 0);
+                    const discT = totalSales.DiscountAmount !== undefined ? totalSales.DiscountAmount : (selRecord?.TotalDiscount || 0);
+                    const scT = totalSales.ServiceCharge !== undefined ? totalSales.ServiceCharge : (selRecord?.TotalServiceCharge || 0);
+                    const twT = totalSales.TakeawayCharge !== undefined ? totalSales.TakeawayCharge : (selRecord?.TotalTakeaway || 0);
+                    const gstT = totalSales.TotalTax !== undefined ? totalSales.TotalTax : (selRecord?.TotalTax || 0);
+                    const netT = selectedCashierId === "ALL" ? netSales : (loginWiseSales.find(r => r.CashierId === selectedCashierId)?.TotalSales || netSales);
+
+                    return (
+                      <>
+                        <View style={styles.row}>
+                          <Text style={styles.rowLabel}>Sales Total</Text>
+                          <Text style={styles.rowValue}>{formatCurrency(subT)}</Text>
+                        </View>
+                        <View style={styles.row}>
+                          <Text style={[styles.rowLabel, (parseFloat(discT) || 0) > 0 && { color: Theme.danger }]}>Total Discount</Text>
+                          <Text style={[styles.rowValue, (parseFloat(discT) || 0) > 0 && { color: Theme.danger }]}>
+                            {(parseFloat(discT) || 0) > 0 ? `-${formatCurrency(discT)}` : formatCurrency(discT)}
+                          </Text>
+                        </View>
+                        <View style={styles.row}>
+                          <Text style={styles.rowLabel}>Service Charge</Text>
+                          <Text style={styles.rowValue}>{formatCurrency(scT)}</Text>
+                        </View>
+                        {(parseFloat(twT) || 0) !== 0 && (
+                          <View style={styles.row}>
+                            <Text style={styles.rowLabel}>Takeaway Charge</Text>
+                            <Text style={styles.rowValue}>{formatCurrency(twT)}</Text>
+                          </View>
+                        )}
+                        <View style={styles.row}>
+                          <Text style={styles.rowLabel}>GST</Text>
+                          <Text style={styles.rowValue}>{formatCurrency(gstT)}</Text>
+                        </View>
+                        {selectedCashierId === "ALL" && (
+                          <>
+                            <View style={styles.row}>
+                              <Text style={styles.rowLabel}>Round Off</Text>
+                              <Text style={styles.rowValue}>{formatCurrency(displayRoundOff)}</Text>
+                            </View>
+                            <View style={styles.row}>
+                              <Text style={styles.rowLabel}>Tips</Text>
+                              <Text style={styles.rowValue}>{formatCurrency(totalSales.Tips)}</Text>
+                            </View>
+                          </>
+                        )}
+                      </>
+                    );
+                  })()}
 
                   <View style={[styles.row, styles.highlightRow, { marginTop: 'auto' }]}>
                     <Text style={[styles.rowLabel, styles.highlightText]}>Net Sales</Text>
-                    <Text style={[styles.rowValue, styles.highlightText]}>{formatCurrency(netSales)}</Text>
+                    <Text style={[styles.rowValue, styles.highlightText]}>{formatCurrency(selectedCashierId === "ALL" ? netSales : (loginWiseSales.find(r => r.CashierId === selectedCashierId)?.TotalSales || 0))}</Text>
                   </View>
                 </View>
               </View>
@@ -2684,6 +2910,7 @@ const fetchDayHistory = async () => {
                   );
                 })()}
               </View>
+
             </View>
           </ScrollView>
         )}
@@ -2994,9 +3221,9 @@ const fetchDayHistory = async () => {
             onPress={() => setViewerImageUrl(null)} 
           />
           <View style={{ width: '90%', height: '80%', justifyContent: 'center', alignItems: 'center' }}>
-            {!!viewerImageUrl && (
+            {Boolean(viewerImageUrl) && (
               <Image 
-                source={{ uri: viewerImageUrl.startsWith('http') ? viewerImageUrl : `${API_URL}${viewerImageUrl}` }} 
+                source={{ uri: viewerImageUrl!.startsWith('http') ? viewerImageUrl! : `${API_URL}${viewerImageUrl!}` }} 
                 style={{ width: '100%', height: '100%', resizeMode: 'contain' }} 
               />
             )}
@@ -4127,7 +4354,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.4)",
   },
   modalDismiss: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
   },
   modalContent: {
     width: "90%",

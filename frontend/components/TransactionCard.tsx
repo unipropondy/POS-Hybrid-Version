@@ -163,7 +163,7 @@ const TransactionCard = React.memo(
                     ? "NETS"
                     : (item.PayMode || "Other").trim()
                 }`}
-            {item.SER_NAME && item.OrderType !== "LEDGER" ? ` • ${item.SER_NAME}` : ""}
+            {item.CashierName ? ` • By: ${item.CashierName}` : (item.SER_NAME && item.OrderType !== "LEDGER" ? ` • ${item.SER_NAME}` : "")}
           </Text>
           {(item.isMerged || item.isSplit) && (
             <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
