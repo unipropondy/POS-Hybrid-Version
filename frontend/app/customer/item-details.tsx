@@ -19,6 +19,8 @@ import { useCartStore } from "../../stores/cartStore";
 import { API_URL } from "../../constants/Config";
 import { Ionicons } from "@expo/vector-icons";
 
+import { isDishAvailableNow } from "../../utils/timeAvailabilityHelper";
+
 export default function CustomerItemDetailsScreen() {
   const router = useRouter();
   const { dishId } = useLocalSearchParams();
@@ -44,6 +46,15 @@ export default function CustomerItemDetailsScreen() {
   useEffect(() => {
     const selected = allDishes.find((d: any) => String(d.DishId) === String(dishId));
     if (selected) {
+      const timeFrom = selected.AvailableTimeFrom || selected.availableTimeFrom;
+      const timeTo = selected.AvailableTimeTo || selected.availableTimeTo;
+      if (!isDishAvailableNow(timeFrom, timeTo)) {
+        Alert.alert("Item Unavailable", "This item is not available at this current time.");
+        setDish(null);
+        setLoading(false);
+        router.back();
+        return;
+      }
       setDish(selected);
       fetchModifiers(selected.DishId);
       const isCombo = selected.isCombo === true || String(selected.isCombo) === "1" || selected.isCombo === 1 || selected.IsCombo === true || String(selected.IsCombo) === "1" || selected.IsCombo === 1;
