@@ -61,7 +61,22 @@ export function isDishAvailableNow(
     return true;
   }
 
-  const currentMinutes = currentDateObj.getHours() * 60 + currentDateObj.getMinutes();
+  // Enforce Singapore Time (Asia/Singapore, SGT UTC+8) standard across all devices and servers
+  const sgtParts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Singapore",
+    hour: "numeric",
+    minute: "numeric",
+    hour12: false,
+  }).formatToParts(currentDateObj);
+
+  const sgtHourStr = sgtParts.find((p) => p.type === "hour")?.value || "0";
+  const sgtMinuteStr = sgtParts.find((p) => p.type === "minute")?.value || "0";
+
+  let hours = parseInt(sgtHourStr, 10);
+  if (hours === 24) hours = 0; // Handle 24-hour midnight wrap if returned by browser
+  const minutes = parseInt(sgtMinuteStr, 10);
+
+  const currentMinutes = hours * 60 + minutes;
 
   if (fromMinutes <= toMinutes) {
     // Normal same-day range (e.g. 09:00 to 17:00 or 00:05 to 11:00)
