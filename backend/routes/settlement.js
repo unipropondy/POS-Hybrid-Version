@@ -32,23 +32,14 @@ router.get("/total-sales/:terminal", async (req, res) => {
         ISNULL(SUM(sh.SubTotal),0) AS SubTotal,
         ISNULL(SUM(sh.DiscountAmount),0) AS DiscountAmount,
         ISNULL(SUM(sh.ServiceCharge),0) AS ServiceCharge,
-        ISNULL(SUM(ric.AdditionalServiceCharge),0) AS AdditionalServiceCharge,
         ISNULL(SUM(sh.TakeawayCharge),0) AS TakeawayCharge,
         ISNULL(SUM(sh.TotalTax),0) AS TotalTax,
         ISNULL(SUM(sh.RoundedBy),0) AS RoundedBy,
-        ISNULL(SUM(ric.Tips),0) AS Tips,
         COUNT(sh.SettlementID) AS InvoiceCount,
         ISNULL(SUM(sh.SysAmount),0) AS NetTotal
-      FROM RestaurantInvoiceCur ric
-      INNER JOIN SettlementHeader sh ON ric.RestaurantBillId = sh.SettlementID
-      WHERE ric.StatusCode <> 4 
-        AND (sh.IsCancelled = 0 OR sh.IsCancelled IS NULL)
-        AND ric.RestaurantBillId IN (
-            SELECT RestaurantBillId 
-            FROM RestaurantInvoiceCur
-            WHERE ${dateFilter}
-        )
-        ${userFilter}
+      FROM SettlementHeader sh
+      WHERE (sh.IsCancelled = 0 OR sh.IsCancelled IS NULL)
+        AND ${dateFilter.replace(/start_date/g, 'COALESCE(sh.start_date, CAST(sh.LastSettlementDate AS DATE))')}
     `);
     const data = result.recordset[0] || {};
     res.json(data);
@@ -68,11 +59,18 @@ router.get("/payment/:terminal/:userId", async (req, res) => {
 
     request.input("TerminalCode", sql.VarChar, terminal);
 
-    let dateFilter = "p.start_date = CAST(GETDATE() AS DATE)";
+    // Build the start_date filter expression for each data source
+    let dateFilter      = "start_date = CAST(GETDATE() AS DATE)";
+    let ptdDateFilter   = "CAST(ptd.CreatedDate AS DATE) = CAST(GETDATE() AS DATE)";
+    let pdc_DateFilter  = "pdc.start_date = CAST(GETDATE() AS DATE)";
+    let sh_DateFilter   = "CAST(sh.start_date AS DATE) = CAST(GETDATE() AS DATE)";
     if (fromDate && toDate) {
       const fDate = fromDate.replace(/[^0-9T:.-]/g, '');
       const tDate = toDate.replace(/[^0-9T:.-]/g, '');
-      dateFilter = `p.start_date BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE)`;
+      dateFilter     = `start_date BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE)`;
+      ptdDateFilter  = `CAST(ptd.CreatedDate AS DATE) BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE)`;
+      pdc_DateFilter = `pdc.start_date BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE)`;
+      sh_DateFilter  = `CAST(sh.start_date AS DATE) BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE)`;
     }
 
     let userFilter = "";
@@ -82,27 +80,53 @@ router.get("/payment/:terminal/:userId", async (req, res) => {
         TRY_CAST(sh.CashierId AS UNIQUEIDENTIFIER) = @UserIdParam 
         OR CAST(sh.CashierId AS NVARCHAR(50)) = @UserIdParam
         OR LOWER(LTRIM(RTRIM(sh.CashierId))) = LOWER(LTRIM(RTRIM(@UserIdParam)))
-        OR LOWER(LTRIM(RTRIM(p.CreatedBy))) = LOWER(LTRIM(RTRIM(@UserIdParam)))
       )`;
     }
 
-    // Fetch active bill payments — EXCLUDE CREDIT paymode (deferred/unpaid, not cash received)
+    // Fetch active bill payments from PaymentTransactionDetails (always reflects change-payment updates).
+    // This is the authoritative source: change-payment deletes+reinserts PTD rows correctly.
+    // Fallback via UNION to old PaymentDetailCur rows that have no matching PTD entry (legacy orders).
     const billsResult = await request.query(`
+      -- PRIMARY: PaymentTransactionDetails joined to SettlementHeader for date + Paymode for name
       SELECT
-        LTRIM(RTRIM(ISNULL(p.Remarks, ''))) AS PaymodeName,
-        ISNULL(SUM(p.Amount), 0) AS Amount,
+        LTRIM(RTRIM(ISNULL(COALESCE(pm.PayMode, pm.Description), ''))) AS PaymodeName,
+        ISNULL(SUM(ptd.Amount), 0) AS Amount,
         COUNT(*) AS PayCount
-      FROM PaymentDetailCur p
-      LEFT JOIN SettlementHeader sh ON p.RestaurantBillId = sh.SettlementID
-      WHERE ${dateFilter}
-        AND UPPER(LTRIM(RTRIM(ISNULL(p.Remarks, '')))) NOT IN ('CREDIT', 'MEMBER')
-        AND (p.RestaurantBillId IS NULL OR p.RestaurantBillId NOT IN (
-            SELECT RestaurantBillId 
-            FROM RestaurantInvoiceCur 
+      FROM PaymentTransactionDetails ptd
+      INNER JOIN SettlementHeader sh ON sh.SettlementID = ptd.ReferenceId
+      LEFT  JOIN Paymode pm ON pm.Position = ptd.PayModeId
+      WHERE ptd.ReferenceType = 'BILL'
+        AND ${ptdDateFilter}
+        AND UPPER(LTRIM(RTRIM(ISNULL(COALESCE(pm.PayMode, pm.Description), '')))) NOT IN ('CREDIT', 'MEMBER')
+        AND ptd.ReferenceId NOT IN (
+            SELECT RestaurantBillId FROM RestaurantInvoiceCur
+            WHERE StatusCode = 4 AND RestaurantBillId IS NOT NULL
+        )
+      GROUP BY LTRIM(RTRIM(ISNULL(COALESCE(pm.PayMode, pm.Description), '')))
+
+      UNION ALL
+
+      -- FALLBACK: PaymentDetailCur for legacy orders that have no PTD row
+      SELECT
+        LTRIM(RTRIM(ISNULL(pdc.Remarks, ''))) AS PaymodeName,
+        ISNULL(SUM(pdc.Amount), 0) AS Amount,
+        COUNT(*) AS PayCount
+      FROM PaymentDetailCur pdc
+      WHERE ${pdc_DateFilter}
+        AND UPPER(LTRIM(RTRIM(ISNULL(pdc.Remarks, '')))) NOT IN ('CREDIT', 'MEMBER')
+        AND (pdc.RestaurantBillId IS NULL OR pdc.RestaurantBillId NOT IN (
+            SELECT RestaurantBillId FROM RestaurantInvoiceCur
             WHERE StatusCode = 4 AND RestaurantBillId IS NOT NULL
         ))
-        ${userFilter}
-      GROUP BY LTRIM(RTRIM(ISNULL(p.Remarks, '')))
+        -- Exclude any bill that already has a PTD row (to prevent double-counting)
+        AND (pdc.RestaurantBillId IS NULL OR pdc.RestaurantBillId NOT IN (
+            SELECT DISTINCT ptd2.ReferenceId
+            FROM PaymentTransactionDetails ptd2
+            WHERE ptd2.ReferenceType = 'BILL'
+              AND ${ptdDateFilter.replace(/ptd\./g, 'ptd2.')}
+        ))
+      GROUP BY LTRIM(RTRIM(ISNULL(pdc.Remarks, '')))
+    `);
     `);
 
     // Fetch credit outstanding & issued amounts separately for Credit Activity tracking
@@ -154,18 +178,17 @@ router.get("/payment/:terminal/:userId", async (req, res) => {
     const normalizePayMode = (paymentMethod = "CASH") => {
       const raw = String(paymentMethod || "CASH").toUpperCase().trim();
       if (raw === "Q-R" || raw === "Q.R.") return "QR";
-      if (raw === "PAY_NOW") return "PAYNOW";
+      if (raw === "PAY_NOW" || raw === "PAY NOW") return "PAYNOW";
       if (raw === "U-P-I") return "UPI";
       if (raw === "G-PAY") return "GPAY";
       if (raw === "P-H-O-N-E") return "PHONE";
       if (raw === "P-A-Y-T-M") return "PAYTM";
-      if (raw === "CASH" || raw === "CAS" || raw === "1") return "CASH";
-      if (raw.includes("CARD") || raw.includes("VISA") || raw.includes("MASTER") || raw.includes("AMEX") || raw.includes("DINERS")) return "CARD";
-      if (raw.includes("PAYNOW") || raw.includes("GRAB") || raw.includes("FOODPANDA") || raw === "3" || raw.includes("PAY NOW")) return "PAYNOW";
-      if (raw.includes("UPI") || raw === "4" || raw.includes("GPAY") || raw.includes("PHONE") || raw.includes("PAYTM")) return "UPI";
-      if (raw.includes("NETS") || raw === "2") return "NETS";
-      if (raw.includes("MEMBER") || raw === "5") return "MEMBER";
-      if (raw.includes("CREDIT") || raw === "6") return "CREDIT";
+      if (raw === "CAS" || raw === "1") return "CASH";
+      if (raw === "2") return "NETS";
+      if (raw === "3") return "PAYNOW";
+      if (raw === "4") return "UPI";
+      if (raw === "5") return "MEMBER";
+      if (raw === "6") return "CREDIT";
       return raw;
     };
 

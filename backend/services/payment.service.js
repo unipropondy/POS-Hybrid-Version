@@ -23,7 +23,8 @@ async function processSplitPayments({
   cashierId = null,
   orderId = null,
   now = new Date(),
-  receiptCount = 0
+  receiptCount = 0,
+  startDate = undefined   // Optional override: pass original start_date so Settlement screen stays correct after change-payment
 }) {
   if (!payments || !Array.isArray(payments) || payments.length === 0) {
     throw new Error("Payments array is required and cannot be empty.");
@@ -245,10 +246,16 @@ if (!gatewayResponse.success) {
     // ============================================================
     const isCashMode = payModeName.toUpperCase().trim() === 'CASH';
     if (isCashMode) {
-      let startDate = null;
-      const activeDayRes = await transaction.request().query("SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC");
-      if (activeDayRes.recordset.length > 0) {
-        startDate = activeDayRes.recordset[0].StartDate;
+      // Use caller-supplied startDate override; fall back to DateEntry lookup
+      let cashStartDate;
+      if (startDate !== undefined) {
+        cashStartDate = startDate;
+      } else {
+        cashStartDate = null;
+        const activeDayRes = await transaction.request().query("SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC");
+        if (activeDayRes.recordset.length > 0) {
+          cashStartDate = activeDayRes.recordset[0].StartDate;
+        }
       }
 
       let cashierName = 'Admin';
@@ -283,7 +290,7 @@ if (!gatewayResponse.success) {
         .input('ReferenceNo', sql.VarChar, String(referenceId))
         .input('TerminalCode', sql.VarChar, terminalCode)
         .input('CreatedBy', sql.VarChar, cashierName)
-        .input('startDate', sql.Date, startDate)
+        .input('startDate', sql.Date, cashStartDate)
         .query(`
           INSERT INTO CashInEntry (CashInNo, CashInDate, Amount, Reason, Remarks, PaymentMode, ReferenceNo, TerminalCode, CreatedBy, CreatedOn, start_date)
           VALUES (@CashInNo, GETDATE(), @Amount, @Reason, @Remarks, @PaymentMode, @ReferenceNo, @TerminalCode, @CreatedBy, GETDATE(), @startDate)
@@ -294,11 +301,19 @@ if (!gatewayResponse.success) {
     // 4️⃣ If BILL, write to legacy tables
     // ============================================================
     if (referenceType === 'BILL') {
-      // Fetch active business start_date
-      let startDate = null;
-      const activeDayRes = await transaction.request().query("SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC");
-      if (activeDayRes.recordset.length > 0) {
-        startDate = activeDayRes.recordset[0].StartDate;
+      // Use caller-supplied startDate if provided (e.g. change-payment preserves the original payment date);
+      // otherwise fall back to the active business day from DateEntry.
+      let resolvedStartDate;
+      if (startDate !== undefined) {
+        // Caller explicitly passed a date (or null) — honour it
+        resolvedStartDate = startDate;
+      } else {
+        // No override: fetch from active business day
+        resolvedStartDate = null;
+        const activeDayRes = await transaction.request().query("SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC");
+        if (activeDayRes.recordset.length > 0) {
+          resolvedStartDate = activeDayRes.recordset[0].StartDate;
+        }
       }
 
       const legacyReq = new sql.Request(transaction);
@@ -314,7 +329,7 @@ if (!gatewayResponse.success) {
         .input("Remarks", sql.VarChar(500), payModeName + (gatewayResponse ? ' (Gateway)' : ''))
         .input("BusinessUnitId", sql.UniqueIdentifier, toGuidOrNull(businessUnitId))
         .input("CreatedBy", sql.UniqueIdentifier, toGuidOrNull(cashierId))
-        .input("startDate", sql.Date, startDate)
+        .input("startDate", sql.Date, resolvedStartDate)
         .query(`
           DECLARE @PayId UNIQUEIDENTIFIER = NEWID();
 

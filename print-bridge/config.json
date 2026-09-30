@@ -6,7 +6,7 @@
   "backends": [
     {
       "name": "RN POS",
-      "url": "https://pos-v-20-production.up.railway.app",
+      "url": "https://sitaras202609-production.up.railway.app",
       "enabled": true
     },
     {

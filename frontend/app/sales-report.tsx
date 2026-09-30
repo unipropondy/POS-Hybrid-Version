@@ -555,8 +555,12 @@ export default function SalesReport() {
           reportType,
           filterType: reportFilter,
         });
+        const token = useAuthStore.getState().token;
         const response = await fetch(
           `${API_URL}/api/reports/${endpoint}?${params.toString()}`,
+          {
+            headers: token ? { Authorization: `Bearer ${token}` } : {},
+          }
         );
 
         if (!response.ok) {
@@ -704,8 +708,12 @@ export default function SalesReport() {
         endStr = rangeEnd;
       }
 
+      const token = useAuthStore.getState().token;
       const response = await fetch(`${API_URL}/api/sales/all?startDate=${startStr}&endDate=${endStr}`, {
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
       });
       if (!response.ok) throw new Error("Failed to fetch sales");
       const data = await response.json();
@@ -751,8 +759,11 @@ export default function SalesReport() {
         startStr = rangeStart;
         endStr = rangeEnd;
       }
+      const token = useAuthStore.getState().token;
       const url = `${API_URL}/api/sales/range?startDate=${startStr}&endDate=${endStr}`;
-      const response = await fetch(url);
+      const response = await fetch(url, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       const data = await response.json();
       setSummary(Array.isArray(data) ? data[0] : data);
     } catch (error) {
@@ -1098,11 +1109,20 @@ export default function SalesReport() {
   const dateScopedSales = useMemo(() => {
     let result = sales;
 
+    const extractYYYYMMDD = (dateVal: any): string => {
+      if (!dateVal) return "";
+      if (typeof dateVal === "string") {
+        const match = dateVal.trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if (match) return `${match[1]}-${match[2]}-${match[3]}`;
+      }
+      return getSingaporeDateString(parseDatabaseDate(dateVal));
+    };
+
     if (selectedFilter === "DAILY") {
       result = sales.filter((s) => {
         const dateToUse = s.BusinessDate || s.SettlementDate;
         if (!dateToUse) return false;
-        const itemDate = getSingaporeDateString(parseDatabaseDate(dateToUse));
+        const itemDate = extractYYYYMMDD(dateToUse);
         return itemDate === selectedDate;
       });
     } else if (selectedFilter === "WEEKLY") {
@@ -1122,7 +1142,7 @@ export default function SalesReport() {
       result = sales.filter((s) => {
         const dateToUse = s.BusinessDate || s.SettlementDate;
         if (!dateToUse) return false;
-        const saleDateStr = getSingaporeDateString(parseDatabaseDate(dateToUse));
+        const saleDateStr = extractYYYYMMDD(dateToUse);
         return saleDateStr >= startStr && saleDateStr <= endStr;
       });
     } else if (selectedFilter === "MONTHLY") {
@@ -1137,7 +1157,7 @@ export default function SalesReport() {
       result = sales.filter((s) => {
         const dateToUse = s.BusinessDate || s.SettlementDate;
         if (!dateToUse) return false;
-        const saleDateStr = getSingaporeDateString(parseDatabaseDate(dateToUse));
+        const saleDateStr = extractYYYYMMDD(dateToUse);
         return saleDateStr >= startStr && saleDateStr <= endStr;
       });
     } else if (selectedFilter === "YEARLY") {
@@ -1151,14 +1171,14 @@ export default function SalesReport() {
       result = sales.filter((s) => {
         const dateToUse = s.BusinessDate || s.SettlementDate;
         if (!dateToUse) return false;
-        const saleDateStr = getSingaporeDateString(parseDatabaseDate(dateToUse));
+        const saleDateStr = extractYYYYMMDD(dateToUse);
         return saleDateStr >= startStr && saleDateStr <= endStr;
       });
     } else if (selectedFilter === "CUSTOM" && rangeStart && rangeEnd) {
       result = sales.filter((s) => {
         const dateToUse = s.BusinessDate || s.SettlementDate;
         if (!dateToUse) return false;
-        const saleDateStr = getSingaporeDateString(parseDatabaseDate(dateToUse));
+        const saleDateStr = extractYYYYMMDD(dateToUse);
         return saleDateStr >= rangeStart && saleDateStr <= rangeEnd;
       });
     }
@@ -1214,6 +1234,8 @@ export default function SalesReport() {
   }, [dateScopedSales]);
 
   const baseFilteredSales = useMemo(() => {
+    const norm = (str: string) => (str || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+
     return groupedSales.filter((s) => {
       const modeUpper = s.PayMode?.toUpperCase().trim() || "";
       const isUpiMode = modeUpper.includes("UPI") || modeUpper.includes("GPAY");
@@ -1222,21 +1244,29 @@ export default function SalesReport() {
       // Support checking components of combined payment modes (e.g. "CASH + NETS")
       const splitModes = modeUpper.includes("+") ? modeUpper.split("+").map((m: string) => m.trim()) : [modeUpper];
 
+      const isModeSelected = (mode: string) => {
+        if (activePaymentModes.length === 0) return true;
+        const cleanM = norm(mode);
+        if (!cleanM) return true;
+        return activePaymentModes.some(ap => {
+          const cleanAp = norm(ap);
+          return cleanAp === cleanM || cleanM.includes(cleanAp) || cleanAp.includes(cleanM);
+        });
+      };
+
       const modeMatch =
-        splitModes.some((m: string) => activePaymentModes.includes(m)) ||
-        (activePaymentModes.includes("UPI") && isUpiMode) ||
+        splitModes.some(isModeSelected) ||
+        (activePaymentModes.some(ap => norm(ap) === "UPI") && isUpiMode) ||
         (showCancelledOrders && s.IsCancelled) ||
-        (typeUpper === 'LEDGER' && (
-          splitModes.some((m: string) => activePaymentModes.includes(m)) ||
-          (s.OrderId?.toLowerCase().includes("member") && activePaymentModes.includes("MEMBER")) ||
-          (s.OrderId?.toLowerCase().includes("credit") && activePaymentModes.includes("CREDIT"))
-        ));
+        (typeUpper === 'LEDGER');
+
       const typeMatch =
+        !s.OrderType ||
         typeUpper === 'LEDGER' ||
+        activeOrderTypes.length === 0 ||
         activeOrderTypes.length === 2 ||
-        (s.OrderType
-          ? activeOrderTypes.includes(typeUpper)
-          : activeOrderTypes.includes("DINE-IN"));
+        activeOrderTypes.some(at => norm(at) === norm(typeUpper));
+
       return modeMatch && typeMatch;
     });
   }, [
@@ -4078,7 +4108,7 @@ export default function SalesReport() {
                   })()}
                   {Number(selectedOrder?.ServiceCharge) > 0 && (
                     <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                      <Text style={{ fontSize: 12, fontFamily: Fonts.semiBold, color: Theme.textSecondary }}>Item Service Charge</Text>
+                      <Text style={{ fontSize: 12, fontFamily: Fonts.semiBold, color: Theme.textSecondary }}>{String(selectedOrder?.OrderType || selectedOrder?.orderType || "").toUpperCase().includes("TAKEAWAY") || String(selectedOrder?.TableNo || selectedOrder?.tableNo || "").toUpperCase().startsWith("TW") ? "TW Service Charge" : "Item Service Charge"}</Text>
                       <Text style={{ fontSize: 13, fontFamily: Fonts.bold, color: Theme.textPrimary }}>
                         {formatCurrency(selectedOrder?.ServiceCharge)}
                       </Text>

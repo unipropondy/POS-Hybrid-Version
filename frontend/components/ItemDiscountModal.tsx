@@ -151,7 +151,7 @@ export default function ItemDiscountModal({
               style={[styles.segmentBtn, discountType === "fixed" && styles.segmentActive]} 
               onPress={() => { setDiscountType("fixed"); setInputValue(""); }}
             >
-              <Text style={[styles.segmentText, discountType === "fixed" && styles.segmentTextActive]}>Fixed Amount ({useCartStore.getState().getCart ? (require("../stores/companySettingsStore").useCompanySettingsStore.getState().settings.currencySymbol || "$") : "$"})</Text>
+              <Text style={[styles.segmentText, discountType === "fixed" && styles.segmentTextActive]}>Fixed Amount ({useCartStore.getState() ? (require("../stores/companySettingsStore").useCompanySettingsStore.getState().settings.currencySymbol || "$") : "$"})</Text>
             </TouchableOpacity>
           </View>
 

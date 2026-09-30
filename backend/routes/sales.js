@@ -128,8 +128,6 @@ const resolveBusinessDateColumn = (col) => {
 };
 
 const getReportDateWhereSql = (filter = "daily", saleDateColumn = "sh.LastSettlementDate", date = null, startDate = null, endDate = null) => {
-  saleDateColumn = resolveBusinessDateColumn(saleDateColumn);
-
   if (String(filter).toLowerCase() === "custom" && startDate && endDate) {
     return getReportDateWhereSqlForRange(startDate, endDate, saleDateColumn);
   }
@@ -137,6 +135,23 @@ const getReportDateWhereSql = (filter = "daily", saleDateColumn = "sh.LastSettle
   const targetDate = date ? `'${date}'` : 'GETDATE()';
   const safeTargetDate = `CAST(CAST(${targetDate} AS DATETIME) AS DATE)`;
 
+  const cleanCol = String(saleDateColumn).trim();
+  if (cleanCol.includes("LastSettlementDate")) {
+    const prefix = cleanCol.includes(".") ? cleanCol.split(".")[0] + "." : "";
+    switch (String(filter).toLowerCase()) {
+      case "weekly":
+        return `((CAST(${prefix}start_date AS DATE) >= DATEADD(DAY, -6, ${safeTargetDate}) AND CAST(${prefix}start_date AS DATE) <= ${safeTargetDate}) OR (CAST(${prefix}LastSettlementDate AS DATE) >= DATEADD(DAY, -6, ${safeTargetDate}) AND CAST(${prefix}LastSettlementDate AS DATE) <= ${safeTargetDate}))`;
+      case "monthly":
+        return `((MONTH(CAST(${prefix}start_date AS DATE)) = MONTH(${safeTargetDate}) AND YEAR(CAST(${prefix}start_date AS DATE)) = YEAR(${safeTargetDate})) OR (MONTH(CAST(${prefix}LastSettlementDate AS DATE)) = MONTH(${safeTargetDate}) AND YEAR(CAST(${prefix}LastSettlementDate AS DATE)) = YEAR(${safeTargetDate})))`;
+      case "yearly":
+        return `((CAST(${prefix}start_date AS DATE) >= DATEADD(YEAR, -1, ${safeTargetDate}) AND CAST(${prefix}start_date AS DATE) <= ${safeTargetDate}) OR (CAST(${prefix}LastSettlementDate AS DATE) >= DATEADD(YEAR, -1, ${safeTargetDate}) AND CAST(${prefix}LastSettlementDate AS DATE) <= ${safeTargetDate}))`;
+      case "daily":
+      default:
+        return `(CAST(${prefix}start_date AS DATE) = ${safeTargetDate} OR CAST(${prefix}LastSettlementDate AS DATE) = ${safeTargetDate})`;
+    }
+  }
+
+  saleDateColumn = resolveBusinessDateColumn(saleDateColumn);
   switch (String(filter).toLowerCase()) {
     case "weekly":
       return `CAST(${saleDateColumn} AS DATE) >= DATEADD(DAY, -6, ${safeTargetDate}) AND CAST(${saleDateColumn} AS DATE) <= ${safeTargetDate}`;
@@ -151,10 +166,15 @@ const getReportDateWhereSql = (filter = "daily", saleDateColumn = "sh.LastSettle
 };
 
 const getReportDateWhereSqlForRange = (startDateStr, endDateStr, saleDateColumn = "sh.LastSettlementDate") => {
-  saleDateColumn = resolveBusinessDateColumn(saleDateColumn);
   const sgtStart = `CAST('${startDateStr}' AS DATE)`;
   const sgtEnd = `CAST('${endDateStr}' AS DATE)`;
-  return `CAST(${saleDateColumn} AS DATE) >= ${sgtStart} AND CAST(${saleDateColumn} AS DATE) <= ${sgtEnd}`;
+  const cleanCol = String(saleDateColumn).trim();
+  if (cleanCol.includes("LastSettlementDate")) {
+    const prefix = cleanCol.includes(".") ? cleanCol.split(".")[0] + "." : "";
+    return `((CAST(${prefix}start_date AS DATE) >= ${sgtStart} AND CAST(${prefix}start_date AS DATE) <= ${sgtEnd}) OR (CAST(${prefix}LastSettlementDate AS DATE) >= ${sgtStart} AND CAST(${prefix}LastSettlementDate AS DATE) <= ${sgtEnd}))`;
+  }
+  const resolved = resolveBusinessDateColumn(saleDateColumn);
+  return `CAST(${resolved} AS DATE) >= ${sgtStart} AND CAST(${resolved} AS DATE) <= ${sgtEnd}`;
 };
 
 const normalizeReportFilter = (filter = "daily") => {
@@ -2105,7 +2125,7 @@ router.post("/save", async (req, res) => {
       .input("TotalLineItemDiscountAmount", sql.Decimal(18, 2), itemDiscountAmount || 0)
       .input("MergeCount", sql.Numeric, mergeCount)
       .input("SplitCount", sql.Numeric, splitIndexValue)
-      .input("GuestName", sql.NVarChar(9), req.body.customerName ? req.body.customerName.trim().substring(0, 9) : (orderCustomerName || tableCustomerName || null))
+      .input("GuestName", sql.NVarChar(100), req.body.customerName ? req.body.customerName.trim().substring(0, 100) : (orderCustomerName || tableCustomerName || null))
       .input("Pax", sql.Int, req.body.pax ? parseInt(req.body.pax) : (orderPax || tablePax || null))
       .input("startDate", sql.Date, formattedStartDate)
       .query(`
@@ -2844,17 +2864,23 @@ router.post("/save", async (req, res) => {
             .input("cartId", sql.NVarChar(128), cleanTableId)
             .query("DELETE FROM [dbo].[CartItems] WHERE [CartId] = @cartId");
             
+          const targetTableNo = tableNo || cleanTableId;
           if (validTableGuid) {
             await transaction.request()
               .input("tid", sql.UniqueIdentifier, validTableGuid)
-              .query("UPDATE [dbo].[TableMaster] SET Status = 0, entry_status = NULL, TotalAmount = 0, StartTime = NULL, CurrentOrderId = NULL, CustomerName = NULL, Pax = NULL WHERE TableId = @tid");
+              .input("tno", sql.NVarChar(50), String(targetTableNo))
+              .query("UPDATE [dbo].[TableMaster] SET Status = 0, entry_status = NULL, TotalAmount = 0, StartTime = NULL, CurrentOrderId = NULL, CustomerName = NULL, Pax = NULL WHERE TableId = @tid OR TableNumber = @tno");
+          } else {
+            await transaction.request()
+              .input("tno", sql.NVarChar(50), String(targetTableNo))
+              .query("UPDATE [dbo].[TableMaster] SET Status = 0, entry_status = NULL, TotalAmount = 0, StartTime = NULL, CurrentOrderId = NULL, CustomerName = NULL, Pax = NULL WHERE TableNumber = @tno OR TableId = @tno");
           }
 
           const io = req.app.get("io");
           if (io) {
-            io.emit("table_status_updated", { tableId: cleanTableId.toLowerCase(), status: 0, totalAmount: 0, customerName: null, pax: null });
-            io.emit("cart_updated", { tableId: cleanTableId.toLowerCase() });
-            io.emit("order_closed", { tableId: cleanTableId.toLowerCase(), tableNo: tableNo, orderId: displayOrderId });
+            io.emit("table_status_updated", { tableId: cleanTableId.toLowerCase(), tableNo: targetTableNo, status: 0, totalAmount: 0, customerName: null, pax: null });
+            io.emit("cart_updated", { tableId: cleanTableId.toLowerCase(), tableNo: targetTableNo });
+            io.emit("order_closed", { tableId: cleanTableId.toLowerCase(), tableNo: targetTableNo, orderId: displayOrderId });
           }
 
           // 🚀 CLEANUP MERGED SOURCE TABLES AS WELL (Bullet 5)
@@ -3812,7 +3838,26 @@ router.post("/settlement/:id/change-payment", async (req, res) => {
           .query("DELETE FROM CustomerCreditTransactions WHERE SettlementId = @Sid");
       }
 
-      // 1. Delete existing payment records
+      // 1. Read original start_date from PaymentDetailCur BEFORE deleting
+      //    This is critical: Settlement screen filters by start_date, so new
+      //    records must carry the same date as the original payment records.
+      //    (DateEntry may be empty after Day End, causing start_date = NULL)
+      const origStartDateRes = await transaction.request()
+        .input("Sid", sql.UniqueIdentifier, realSettlementId)
+        .query(`SELECT TOP 1 start_date FROM [dbo].[PaymentDetailCur] WHERE RestaurantBillId = @Sid`);
+      const originalStartDate = origStartDateRes.recordset[0]?.start_date ?? null;
+
+      // 2. Delete old auto-generated CashInEntry records for this settlement
+      //    (processSplitPayments will re-insert them; avoid duplicates)
+      await transaction.request()
+        .input("Sid", sql.VarChar(100), String(realSettlementId))
+        .query(`
+          DELETE FROM CashInEntry
+          WHERE (ReferenceNo = @Sid OR Remarks LIKE '%' + @Sid + '%')
+            AND (Reason = 'Cash In' OR Reason = 'Ledger Payment')
+        `);
+
+      // 3. Delete existing payment records
       const deleteReq = new sql.Request(transaction);
       deleteReq.input("Sid", sql.UniqueIdentifier, realSettlementId);
       await deleteReq.query(`
@@ -3825,7 +3870,8 @@ router.post("/settlement/:id/change-payment", async (req, res) => {
         DELETE FROM SettlementCreditSales WHERE SettlementID = @Sid;
       `);
 
-      // 2. Insert new split payments
+      // 4. Insert new split payments — pass original start_date so
+      //    PaymentDetailCur records are correctly dated for the Settlement screen
       await processSplitPayments({
         referenceType: "BILL",
         referenceId: realSettlementId,
@@ -3834,7 +3880,8 @@ router.post("/settlement/:id/change-payment", async (req, res) => {
         businessUnitId: toGuidOrNull(BusinessUnitId),
         cashierId: toGuidOrNull(CreatedBy),
         orderId: toGuidOrNull(OrderId),
-        receiptCount: 1
+        receiptCount: 1,
+        startDate: originalStartDate   // ← preserve original business date
       });
 
       // 3. Update RestaurantInvoice & RestaurantInvoiceCur (PaymentTermCode)

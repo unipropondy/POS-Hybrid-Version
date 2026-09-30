@@ -24,9 +24,9 @@ async function sendWelcomeEmail({ email, name, phone, promoCode, promoAmount }) 
     
     // Plain text fallback version for email deliverability
     const textContent = `
-Welcome to KINDEE Thai Hotpot, ${name}.
+Welcome to SITARA'S RESTAURANT, ${name}.
 
-Thank you for registering as a member with KINDEE Thai Hotpot. Your account has been configured.
+Thank you for registering as a member with SITARA'S RESTAURANT. Your account has been configured.
 
 Your Member Profile:
 Name: ${name}
@@ -34,12 +34,11 @@ Mobile: ${phone}
 Email: ${email}
 ${promoCode ? `Welcome Wallet Credit: Code ${promoCode} (Value: $${promoAmount})` : ''}
 
-Start ordering here: http://myerpcloud.dyndns.org:8081/customer
+Start ordering here: https://sitaras202609-production.up.railway.app/customer
 
-KINDEE Thai Hotpot
-No. 2 Yishun Industrial Street 1, #03-24, North Point Bizhub, Singapore 768159
+SITARA'S RESTAURANT
 Support: support@unipro.com.sg
-Unsubscribe: http://myerpcloud.dyndns.org:8081/customer/unsubscribe
+Unsubscribe: https://sitaras202609-production.up.railway.app/customer/unsubscribe
     `.trim();
 
     const htmlContent = `
@@ -48,7 +47,7 @@ Unsubscribe: http://myerpcloud.dyndns.org:8081/customer/unsubscribe
     <head>
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>Welcome to KINDEE Thai Hotpot</title>
+      <title>Welcome to SITARA'S RESTAURANT</title>
       <!--[if mso]>
       <noscript>
         <xml>
@@ -93,7 +92,7 @@ Unsubscribe: http://myerpcloud.dyndns.org:8081/customer/unsubscribe
                   <table border="0" cellpadding="0" cellspacing="0" role="presentation">
                     <tr>
                       <td align="center" style="background-color: rgba(255, 255, 255, 0.15); border-radius: 30px; padding: 6px 16px; display: inline-block; margin-bottom: 16px;">
-                        <span style="font-family: Arial, Helvetica, sans-serif; font-size: 12px; font-weight: bold; color: #FFFFFF; letter-spacing: 1px; text-transform: uppercase;">Welcome to KINDEE Thai Hotpot</span>
+                        <span style="font-family: Arial, Helvetica, sans-serif; font-size: 12px; font-weight: bold; color: #FFFFFF; letter-spacing: 1px; text-transform: uppercase;">Welcome to SITARA'S RESTAURANT</span>
                       </td>
                     </tr>
                     <tr>
@@ -118,7 +117,7 @@ Unsubscribe: http://myerpcloud.dyndns.org:8081/customer/unsubscribe
                       <td>
                         <h2 style="margin: 0 0 12px 0; font-family: Arial, Helvetica, sans-serif; font-size: 18px; font-weight: bold; color: #1E293B;">Hi ${name}</h2>
                         <p style="margin: 0 0 24px 0; font-family: Arial, Helvetica, sans-serif; font-size: 14px; color: #475569; line-height: 1.6;">
-                          Welcome to KINDEE Thai Hotpot! You can now enjoy faster QR ordering, instant digital receipts, exclusive member-only offers, reward points, birthday surprises, cashback, and a seamless dining experience.
+                          Welcome to SITARA'S RESTAURANT! You can now enjoy faster QR ordering, instant digital receipts, exclusive member-only offers, reward points, birthday surprises, cashback, and a seamless dining experience.
                         </p>
                       </td>
                     </tr>
@@ -295,7 +294,7 @@ Unsubscribe: http://myerpcloud.dyndns.org:8081/customer/unsubscribe
                     <tr>
                       <td align="center">
                         <!--[if mso]>
-                        <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="http://myerpcloud.dyndns.org:8081/customer" style="height:50px;v-text-anchor:middle;width:240px;" arcsize="10%" stroke="f" fillcolor="#FF6A00">
+                        <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="https://sitaras202609-production.up.railway.app/customer" style="height:50px;v-text-anchor:middle;width:240px;" arcsize="10%" stroke="f" fillcolor="#FF6A00">
                           <w:anchorlock/>
                           <center>
                             <span style="color:#ffffff;font-family:Arial, sans-serif;font-size:15px;font-weight:bold;">Start Ordering →</span>
@@ -303,7 +302,7 @@ Unsubscribe: http://myerpcloud.dyndns.org:8081/customer/unsubscribe
                         </v:roundrect>
                         <![endif]-->
                         <!--[if !mso]><!-->
-                        <a href="http://myerpcloud.dyndns.org:8081/customer" style="background-color: #FF6A00; color: #FFFFFF; font-family: Arial, Helvetica, sans-serif; font-size: 15px; font-weight: bold; text-decoration: none; padding: 15px 36px; border-radius: 8px; display: inline-block; box-shadow: 0 6px 12px rgba(255, 106, 0, 0.15);">Start Ordering</a>
+                        <a href="https://sitaras202609-production.up.railway.app/customer" style="background-color: #FF6A00; color: #FFFFFF; font-family: Arial, Helvetica, sans-serif; font-size: 15px; font-weight: bold; text-decoration: none; padding: 15px 36px; border-radius: 8px; display: inline-block; box-shadow: 0 6px 12px rgba(255, 106, 0, 0.15);">Start Ordering</a>
                         <!--<![endif]-->
                       </td>
                     </tr>
@@ -317,29 +316,24 @@ Unsubscribe: http://myerpcloud.dyndns.org:8081/customer/unsubscribe
                   <table border="0" cellpadding="0" cellspacing="0" width="100%" role="presentation">
                     <tr>
                       <td style="font-family: Arial, Helvetica, sans-serif; font-size: 14px; font-weight: bold; color: #1E293B; padding-bottom: 6px;">
-                        Smart POS & Table QR
-                      </td>
-                    </tr>
-                    <tr>
-                      <td style="font-family: Arial, Helvetica, sans-serif; font-size: 11px; color: #64748B; padding-bottom: 8px; line-height: 1.4;">
-                        No. 2 Yishun Industrial Street 1, #03-24, North Point Bizhub, Singapore 768159
+                        SITARA'S RESTAURANT
                       </td>
                     </tr>
                     <tr>
                       <td style="font-family: Arial, Helvetica, sans-serif; font-size: 12px; color: #64748B; padding-bottom: 16px;">
-                        Support: <a href="mailto:support@unipro.com.sg" style="color: #FF6A00; text-decoration: none;">support@unipro.com.sg</a> &bull; Website: <a href="https://uniprosg.com" target="_blank" style="color: #FF6A00; text-decoration: none;">uniprosg.com</a>
+                        Support: <a href="mailto:support@unipro.com.sg" style="color: #FF6A00; text-decoration: none;">support@unipro.com.sg</a>
                       </td>
                     </tr>
                     <tr>
                       <td style="font-family: Arial, Helvetica, sans-serif; font-size: 11px; color: #94A3B8; padding-bottom: 8px;">
-                        &copy; 2026 UNIPRO. All rights reserved.
+                        &copy; 2026 SITARA'S RESTAURANT. All rights reserved.
                       </td>
                     </tr>
                     <tr>
                       <td style="font-family: Arial, Helvetica, sans-serif; font-size: 11px;">
-                        <a href="http://myerpcloud.dyndns.org:8081/customer/privacy" style="color: #94A3B8; text-decoration: underline;">Privacy Policy</a>
+                        <a href="https://sitaras202609-production.up.railway.app/customer/privacy" style="color: #94A3B8; text-decoration: underline;">Privacy Policy</a>
                         &nbsp;&bull;&nbsp;
-                        <a href="http://myerpcloud.dyndns.org:8081/customer/unsubscribe" style="color: #94A3B8; text-decoration: underline;">Unsubscribe</a>
+                        <a href="https://sitaras202609-production.up.railway.app/customer/unsubscribe" style="color: #94A3B8; text-decoration: underline;">Unsubscribe</a>
                       </td>
                     </tr>
                   </table>
@@ -359,9 +353,9 @@ Unsubscribe: http://myerpcloud.dyndns.org:8081/customer/unsubscribe
     `;
 
     await transporter.sendMail({
-      from: `"KINDEE Thai Hotpot" <${from}>`,
+      from: `"SITARA'S RESTAURANT" <${from}>`,
       to: email,
-      subject: `Welcome to KINDEE Thai Hotpot, ${name} - Authentic Thai Flavors Await!`,
+      subject: `Welcome to SITARA'S RESTAURANT, ${name}!`,
       text: textContent,
       html: htmlContent,
     });

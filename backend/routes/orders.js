@@ -368,6 +368,9 @@ async function syncToProfessionalTables(
   const serviceChargePercentage = companySettings
     ? Number(companySettings.ServiceChargePercentage || 0)
     : 0;
+  const twServiceChargePercentage = companySettings
+    ? Number(companySettings.TWServiceChargePercentage || 0)
+    : 0;
 
   // 🚀 OPTIMIZATION 1: Combined Initial Lookups (TableNo, BizId, OrderHeader)
   const initRes = await transaction
@@ -646,20 +649,25 @@ async function syncToProfessionalTables(
 
       const isSC = !isTWItem && (Number(item.isServiceCharge) === 1 || item.isServiceCharge === true || Number(item.IsServiceCharge) === 1 || item.IsServiceCharge === true);
       let itemSC = null;
-      if (isSC) {
-        const qtyVal = Number(item.qty || 1);
-        const priceVal = Number(unitPrice || 0);
-        const discVal = Number(item.discount || 0);
-        let itemDiscount = 0;
-        if (discVal > 0) {
-          const discountBasis = isCombo ? Number(item.basePrice || priceVal) : priceVal;
-          if (resolvedDiscountType === "percentage") {
-            itemDiscount = discountBasis * qtyVal * (discVal / 100);
-          } else {
-            itemDiscount = Math.min(discVal, discountBasis) * qtyVal;
-          }
+      const qtyVal = Number(item.qty || 1);
+      const priceVal = Number(unitPrice || 0);
+      const discVal = Number(item.discount || 0);
+      let itemDiscount = 0;
+      if (discVal > 0) {
+        const discountBasis = isCombo ? Number(item.basePrice || priceVal) : priceVal;
+        if (resolvedDiscountType === "percentage") {
+          itemDiscount = discountBasis * qtyVal * (discVal / 100);
+        } else {
+          itemDiscount = Math.min(discVal, discountBasis) * qtyVal;
         }
-        const itemSubtotal = priceVal * qtyVal - itemDiscount;
+      }
+      const itemSubtotal = priceVal * qtyVal - itemDiscount;
+
+      if (isTWItem) {
+        if (twServiceChargePercentage > 0) {
+          itemSC = itemSubtotal * (twServiceChargePercentage / 100);
+        }
+      } else if (isSC) {
         itemSC = itemSubtotal * (serviceChargePercentage / 100);
       }
       itemRequest.input(p_sc, sql.Decimal(18, 2), itemSC);
@@ -1403,7 +1411,7 @@ router.post("/send", async (req, res) => {
         .input("paymentStatus", sql.Int, paymentStatus)
         .input("entryStatus", sql.NVarChar(10), isQROrder ? "q" : null).query(`
           UPDATE TableMaster 
-          SET Status = @status, 
+          SET Status = CASE WHEN Status = 2 THEN 2 ELSE @status END, 
               entry_status = @entryStatus,
               PAYMENT_STATUS = @paymentStatus,
               CurrentOrderId = @oid,
@@ -1983,6 +1991,14 @@ router.post("/checkout", async (req, res) => {
     const io = req.app.get("io");
     if (io) {
       const lid = cleanId.toLowerCase();
+      io.emit("table_status_updated", {
+        tableId: lid,
+        tableNo: updated?.tableNo,
+        section: updated?.section,
+        status: 2,
+        totalAmount: updated?.TotalAmount,
+        startTime: updated?.StartTime
+      });
       io.emit("order_closed", {
         tableId: lid,
         tableNo: updated?.tableNo,

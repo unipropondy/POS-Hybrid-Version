@@ -644,7 +644,8 @@ export default function CustomerMenuScreen() {
 
   // Load first kitchen by default
   useEffect(() => {
-    const published = kitchens.filter(k => k.IsPublished !== 1 && k.IsPublished !== true && k.IsPublished !== '1');
+    const isUnpublished = (val: any) => val === 0 || val === false || String(val) === '0';
+    const published = kitchens.filter(k => !isUnpublished(k.IsPublished));
     if (published.length > 0 && !selectedKitchenId) {
       setSelectedKitchenId(published[0].CategoryId);
     }
@@ -654,7 +655,8 @@ export default function CustomerMenuScreen() {
   useEffect(() => {
     if (selectedKitchenId) {
       fetchGroups(selectedKitchenId).then((groups) => {
-        const publishedGroups = groups.filter(g => g.IsPublished !== 1 && g.IsPublished !== true && g.IsPublished !== '1');
+        const isUnpublished = (val: any) => val === 0 || val === false || String(val) === '0';
+        const publishedGroups = groups.filter(g => !isUnpublished(g.IsPublished));
         setDishGroups(publishedGroups);
         if (publishedGroups && publishedGroups.length > 0) {
           setSelectedGroupId(publishedGroups[0].DishGroupId);
@@ -711,16 +713,13 @@ export default function CustomerMenuScreen() {
   }, []);
 
   const filteredDishes = allDishes.filter((dish: any) => {
-    // Hide if unpublished on Dish, Category, or Group level for QR only
     const isPub = dish.IsPublished !== undefined ? dish.IsPublished : dish.isPublished;
     const catPub = dish.CategoryPublished !== undefined ? dish.CategoryPublished : dish.categoryPublished;
     const grpPub = dish.GroupPublished !== undefined ? dish.GroupPublished : dish.groupPublished;
 
-    if (
-      isPub == 1 || isPub === true || String(isPub) === '1' ||
-      catPub == 1 || catPub === true || String(catPub) === '1' ||
-      grpPub == 1 || grpPub === true || String(grpPub) === '1'
-    ) {
+    // Show if published on Dish, Category, and Group level for QR menu (IsPublished === 1 or true or '1' or undefined)
+    const isUnpublished = (val: any) => val === 0 || val === false || String(val) === '0';
+    if (isUnpublished(isPub) || isUnpublished(catPub) || isUnpublished(grpPub)) {
       return false;
     }
 
@@ -832,7 +831,10 @@ export default function CustomerMenuScreen() {
         <FlatList
           horizontal
           showsHorizontalScrollIndicator={false}
-          data={kitchens.filter(k => k.IsPublished !== 1 && k.IsPublished !== true && k.IsPublished !== '1')}
+          data={kitchens.filter(k => {
+            const isUnpublished = (val: any) => val === 0 || val === false || String(val) === '0';
+            return !isUnpublished(k.IsPublished);
+          })}
           keyExtractor={(item) => item.CategoryId}
           renderItem={({ item }) => {
             const isSelected = selectedKitchenId === item.CategoryId;

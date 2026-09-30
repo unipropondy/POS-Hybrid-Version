@@ -1007,7 +1007,9 @@ export default React.memo(function CartSidebar({ width = 400 }: CartSidebarProps
   const settings = useCompanySettingsStore((state: any) => state.settings);
   const currencySymbol = settings.currencySymbol || "$";
   const gstRate = (settings.gstPercentage || 0) / 100;
-  const scRate = (settings.serviceChargePercentage || 0) / 100;
+  const isTakeawayOrder = orderContext?.orderType === "TAKEAWAY";
+  const dineInScRate = isTakeawayOrder ? 0 : (settings.serviceChargePercentage || 0) / 100;
+  const twScRate = (settings.twServiceChargePercentage || 0) / 100;
 
   const appendOrder = useActiveOrdersStore((state) => state.appendOrder);
   const markItemsSent = useActiveOrdersStore((state) => state.markItemsSent);
@@ -1198,7 +1200,7 @@ export default React.memo(function CartSidebar({ width = 400 }: CartSidebarProps
 
   const takeawayCharges = settings.takeawayCharges || 0;
 
-  const { grossTotal, totalDiscount, scEligibleSubtotal, takeawayChargeAmt, takeawayQty, hasMixedTWCharges, singleTWRate } = useMemo(() => {
+  const { grossTotal, totalDiscount, scEligibleSubtotal, twScEligibleSubtotal, takeawayChargeAmt, takeawayQty, hasMixedTWCharges, singleTWRate } = useMemo(() => {
     let firstRate: number | null = null;
     let mixed = false;
 
@@ -1223,7 +1225,7 @@ export default React.memo(function CartSidebar({ width = 400 }: CartSidebarProps
         }
 
         const itemSubtotal = baseTotal - itemDiscount;
-        const isTakeawayItem = item.isTakeaway || item.IsTakeaway || item.isTakeAway || item.IsTakeAway;
+        const isTakeawayItem = isTakeawayOrder || Boolean(item.isTakeaway || item.IsTakeaway || item.isTakeAway || item.IsTakeAway || String(item.isTakeaway) === "1" || String(item.IsTakeaway) === "1" || String(item.isTakeAway) === "1" || String(item.IsTakeAway) === "1");
         const isSC = !isTakeawayItem && (Number(item.isServiceCharge) === 1 || item.isServiceCharge === true);
         
         let itemTWCharge = 0;
@@ -1243,11 +1245,12 @@ export default React.memo(function CartSidebar({ width = 400 }: CartSidebarProps
           grossTotal: acc.grossTotal + baseTotal,
           totalDiscount: acc.totalDiscount + itemDiscount,
           scEligibleSubtotal: acc.scEligibleSubtotal + (isSC ? itemSubtotal : 0),
+          twScEligibleSubtotal: acc.twScEligibleSubtotal + (isTakeawayItem ? itemSubtotal : 0),
           takeawayChargeAmt: acc.takeawayChargeAmt + itemTWCharge,
           takeawayQty: acc.takeawayQty + (isTakeawayItem ? item.qty : 0),
         };
       },
-      { grossTotal: 0, totalDiscount: 0, scEligibleSubtotal: 0, takeawayChargeAmt: 0, takeawayQty: 0 },
+      { grossTotal: 0, totalDiscount: 0, scEligibleSubtotal: 0, twScEligibleSubtotal: 0, takeawayChargeAmt: 0, takeawayQty: 0 },
     );
 
     return {
@@ -1255,17 +1258,19 @@ export default React.memo(function CartSidebar({ width = 400 }: CartSidebarProps
       hasMixedTWCharges: mixed,
       singleTWRate: firstRate !== null ? firstRate : takeawayCharges
     };
-  }, [displayItems, takeawayCharges]);
+  }, [displayItems, takeawayCharges, isTakeawayOrder]);
 
   const subtotal = grossTotal - totalDiscount;
-  const serviceChargeAmt = scEligibleSubtotal * scRate;
+  const dineInServiceChargeAmt = scEligibleSubtotal * dineInScRate;
+  const twServiceChargeAmt = twScEligibleSubtotal * twScRate;
+  const serviceChargeAmt = dineInServiceChargeAmt + twServiceChargeAmt;
   const allItemsHaveSC = useMemo(() => {
     const activeItems = displayItems.filter((i: any) => i.status !== "VOIDED" && i.statusCode !== 0);
     return activeItems.length > 0 && activeItems.every((item: any) => {
-      const isTakeawayItem = item.isTakeaway || item.IsTakeaway || item.isTakeAway || item.IsTakeAway;
+      const isTakeawayItem = isTakeawayOrder || Boolean(item.isTakeaway || item.IsTakeaway || item.isTakeAway || item.IsTakeAway);
       return !isTakeawayItem && (Number(item.isServiceCharge) === 1 || item.isServiceCharge === true);
     });
-  }, [displayItems]);
+  }, [displayItems, isTakeawayOrder]);
   const taxableAmt = subtotal + serviceChargeAmt + takeawayChargeAmt;
   const taxAmountRaw = taxableAmt * gstRate;
   // ✅ FIX: Round GST for display so it matches the payable total
@@ -1854,14 +1859,25 @@ export default React.memo(function CartSidebar({ width = 400 }: CartSidebarProps
                   </Text>
                 </View>
               )}
-              {serviceChargeAmt > 0 && (
+              {dineInServiceChargeAmt > 0 && (
                 <View style={styles.summaryRow}>
                   <Text style={styles.summaryLabel}>
-                    {allItemsHaveSC ? "Service Charge" : "Item SVC"} ({settings.serviceChargePercentage}%)
+                    {allItemsHaveSC ? "Service Charge" : "Item SVC"} ({settings.serviceChargePercentage || 0}%)
                   </Text>
                   <Text style={styles.summaryValue}>
                     {currencySymbol}
-                    {serviceChargeAmt.toFixed(2)}
+                    {dineInServiceChargeAmt.toFixed(2)}
+                  </Text>
+                </View>
+              )}
+              {twServiceChargeAmt > 0 && (
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryLabel}>
+                    TW Service Charge ({settings.twServiceChargePercentage || 0}%)
+                  </Text>
+                  <Text style={styles.summaryValue}>
+                    {currencySymbol}
+                    {twServiceChargeAmt.toFixed(2)}
                   </Text>
                 </View>
               )}

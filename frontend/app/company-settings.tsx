@@ -53,6 +53,7 @@ export default function CompanySettingsScreen() {
   const [localTakeawayCharges, setLocalTakeawayCharges] = useState<string>('');
   const [localGstPercentage, setLocalGstPercentage] = useState<string>('');
   const [localServiceChargePercentage, setLocalServiceChargePercentage] = useState<string>('');
+  const [localTWServiceChargePercentage, setLocalTWServiceChargePercentage] = useState<string>('');
   const [hasInitializedLocal, setHasInitializedLocal] = useState(false);
 
   const router = useRouter();
@@ -98,6 +99,7 @@ export default function CompanySettingsScreen() {
       setLocalTakeawayCharges(String(settings.takeawayCharges ?? 0));
       setLocalGstPercentage(String(settings.gstPercentage ?? 0));
       setLocalServiceChargePercentage(String(settings.serviceChargePercentage ?? 0));
+      setLocalTWServiceChargePercentage(String(settings.twServiceChargePercentage ?? 0));
       setHasInitializedLocal(true);
     }
   }, [settings, hasInitializedLocal]);
@@ -712,6 +714,24 @@ export default function CompanySettingsScreen() {
                   keyboardType="numeric"
                 />
               </View>
+              <View style={[styles.inputGroup, { flex: 1 }]}>
+                <Text style={styles.inputLabel}>TW Service Charge (%)</Text>
+                <TextInput 
+                  style={styles.input}
+                  value={localTWServiceChargePercentage}
+                  onChangeText={(val) => {
+                    setLocalTWServiceChargePercentage(val);
+                    const parsed = parseFloat(val);
+                    updateSettings({ twServiceChargePercentage: isNaN(parsed) ? 0 : parsed });
+                  }}
+                  placeholder="5.0"
+                  placeholderTextColor={Theme.textMuted}
+                  keyboardType="numeric"
+                />
+              </View>
+            </View>
+
+            <View style={styles.row}>
               <View style={[styles.inputGroup, { flex: 1 }]}>
                 <Text style={styles.inputLabel}>Takeaway Charge</Text>
                 <TextInput 

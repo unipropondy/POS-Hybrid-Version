@@ -61,8 +61,7 @@
           }
         }
       ],
-      "@react-native-community/datetimepicker",
-      "expo-sharing"
+      "@react-native-community/datetimepicker"
     ],
     "experiments": {
       "typedRoutes": true,

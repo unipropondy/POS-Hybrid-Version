@@ -15,6 +15,7 @@ const FIELD_DEFINITIONS = {
   GSTNo: { category: "TAX_CURRENCY", label: "GST Number" },
   GSTPercentage: { category: "TAX_CURRENCY", label: "GST (%)" },
   ServiceChargePercentage: { category: "TAX_CURRENCY", label: "Service Charge (%)" },
+  TWServiceChargePercentage: { category: "TAX_CURRENCY", label: "TW Service Charge (%)" },
   TakeawayCharges: { category: "TAX_CURRENCY", label: "Takeaway Charge" },
   Currency: { category: "TAX_CURRENCY", label: "Currency Code" },
   CurrencySymbol: { category: "TAX_CURRENCY", label: "Currency Symbol" },

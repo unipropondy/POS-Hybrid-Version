@@ -65,7 +65,8 @@ router.post("/:id", async (req, res) => {
         .input("TaxMode", sql.NVarChar, s.TaxMode || 'exclusive')
         .input("WaiterRequired", sql.Bit, s.WaiterRequired !== undefined && s.WaiterRequired !== null ? s.WaiterRequired : 0)
         .input("HoldOvertimeMinutes", sql.Int, s.HoldOvertimeMinutes !== undefined && s.HoldOvertimeMinutes !== null ? s.HoldOvertimeMinutes : 30)
-        .input("ServiceChargePercentage", sql.Decimal(18, 2), s.ServiceChargePercentage !== undefined && s.ServiceChargePercentage !== null ? s.ServiceChargePercentage : 0)
+        .input("ServiceChargePercentage", sql.Decimal(18, 2), s.ServiceChargePercentage ?? s.serviceChargePercentage ?? 0)
+        .input("TWServiceChargePercentage", sql.Decimal(10, 2), s.TWServiceChargePercentage ?? s.twServiceChargePercentage ?? 0)
         .input("SVCIdentification", sql.Bit, s.SVCIdentification !== undefined && s.SVCIdentification !== null ? (s.SVCIdentification ? 1 : 0) : 1)
         .input("TakeawayCharges", sql.Decimal(18, 2), s.TakeawayCharges !== undefined && s.TakeawayCharges !== null ? s.TakeawayCharges : 0)
         .input("UpiId", sql.NVarChar, s.UpiId || "")
@@ -91,6 +92,7 @@ router.post("/:id", async (req, res) => {
               WaiterRequired = @WaiterRequired,
               HoldOvertimeMinutes = @HoldOvertimeMinutes,
               ServiceChargePercentage = @ServiceChargePercentage,
+              TWServiceChargePercentage = @TWServiceChargePercentage,
               SVCIdentification = @SVCIdentification,
               TakeawayCharges = @TakeawayCharges,
               UpiId = @UpiId,
@@ -99,8 +101,8 @@ router.post("/:id", async (req, res) => {
           END
           ELSE
           BEGIN
-            INSERT INTO CompanySettings (Id, CompanyName, Address, GSTNo, GSTPercentage, Phone, Email, CashierName, Currency, CurrencySymbol, CompanyLogoUrl, HalalLogoUrl, PrinterIP, ShowCompanyLogo, ShowHalalLogo, TaxMode, WaiterRequired, HoldOvertimeMinutes, ServiceChargePercentage, SVCIdentification, TakeawayCharges, UpiId, UpdatedOn)
-            VALUES ('1', @CompanyName, @Address, @GSTNo, @GSTPercentage, @Phone, @Email, @CashierName, @Currency, @CurrencySymbol, @CompanyLogoUrl, @HalalLogoUrl, @PrinterIP, @ShowCompanyLogo, @ShowHalalLogo, @TaxMode, @WaiterRequired, @HoldOvertimeMinutes, @ServiceChargePercentage, @SVCIdentification, @TakeawayCharges, @UpiId, GETDATE())
+            INSERT INTO CompanySettings (Id, CompanyName, Address, GSTNo, GSTPercentage, Phone, Email, CashierName, Currency, CurrencySymbol, CompanyLogoUrl, HalalLogoUrl, PrinterIP, ShowCompanyLogo, ShowHalalLogo, TaxMode, WaiterRequired, HoldOvertimeMinutes, ServiceChargePercentage, TWServiceChargePercentage, SVCIdentification, TakeawayCharges, UpiId, UpdatedOn)
+            VALUES ('1', @CompanyName, @Address, @GSTNo, @GSTPercentage, @Phone, @Email, @CashierName, @Currency, @CurrencySymbol, @CompanyLogoUrl, @HalalLogoUrl, @PrinterIP, @ShowCompanyLogo, @ShowHalalLogo, @TaxMode, @WaiterRequired, @HoldOvertimeMinutes, @ServiceChargePercentage, @TWServiceChargePercentage, @SVCIdentification, @TakeawayCharges, @UpiId, GETDATE())
           END
         `);
     } catch (fullQueryErr) {
@@ -118,7 +120,8 @@ router.post("/:id", async (req, res) => {
         .input("HalalLogoUrl", sql.NVarChar(sql.MAX), s.HalalLogoUrl || "")
         .input("ShowCompanyLogo", sql.Bit, s.ShowCompanyLogo ? 1 : 0)
         .input("ShowHalalLogo", sql.Bit, s.ShowHalalLogo ? 1 : 0)
-        .input("ServiceChargePercentage", sql.Decimal(18, 2), s.ServiceChargePercentage || 0)
+        .input("ServiceChargePercentage", sql.Decimal(18, 2), s.ServiceChargePercentage ?? s.serviceChargePercentage ?? 0)
+        .input("TWServiceChargePercentage", sql.Decimal(10, 2), s.TWServiceChargePercentage ?? s.twServiceChargePercentage ?? 0)
         .input("TakeawayCharges", sql.Decimal(18, 2), s.TakeawayCharges || 0)
         .query(`
           UPDATE CompanySettings SET
@@ -135,6 +138,7 @@ router.post("/:id", async (req, res) => {
             ShowCompanyLogo = @ShowCompanyLogo,
             ShowHalalLogo = @ShowHalalLogo,
             ServiceChargePercentage = @ServiceChargePercentage,
+            TWServiceChargePercentage = @TWServiceChargePercentage,
             TakeawayCharges = @TakeawayCharges
           WHERE Id = '1'
         `);

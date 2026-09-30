@@ -416,7 +416,9 @@ export default function SummaryScreen() {
   const settings = useCompanySettingsStore((state: any) => state.settings);
   const currencySymbol = settings.currencySymbol || "$";
   const gstRate = (settings.gstPercentage || 0) / 100;
-  const scRate = (settings.serviceChargePercentage || 0) / 100;
+  const isTakeawayOrder = context?.orderType === "TAKEAWAY";
+  const scRate = isTakeawayOrder ? 0 : (settings.serviceChargePercentage || 0) / 100;
+  const twScRate = (settings.twServiceChargePercentage || 0) / 100;
 
   const enableKOT = useGeneralSettingsStore((s: any) => s.settings.enableKOT);
   const enableCheckoutBill = useGeneralSettingsStore((s: any) => s.settings.enableCheckoutBill);
@@ -1288,7 +1290,7 @@ export default function SummaryScreen() {
 
   const takeawayCharges = settings.takeawayCharges || 0;
 
-  const { grossTotal, totalItemDiscount, totalFocAmount, scEligibleSubtotal, calcTakeawayChargeAmt, takeawayQty, hasMixedTWCharges, singleTWRate } = useMemo(() => {
+  const { grossTotal, totalItemDiscount, totalFocAmount, scEligibleSubtotal, twScEligibleSubtotal, calcTakeawayChargeAmt, takeawayQty, hasMixedTWCharges, singleTWRate } = useMemo(() => {
     let firstRate: number | null = null;
     let mixed = false;
 
@@ -1313,7 +1315,7 @@ export default function SummaryScreen() {
 
       const itemSubtotal = baseTotal - itemDiscount;
       const itemFocAmount = item.isFoc ? itemSubtotal : 0;
-      const isTakeawayItem = item.isTakeaway || item.IsTakeaway || item.isTakeAway || item.IsTakeAway || (item as any).isTakeaway === true || (item as any).IsTakeaway === true || String((item as any).isTakeaway) === "1" || String((item as any).IsTakeaway) === "1";
+      const isTakeawayItem = isTakeawayOrder || Boolean(item.isTakeaway || item.IsTakeaway || item.isTakeAway || item.IsTakeAway || (item as any).isTakeaway === true || (item as any).IsTakeaway === true || String((item as any).isTakeaway) === "1" || String((item as any).IsTakeaway) === "1" || String((item as any).isTakeAway) === "1" || String((item as any).IsTakeAway) === "1");
       const isSC = !isTakeawayItem && (Number(item.isServiceCharge) === 1 || item.isServiceCharge === true || Number(item.IsServiceCharge) === 1 || item.IsServiceCharge === true);
       
       let itemTWCharge = 0;
@@ -1334,10 +1336,11 @@ export default function SummaryScreen() {
         totalItemDiscount: acc.totalItemDiscount + itemDiscount,
         totalFocAmount: acc.totalFocAmount + itemFocAmount,
         scEligibleSubtotal: acc.scEligibleSubtotal + (isSC && !item.isFoc ? itemSubtotal : 0),
+        twScEligibleSubtotal: acc.twScEligibleSubtotal + (isTakeawayItem && !item.isFoc ? itemSubtotal : 0),
         calcTakeawayChargeAmt: acc.calcTakeawayChargeAmt + (isTakeawayItem && !item.isFoc ? itemTWCharge : 0),
         takeawayQty: acc.takeawayQty + (isTakeawayItem && !item.isFoc ? item.qty : 0),
       };
-    }, { grossTotal: 0, totalItemDiscount: 0, totalFocAmount: 0, scEligibleSubtotal: 0, calcTakeawayChargeAmt: 0, takeawayQty: 0 });
+    }, { grossTotal: 0, totalItemDiscount: 0, totalFocAmount: 0, scEligibleSubtotal: 0, twScEligibleSubtotal: 0, calcTakeawayChargeAmt: 0, takeawayQty: 0 });
 
     return {
       ...reduced,
@@ -1372,6 +1375,13 @@ export default function SummaryScreen() {
     return Math.max(0, scEligibleSubtotal - proportion * discountAmount);
   }, [scEligibleSubtotal, subtotal, totalFocAmount, discountAmount]);
 
+  const twScEligibleNet = useMemo(() => {
+    const payableSubtotal = Math.max(0, subtotal - totalFocAmount);
+    if (payableSubtotal <= 0) return 0;
+    const proportion = twScEligibleSubtotal / payableSubtotal;
+    return Math.max(0, twScEligibleSubtotal - proportion * discountAmount);
+  }, [twScEligibleSubtotal, subtotal, totalFocAmount, discountAmount]);
+
   const billDiscountProportion = useMemo(() => {
     if (!discountInfo?.applied) return 0;
     if (discountInfo.type === "percentage") {
@@ -1386,9 +1396,17 @@ export default function SummaryScreen() {
     return calcTakeawayChargeAmt * (1 - billDiscountProportion);
   }, [takeawayChargeApplied, calcTakeawayChargeAmt, billDiscountProportion]);
 
-  const serviceChargeAmount = useMemo(
+  const dineInServiceChargeAmt = useMemo(
     () => (scReduced ? 0 : scEligibleNet * scRate),
-    [scEligibleNet, scRate, scReduced],
+    [scReduced, scEligibleNet, scRate],
+  );
+  const twServiceChargeAmt = useMemo(
+    () => (scReduced ? 0 : twScEligibleNet * twScRate),
+    [scReduced, twScEligibleNet, twScRate],
+  );
+  const serviceChargeAmount = useMemo(
+    () => dineInServiceChargeAmt + twServiceChargeAmt,
+    [dineInServiceChargeAmt, twServiceChargeAmt],
   );
   const taxableAmount = useMemo(() => netAfterDiscount + serviceChargeAmount + currentTakeawayCharge, [netAfterDiscount, serviceChargeAmount, currentTakeawayCharge]);
   const gstAmountRaw = useMemo(() => taxableAmount * gstRate, [taxableAmount, gstRate]);
@@ -2318,7 +2336,7 @@ export default function SummaryScreen() {
                   </>
                 )}
 
-                {scRate > 0 && serviceChargeAmount > 0 && (
+                {scRate > 0 && dineInServiceChargeAmt > 0 && (
                   <View
                     style={[
                       styles.summaryRow,
@@ -2332,7 +2350,7 @@ export default function SummaryScreen() {
                         isPhone && !isLandscape && { fontSize: 13 },
                       ]}
                     >
-                      {allItemsHaveSC ? "Service Charge" : "Item Service Charge"} ({settings.serviceChargePercentage}%)
+                      {allItemsHaveSC ? "Service Charge" : "Item Service Charge"} ({settings.serviceChargePercentage || 0}%)
                     </Text>
                     <Text
                       style={[
@@ -2341,7 +2359,35 @@ export default function SummaryScreen() {
                       ]}
                     >
                       {currencySymbol}
-                      {serviceChargeAmount.toFixed(2)}
+                      {dineInServiceChargeAmt.toFixed(2)}
+                    </Text>
+                  </View>
+                )}
+
+                {twScRate > 0 && twServiceChargeAmt > 0 && (
+                  <View
+                    style={[
+                      styles.summaryRow,
+                      ((isLandscape && !isTablet) ||
+                        (isPhone && !isLandscape)) && { marginBottom: 6 },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.summaryLabel,
+                        isPhone && !isLandscape && { fontSize: 13 },
+                      ]}
+                    >
+                      TW Service Charge ({settings.twServiceChargePercentage || 0}%)
+                    </Text>
+                    <Text
+                      style={[
+                        styles.summaryValue,
+                        isPhone && !isLandscape && { fontSize: 13 },
+                      ]}
+                    >
+                      {currencySymbol}
+                      {twServiceChargeAmt.toFixed(2)}
                     </Text>
                   </View>
                 )}
