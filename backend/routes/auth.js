@@ -9,19 +9,25 @@ if (!JWT_SECRET) {
 }
 const bcrypt = require("bcryptjs");
 
-async function sendWelcomeEmail({ email, name, phone, promoCode, promoAmount }) {
+async function sendWelcomeEmail({
+  email,
+  name,
+  phone,
+  promoCode,
+  promoAmount,
+}) {
   const callMsg = `✉️ [Mail] sendWelcomeEmail called at ${new Date().toISOString()} → email="${email}", name="${name}"\n`;
-  require('fs').appendFileSync('mail_debug.log', callMsg);
+  require("fs").appendFileSync("mail_debug.log", callMsg);
   console.log(callMsg);
   if (!email || !email.includes("@")) {
     const skipMsg = `⚠️ [Mail] Skipped welcome email — email is empty or invalid: "${email}"\n`;
-    require('fs').appendFileSync('mail_debug.log', skipMsg);
+    require("fs").appendFileSync("mail_debug.log", skipMsg);
     console.warn(skipMsg);
     return;
   }
   try {
     const { transporter, from } = createMailTransporter();
-    
+
     // Plain text fallback version for email deliverability
     const textContent = `
 Welcome to SITARA'S RESTAURANT, ${name}.
@@ -32,7 +38,7 @@ Your Member Profile:
 Name: ${name}
 Mobile: ${phone}
 Email: ${email}
-${promoCode ? `Welcome Wallet Credit: Code ${promoCode} (Value: $${promoAmount})` : ''}
+${promoCode ? `Welcome Wallet Credit: Code ${promoCode} (Value: $${promoAmount})` : ""}
 
 Start ordering here: https://pos-v-20-production.up.railway.app/customer
 
@@ -47,7 +53,7 @@ Unsubscribe: https://pos-v-20-production.up.railway.app/customer/unsubscribe
     <head>
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>Welcome to SITARA'S RESTAURANT</title>
+      <title>Welcome to MY RESTAURANT</title>
       <!--[if mso]>
       <noscript>
         <xml>
@@ -175,13 +181,15 @@ Unsubscribe: https://pos-v-20-production.up.railway.app/customer/unsubscribe
                               <span style="font-family: Arial, Helvetica, sans-serif; font-size: 13px; color: #64748B;">Member Since</span>
                             </td>
                             <td align="right" style="padding: 6px 0;" valign="middle">
-                              <span style="font-family: Arial, Helvetica, sans-serif; font-size: 13px; color: #1E293B; font-weight: bold;">${new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'long' })}</span>
+                              <span style="font-family: Arial, Helvetica, sans-serif; font-size: 13px; color: #1E293B; font-weight: bold;">${new Date().toLocaleDateString(undefined, { year: "numeric", month: "long" })}</span>
                             </td>
                           </tr>
                         </table>
                       </td>
                     </tr>
-                    ${promoCode ? `
+                    ${
+                      promoCode
+                        ? `
                     <tr>
                       <td style="padding-top: 16px;">
                         <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #ECFDF5; border: 1px solid #A7F3D0; border-radius: 8px; padding: 12px; text-align: center;">
@@ -194,7 +202,9 @@ Unsubscribe: https://pos-v-20-production.up.railway.app/customer/unsubscribe
                         </table>
                       </td>
                     </tr>
-                    ` : ''}
+                    `
+                        : ""
+                    }
                   </table>
                 </td>
               </tr>
@@ -361,11 +371,11 @@ Unsubscribe: https://pos-v-20-production.up.railway.app/customer/unsubscribe
     });
     const successMsg = `✉️ [Mail] Welcome email sent successfully to ${email} at ${new Date().toISOString()}\n`;
     console.log(successMsg);
-    require('fs').appendFileSync('mail_debug.log', successMsg);
+    require("fs").appendFileSync("mail_debug.log", successMsg);
   } catch (err) {
-    const errMsg = `⚠️ [Mail] Failed for ${email} at ${new Date().toISOString()}: [${err.code || 'NO_CODE'}] ${err.message}. Response: ${err.response ? JSON.stringify(err.response) : 'none'}\n`;
+    const errMsg = `⚠️ [Mail] Failed for ${email} at ${new Date().toISOString()}: [${err.code || "NO_CODE"}] ${err.message}. Response: ${err.response ? JSON.stringify(err.response) : "none"}\n`;
     console.warn(errMsg);
-    require('fs').appendFileSync('mail_debug.log', errMsg);
+    require("fs").appendFileSync("mail_debug.log", errMsg);
   }
 }
 
@@ -374,7 +384,12 @@ router.post("/login", async (req, res) => {
   try {
     const pool = await poolPromise;
     if (!pool) {
-      return res.status(503).json({ success: false, message: "Database connection busy or unavailable." });
+      return res
+        .status(503)
+        .json({
+          success: false,
+          message: "Database connection busy or unavailable.",
+        });
     }
 
     const { userName: rawUserName, password: rawPassword } = req.body;
@@ -382,14 +397,17 @@ router.post("/login", async (req, res) => {
     const password = (rawPassword || "").trim();
 
     if (!userName || !password) {
-      return res.status(400).json({ success: false, message: "Email ID/Mobile Number and Password are required." });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Email ID/Mobile Number and Password are required.",
+        });
     }
 
     console.log(`[AUTH] Attempting login for UserName: "${userName}"`);
 
-    const result = await pool.request()
-      .input("UserName", userName)
-      .query(`
+    const result = await pool.request().input("UserName", userName).query(`
         SELECT 
           u.UserId, u.UserCode, u.UserName, u.UserPassword, u.FullName,
           u.FirstName, u.LastName, u.IsDisabled, u.UserGroupid,
@@ -404,10 +422,10 @@ router.post("/login", async (req, res) => {
     if (result.recordset.length === 0) {
       // Check if they are a registered member in MemberMaster
       const encodedPassword = Buffer.from(password).toString("base64");
-      const memberResult = await pool.request()
+      const memberResult = await pool
+        .request()
         .input("username", sql.VarChar, userName)
-        .input("password", sql.VarChar, encodedPassword)
-        .query(`
+        .input("password", sql.VarChar, encodedPassword).query(`
           SELECT
               M.MemberId,
               M.Name AS UserName,
@@ -437,17 +455,17 @@ router.post("/login", async (req, res) => {
       if (memberResult.recordset.length > 0) {
         const memberUser = memberResult.recordset[0];
         console.log(`[AUTH] Member Login Success: "${memberUser.UserName}"`);
-        
+
         // Generate JWT token for member using MemberId
         const token = jwt.sign(
           {
             userId: memberUser.MemberId,
             username: memberUser.UserName,
             memberId: memberUser.MemberId,
-            role: "MEMBER"
+            role: "MEMBER",
           },
           JWT_SECRET,
-          { expiresIn: "24h" }
+          { expiresIn: "24h" },
         );
 
         return res.json({
@@ -464,32 +482,56 @@ router.post("/login", async (req, res) => {
             MemberId: memberUser.MemberId,
             Promocode: memberUser.Promocode,
             Promoamount: memberUser.Promoamount,
-            AvailableCredit: memberUser.AvailableCredit
-          }
+            AvailableCredit: memberUser.AvailableCredit,
+          },
         });
       }
 
-      console.log(`[AUTH] Login failed: UserName "${userName}" not found in UserMaster or MemberMaster.`);
-      return res.status(401).json({ success: false, message: "Invalid User ID or Password." });
+      console.log(
+        `[AUTH] Login failed: UserName "${userName}" not found in UserMaster or MemberMaster.`,
+      );
+      return res
+        .status(401)
+        .json({ success: false, message: "Invalid User ID or Password." });
     }
 
     const user = result.recordset[0];
 
     // ✅ VALIDATE USER STATUS
     if (user.IsDisabled === true || user.IsDisabled === 1) {
-      console.log(`[AUTH] Login failed: Account disabled for user "${user.UserName}".`);
-      return res.status(403).json({ success: false, message: "Your account is disabled." });
+      console.log(
+        `[AUTH] Login failed: Account disabled for user "${user.UserName}".`,
+      );
+      return res
+        .status(403)
+        .json({ success: false, message: "Your account is disabled." });
     }
 
     // ✅ VALIDATE USER GROUP (STRICT CHECK)
-    if (!user.UserGroupid || String(user.UserGroupid).trim() === "" || String(user.UserGroupid).trim().toUpperCase() === "NULL" || !user.RoleCode) {
-      console.log(`[AUTH] Login failed: No valid group assigned to user "${user.UserName}".`);
-      return res.status(403).json({ success: false, message: "User has no valid group assigned." });
+    if (
+      !user.UserGroupid ||
+      String(user.UserGroupid).trim() === "" ||
+      String(user.UserGroupid).trim().toUpperCase() === "NULL" ||
+      !user.RoleCode
+    ) {
+      console.log(
+        `[AUTH] Login failed: No valid group assigned to user "${user.UserName}".`,
+      );
+      return res
+        .status(403)
+        .json({ success: false, message: "User has no valid group assigned." });
     }
 
     if (user.IsGroupActive === false || user.IsGroupActive === 0) {
-      console.log(`[AUTH] Login failed: User group is inactive for user "${user.UserName}".`);
-      return res.status(403).json({ success: false, message: "Your user group is currently inactive." });
+      console.log(
+        `[AUTH] Login failed: User group is inactive for user "${user.UserName}".`,
+      );
+      return res
+        .status(403)
+        .json({
+          success: false,
+          message: "Your user group is currently inactive.",
+        });
     }
 
     const dbPassword = (user.UserPassword || "").trim();
@@ -508,33 +550,53 @@ router.post("/login", async (req, res) => {
     // 2. Legacy check fallback
     if (!isValid) {
       const parts = dbPassword.split("-");
-      const candidates = [dbPassword, parts[0]].filter(c => c.length > 0);
+      const candidates = [dbPassword, parts[0]].filter((c) => c.length > 0);
 
       for (const cand of candidates) {
-        if (cand === password) { isValid = true; needsRehash = true; break; }
+        if (cand === password) {
+          isValid = true;
+          needsRehash = true;
+          break;
+        }
         try {
           const decoded = Buffer.from(cand, "base64").toString("utf-8").trim();
-          if (decoded === password) { isValid = true; needsRehash = true; break; }
+          if (decoded === password) {
+            isValid = true;
+            needsRehash = true;
+            break;
+          }
         } catch (e) {}
       }
     }
 
     if (!isValid) {
-      console.log(`[AUTH] Login failed: Password mismatch for user "${user.UserName}".`);
-      return res.status(401).json({ success: false, message: "Invalid User ID or Password." });
+      console.log(
+        `[AUTH] Login failed: Password mismatch for user "${user.UserName}".`,
+      );
+      return res
+        .status(401)
+        .json({ success: false, message: "Invalid User ID or Password." });
     }
 
     // Auto-migrate legacy password to bcrypt
     if (needsRehash) {
       try {
         const hashedPassword = await bcrypt.hash(password, 10);
-        await pool.request()
+        await pool
+          .request()
           .input("UserId", user.UserId)
           .input("HashedPassword", hashedPassword)
-          .query("UPDATE [dbo].[UserMaster] SET UserPassword = @HashedPassword WHERE UserId = @UserId");
-        console.log(`[AUTH] Successfully migrated password to bcrypt for user "${user.UserName}".`);
+          .query(
+            "UPDATE [dbo].[UserMaster] SET UserPassword = @HashedPassword WHERE UserId = @UserId",
+          );
+        console.log(
+          `[AUTH] Successfully migrated password to bcrypt for user "${user.UserName}".`,
+        );
       } catch (e) {
-        console.error(`[AUTH] Failed to migrate password to bcrypt for user "${user.UserName}":`, e);
+        console.error(
+          `[AUTH] Failed to migrate password to bcrypt for user "${user.UserName}":`,
+          e,
+        );
       }
     }
 
@@ -542,28 +604,45 @@ router.post("/login", async (req, res) => {
     if (user.ToDate) {
       const today = new Date();
       const expDate = new Date(user.ToDate);
-      today.setHours(0,0,0,0);
-      expDate.setHours(0,0,0,0);
+      today.setHours(0, 0, 0, 0);
+      expDate.setHours(0, 0, 0, 0);
       if (today > expDate) {
-        console.log(`[AUTH] Login failed: User "${user.UserName}" license expired on ${expDate.toISOString().split('T')[0]}`);
-        return res.status(403).json({ success: false, message: "License expired. Please contact administrator." });
+        console.log(
+          `[AUTH] Login failed: User "${user.UserName}" license expired on ${expDate.toISOString().split("T")[0]}`,
+        );
+        return res
+          .status(403)
+          .json({
+            success: false,
+            message: "License expired. Please contact administrator.",
+          });
       }
     }
     if (user.FromDate) {
       const today = new Date();
       const fromDate = new Date(user.FromDate);
-      today.setHours(0,0,0,0);
-      fromDate.setHours(0,0,0,0);
+      today.setHours(0, 0, 0, 0);
+      fromDate.setHours(0, 0, 0, 0);
       if (today < fromDate) {
-        console.log(`[AUTH] Login failed: User "${user.UserName}" license not active until ${fromDate.toISOString().split('T')[0]}`);
-        return res.status(403).json({ success: false, message: "License not active yet. Please contact administrator." });
+        console.log(
+          `[AUTH] Login failed: User "${user.UserName}" license not active until ${fromDate.toISOString().split("T")[0]}`,
+        );
+        return res
+          .status(403)
+          .json({
+            success: false,
+            message: "License not active yet. Please contact administrator.",
+          });
       }
     }
 
     // Update Last Login
-    await pool.request()
+    await pool
+      .request()
       .input("UserId", user.UserId)
-      .query("UPDATE [dbo].[UserMaster] SET LastLogInDate = GETDATE() WHERE UserId = @UserId");
+      .query(
+        "UPDATE [dbo].[UserMaster] SET LastLogInDate = GETDATE() WHERE UserId = @UserId",
+      );
 
     const finalUserId = String(user.UserId).trim();
     const roleCode = (user.RoleCode || "CASHIER").toUpperCase().trim();
@@ -572,7 +651,7 @@ router.post("/login", async (req, res) => {
     const token = jwt.sign(
       { userId: finalUserId, role: roleCode },
       JWT_SECRET,
-      { expiresIn: "24h" }
+      { expiresIn: "24h" },
     );
 
     console.log(`✅ Login Success: ${user.FullName} | Role: ${roleCode}`);
@@ -591,8 +670,8 @@ router.post("/login", async (req, res) => {
         roleName: user.RoleName,
         userGroupId: user.UserGroupid,
         licenseFromDate: user.FromDate,
-        licenseToDate: user.ToDate
-      }
+        licenseToDate: user.ToDate,
+      },
     });
   } catch (err) {
     console.error("LOGIN ERROR:", err);
@@ -606,7 +685,9 @@ router.post("/verify", async (req, res) => {
     const { password, role } = req.body;
 
     if (!password) {
-      return res.status(400).json({ success: false, message: "Missing password" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Missing password" });
     }
 
     const pool = await poolPromise;
@@ -625,9 +706,9 @@ router.post("/verify", async (req, res) => {
     if (role) {
       let roleList = [];
       if (Array.isArray(role)) {
-        roleList = role.map(r => String(r).toUpperCase().trim());
-      } else if (typeof role === 'string') {
-        roleList = role.split(',').map(r => r.toUpperCase().trim());
+        roleList = role.map((r) => String(r).toUpperCase().trim());
+      } else if (typeof role === "string") {
+        roleList = role.split(",").map((r) => r.toUpperCase().trim());
       }
 
       if (roleList.length > 0) {
@@ -635,9 +716,11 @@ router.post("/verify", async (req, res) => {
         roleList.forEach((r, idx) => {
           const paramName = `role_${idx}`;
           request.input(paramName, sql.VarChar, r);
-          conditions.push(`UPPER(g.UserGroupCode) = @${paramName} OR UPPER(g.UserGroupName) = @${paramName}`);
+          conditions.push(
+            `UPPER(g.UserGroupCode) = @${paramName} OR UPPER(g.UserGroupName) = @${paramName}`,
+          );
         });
-        query += ` AND (${conditions.join(' OR ')})`;
+        query += ` AND (${conditions.join(" OR ")})`;
       }
     }
 
@@ -649,7 +732,7 @@ router.post("/verify", async (req, res) => {
 
     for (const u of result.recordset) {
       const dbPassword = (u.UserPassword || "").trim();
-      
+
       // Try bcrypt check
       if (dbPassword.startsWith("$2a$") || dbPassword.startsWith("$2b$")) {
         try {
@@ -662,10 +745,13 @@ router.post("/verify", async (req, res) => {
       } else {
         // Try legacy check
         const parts = dbPassword.split("-");
-        const candidates = [dbPassword, parts[0]].filter(c => c.length > 0);
+        const candidates = [dbPassword, parts[0]].filter((c) => c.length > 0);
 
         for (const cand of candidates) {
-          if (cand === password || Buffer.from(cand, "base64").toString("utf-8").trim() === password) {
+          if (
+            cand === password ||
+            Buffer.from(cand, "base64").toString("utf-8").trim() === password
+          ) {
             isValid = true;
             matchedUser = u;
             needsRehash = true;
@@ -680,13 +766,21 @@ router.post("/verify", async (req, res) => {
     if (isValid && needsRehash && matchedUser) {
       try {
         const hashedPassword = await bcrypt.hash(password, 10);
-        await pool.request()
+        await pool
+          .request()
           .input("UserId", matchedUser.UserId)
           .input("HashedPassword", hashedPassword)
-          .query("UPDATE [dbo].[UserMaster] SET UserPassword = @HashedPassword WHERE UserId = @UserId");
-        console.log(`[AUTH] Successfully migrated password to bcrypt for user "${matchedUser.UserName}" during verification.`);
+          .query(
+            "UPDATE [dbo].[UserMaster] SET UserPassword = @HashedPassword WHERE UserId = @UserId",
+          );
+        console.log(
+          `[AUTH] Successfully migrated password to bcrypt for user "${matchedUser.UserName}" during verification.`,
+        );
       } catch (e) {
-        console.error(`[AUTH] Failed to migrate password to bcrypt during verification:`, e);
+        console.error(
+          `[AUTH] Failed to migrate password to bcrypt during verification:`,
+          e,
+        );
       }
     }
 
@@ -713,16 +807,16 @@ router.get("/permissions/:userGroupCode", async (req, res) => {
 
     // Check memory cache
     const cached = permissionCache.get(cacheKey);
-    if (cached && (Date.now() - cached.timestamp < PERM_CACHE_TTL)) {
+    if (cached && Date.now() - cached.timestamp < PERM_CACHE_TTL) {
       console.log(`⚡ [Permissions Cache] Hit for group: ${cacheKey}`);
       return res.json(cached.data);
     }
 
-    console.log(`🔎 [Permissions Cache] Miss for group: ${cacheKey}. Fetching from DB...`);
+    console.log(
+      `🔎 [Permissions Cache] Miss for group: ${cacheKey}. Fetching from DB...`,
+    );
     const pool = await poolPromise;
-    const result = await pool.request()
-      .input("UserGroupCode", cacheKey)
-      .query(`
+    const result = await pool.request().input("UserGroupCode", cacheKey).query(`
         SELECT 
           LTRIM(RTRIM(FormCode)) AS FormCode,
           LTRIM(RTRIM(AllowAdd))    AS AllowAdd,
@@ -737,10 +831,10 @@ router.get("/permissions/:userGroupCode", async (req, res) => {
     for (const row of result.recordset) {
       if (row.FormCode) {
         permMap[row.FormCode] = {
-          canAdd:    row.AllowAdd    === "A",
+          canAdd: row.AllowAdd === "A",
           canUpdate: row.AllowUpdate === "U",
           canDelete: row.AllowDelete === "D",
-          canRead:   row.AllowRead   === "R",
+          canRead: row.AllowRead === "R",
         };
       }
     }
@@ -748,7 +842,7 @@ router.get("/permissions/:userGroupCode", async (req, res) => {
     // Save to cache
     permissionCache.set(cacheKey, {
       data: permMap,
-      timestamp: Date.now()
+      timestamp: Date.now(),
     });
 
     res.json(permMap);
@@ -768,17 +862,21 @@ router.post("/signup", async (req, res) => {
     const encodedPassword = Buffer.from(password).toString("base64");
 
     if (!username || !password) {
-      return res.status(400).json({ success: false, message: "Username and password are required" });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Username and password are required",
+        });
     }
 
     const pool = await poolPromise;
     let promoAmount = 0;
     // Promo Code Validation
     if (req.body.promoCode && req.body.promoCode.trim() !== "") {
-
-      const promoResult = await pool.request()
-        .input("PromoCode", sql.NVarChar, req.body.promoCode.trim())
-        .query(`
+      const promoResult = await pool
+        .request()
+        .input("PromoCode", sql.NVarChar, req.body.promoCode.trim()).query(`
       SELECT *
       FROM PromoCodeMaster
       WHERE PromoCode = @PromoCode
@@ -788,7 +886,7 @@ router.post("/signup", async (req, res) => {
       if (promoResult.recordset.length === 0) {
         return res.status(400).json({
           success: false,
-          message: "Invalid Promo Code"
+          message: "Invalid Promo Code",
         });
       }
 
@@ -798,23 +896,20 @@ router.post("/signup", async (req, res) => {
         promoAmount = promo.DiscountValue;
       }
 
-      if (
-        promo.MaxUsage !== null &&
-        promo.UsedCount >= promo.MaxUsage
-      ) {
+      if (promo.MaxUsage !== null && promo.UsedCount >= promo.MaxUsage) {
         return res.status(400).json({
           success: false,
-          message: "This Promo Code has already been used."
+          message: "This Promo Code has already been used.",
         });
       }
     }
 
     // Check MemberMaster for unique username, phone, and email
-    const userResult = await pool.request()
+    const userResult = await pool
+      .request()
       .input("username", sql.VarChar, username)
       .input("phone", sql.VarChar, phone || "")
-      .input("email", sql.VarChar, email || "")
-      .query(`
+      .input("email", sql.VarChar, email || "").query(`
         SELECT Name, Phone, Email
         FROM MemberMaster
         WHERE Name = @username
@@ -825,18 +920,25 @@ router.post("/signup", async (req, res) => {
     if (userResult.recordset.length > 0) {
       const match = userResult.recordset[0];
       if (match.Name.toLowerCase() === username.toLowerCase()) {
-        return res.status(409).json({ success: false, message: "Username already exists" });
+        return res
+          .status(409)
+          .json({ success: false, message: "Username already exists" });
       }
       if (match.Phone === phone) {
-        return res.status(409).json({ success: false, message: "Phone number already registered" });
+        return res
+          .status(409)
+          .json({ success: false, message: "Phone number already registered" });
       }
       if (email && match.Email === email) {
-        return res.status(409).json({ success: false, message: "Email ID already registered" });
+        return res
+          .status(409)
+          .json({ success: false, message: "Email ID already registered" });
       }
     }
 
     const memberId = require("crypto").randomUUID();
-    await pool.request()
+    await pool
+      .request()
       .input("memberId", sql.UniqueIdentifier, memberId)
       .input("name", sql.NVarChar, username)
       .input("phone", sql.NVarChar, phone || "")
@@ -850,25 +952,24 @@ router.post("/signup", async (req, res) => {
       .input("lowBalanceAlertSent", sql.Bit, 0)
       .input("promoCode", sql.VarChar, req.body.promoCode || "")
       .input("promoAmount", sql.Decimal(18, 2), promoAmount)
-      .input("password", sql.VarChar, encodedPassword)
-      .query(`
+      .input("password", sql.VarChar, encodedPassword).query(`
         INSERT INTO MemberMaster (MemberId, Name, Phone, Email, CreditLimit, CreatedAt, Address, IsActive, Balance, CurrentBalance, LowBalanceAlertSent, Promocode, Promoamount, Password)
         VALUES (@memberId, @name, @phone, @email, @creditLimit, @createdAt, @address, @isActive, @balance, @currentBalance, @lowBalanceAlertSent, @promoCode, @promoAmount, @password)
       `);
 
     if (req.body.promoCode && req.body.promoCode.trim() !== "") {
-      await pool.request()
-        .input("PromoCode", sql.NVarChar, req.body.promoCode.trim())
-        .query(`
+      await pool
+        .request()
+        .input("PromoCode", sql.NVarChar, req.body.promoCode.trim()).query(`
       UPDATE PromoCodeMaster
       SET UsedCount = UsedCount + 1
       WHERE PromoCode = @PromoCode
     `);
     }
 
-    const newUser = await pool.request()
-      .input("username", sql.VarChar, username)
-      .query(`
+    const newUser = await pool
+      .request()
+      .input("username", sql.VarChar, username).query(`
       SELECT
           M.MemberId,
           M.Name AS UserName,
@@ -892,14 +993,14 @@ router.post("/signup", async (req, res) => {
       name: username,
       phone,
       promoCode: req.body.promoCode || "",
-      promoAmount
-    }).catch(mailErr => {
+      promoAmount,
+    }).catch((mailErr) => {
       console.warn("⚠️ [Mail] Async Welcome email failed:", mailErr.message);
     });
 
     res.json({
       success: true,
-      user: newUser.recordset[0]
+      user: newUser.recordset[0],
     });
   } catch (err) {
     console.log(err);
