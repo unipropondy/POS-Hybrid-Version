@@ -1400,6 +1400,20 @@ class UniversalPrinter {
         if (hasConfiguredIp) {
           console.log(`ðŸŒ Trying configured printer: ${targetIp}`);
           const isIp = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(targetIp.trim());
+
+          // 📲 Try Print Bridge if active on network (supports USB / Shared printers from APK)
+          const isBridge = await this.isBridgeOnline();
+          if (isBridge) {
+            try {
+              console.log(`📡 [APK Print Bridge] Queueing receipt to Print Bridge for: ${targetIp}`);
+              const text = this.formatThermalTextWithDiscount(saleData, company, discountInfo);
+              const pType = isTakeaway ? 3 : 1;
+              const success = await this.queuePrintJob(pType, undefined, text);
+              if (success) return;
+            } catch (bridgeErr) {
+              console.warn("APK Print Bridge queue failed, trying direct connection:", bridgeErr);
+            }
+          }
           let isReachable = false;
           if (isIp) {
             isReachable = await this.isIpReachable(targetIp, 9100);
