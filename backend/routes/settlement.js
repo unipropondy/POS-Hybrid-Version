@@ -127,7 +127,6 @@ router.get("/payment/:terminal/:userId", async (req, res) => {
         ))
       GROUP BY LTRIM(RTRIM(ISNULL(pdc.Remarks, '')))
     `);
-    `);
 
     // Fetch credit outstanding & issued amounts separately for Credit Activity tracking
     let creditUserFilter = "";
