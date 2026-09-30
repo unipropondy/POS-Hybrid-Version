@@ -512,6 +512,70 @@ router.get("/splitdishes", async (req, res) => {
   }
 });
 
+/* ================= BARCODE LOOKUP ================= */
+router.get("/barcode/:code", async (req, res) => {
+  try {
+    const barcode = String(req.params.code || "").trim();
+    if (!barcode || barcode.length > 50) {
+      return res.status(400).json({ error: "Invalid barcode" });
+    }
+
+    const pool = await poolPromise;
+    const result = await pool.request()
+      .input("BarCode", barcode)
+      .query(`
+        SELECT TOP 1
+          d.DishId,
+          d.Name,
+          d.DishGroupId,
+          d.currentcost                              AS Price,
+          d.DishCode,
+          d.Description,
+          ISNULL(d.IsOpenItem, 0)                    AS IsOpenItem,
+          ISNULL(d.isServiceCharge, 1)               AS isServiceCharge,
+          ISNULL(d.IsCombo, 0)                       AS IsCombo,
+          ISNULL(d.IsSoldOut, 0)                     AS IsSoldOut,
+          ISNULL(d.IsPublished, 0)                   AS IsPublished,
+          ISNULL(d.TakeawayCharge, 0)                AS TakeawayCharge,
+          ISNULL(d.TakeawayCharge, 0)                AS takeawayCharge,
+          CAST(ISNULL(d.IsDiscountAllowed, 1) AS INT) AS IsDiscountAllowed,
+          ISNULL(ckt.KitchenTypeCode, '2')           AS KitchenTypeCode,
+          ISNULL(ISNULL(ckt.KitchenTypeName, cat.CategoryName), 'KITCHEN') AS KitchenTypeName,
+          pm.PrinterPath                             AS PrinterIP,
+          b.BarCode,
+          b.Description                              AS BarcodeDescription
+        FROM BarCodeMaster b
+        JOIN DishMaster d          ON b.DishId = d.DishId
+        LEFT JOIN DishGroupMaster dgm ON d.DishGroupId = dgm.DishGroupId
+        LEFT JOIN CategoryMaster cat  ON dgm.CategoryId = cat.CategoryId
+        LEFT JOIN CategoryKitchenType ckt ON dgm.CategoryId = ckt.CategoryId
+        LEFT JOIN (
+          SELECT *, ROW_NUMBER() OVER(
+            PARTITION BY LOWER(TRIM(KitchenTypeName)) ORDER BY PrinterId
+          ) AS rn
+          FROM PrintMaster WHERE IsActive = 1 AND IsEnabled = 1 AND PrinterType = 2
+        ) pm ON LOWER(TRIM(ISNULL(ckt.KitchenTypeName, cat.CategoryName))) = LOWER(TRIM(pm.KitchenTypeName)) AND pm.rn = 1
+        WHERE b.BarCode = @BarCode
+          AND d.IsActive = 1
+      `);
+
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ error: "Barcode not found", code: barcode });
+    }
+
+    const dish = result.recordset[0];
+
+    if (Number(dish.IsSoldOut) === 1) {
+      return res.status(409).json({ error: "Item is sold out", dish });
+    }
+
+    res.json({ success: true, dish });
+  } catch (err) {
+    console.error("[Barcode Lookup] Error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.clearMenuCache = () => {
   cache.clear();
   console.log("⚡ [MenuCache] Cache INVALIDATION: All menu cache cleared dynamically");
