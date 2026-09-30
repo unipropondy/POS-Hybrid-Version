@@ -733,14 +733,15 @@ class UniversalPrinter {
               );
               await Promise.race([printPromise, timeoutPromise]);
             } else {
-              console.log(`ðŸ”µ KOT Bluetooth print to: ${targetIp}`);
+              console.log(`🔵 KOT Bluetooth print to: ${targetIp}`);
+              await ThermalPrinterImport?.getBluetoothDeviceList?.().catch(() => {});
               const printPromise = ThermalPrinter.printBluetooth({
                 macAddress: targetIp,
                 payload: text,
                 mmFeedPaper: 25,
               });
               const timeoutPromise = new Promise((_, reject) =>
-                setTimeout(() => reject(new Error("BT Timeout")), 3000),
+                setTimeout(() => reject(new Error("BT Timeout")), 12000),
               );
               await Promise.race([printPromise, timeoutPromise]);
             }
@@ -1636,6 +1637,8 @@ class UniversalPrinter {
           mmFeedPaper: 25,
         });
       } else {
+        console.log(`🔵 Receipt Bluetooth print to: ${targetAddress}`);
+        await ThermalPrinterImport?.getBluetoothDeviceList?.().catch(() => {});
         await ThermalPrinter.printBluetooth({
           macAddress: targetAddress,
           payload: text,

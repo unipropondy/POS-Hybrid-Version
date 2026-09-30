@@ -11,6 +11,7 @@
     "web": "cross-env NODE_OPTIONS=--max-old-space-size=4096 EXPO_ROUTER_DISABLE_RN_NAVIGATION_CHECK=1 expo start --web",
     "build:web": "cross-env NODE_OPTIONS=--max-old-space-size=4096 EXPO_ROUTER_DISABLE_RN_NAVIGATION_CHECK=1 expo export --platform web",
     "build:customer-display-web": "cross-env NODE_OPTIONS=--max-old-space-size=4096 EXPO_ROUTER_DISABLE_RN_NAVIGATION_CHECK=1 expo export --platform web --output-dir ../print-bridge/customer-display-web",
+    "postinstall": "node ./scripts/fix-jcenter.js",
     "lint": "expo lint"
   },
   "dependencies": {

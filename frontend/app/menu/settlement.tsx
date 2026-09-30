@@ -1866,26 +1866,39 @@ const fetchDayHistory = async () => {
         } catch (e) {
           console.error("❌ [Web Settlement] Bridge print failed:", e);
         }
-      } else if (isIp) {
+      } else if (cashierIp && cashierIp.trim().length > 0) {
+        const cleanPrinterPath = cashierIp.trim();
+        const isIpAddress = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(cleanPrinterPath);
         try {
-          // Check if IP reachable
-          const ipReachable = await checkIpReachable(cashierIp.trim());
-
-          if (ipReachable) {
-            const ThermalPrinterModule = require("react-native-thermal-printer").default;
-            if (!ThermalPrinterModule || typeof ThermalPrinterModule.printTcp !== "function") {
-              throw new Error("ThermalPrinter module is not available on this device/platform");
+          const ThermalPrinterModule = require("react-native-thermal-printer").default;
+          if (isIpAddress) {
+            const ipReachable = await checkIpReachable(cleanPrinterPath);
+            if (ipReachable) {
+              if (!ThermalPrinterModule || typeof ThermalPrinterModule.printTcp !== "function") {
+                throw new Error("ThermalPrinter module is not available on this device/platform");
+              }
+              await ThermalPrinterModule.printTcp({
+                ip: cleanPrinterPath,
+                port: 9100,
+                payload: text,
+                mmFeedPaper: 60,
+              });
+              printedToHardware = true;
             }
-            await ThermalPrinterModule.printTcp({
-              ip: cashierIp.trim(),
-              port: 9100,
+          } else {
+            // Direct Bluetooth MAC printing without RawBT popup
+            console.log(`🔵 [Settlement] Direct Bluetooth print sent to MAC: ${cleanPrinterPath}`);
+            await ThermalPrinterModule.getBluetoothDeviceList().catch(() => {});
+            await ThermalPrinterModule.printBluetooth({
+              macAddress: cleanPrinterPath,
               payload: text,
               mmFeedPaper: 60,
             });
             printedToHardware = true;
+            console.log(`✅ [Settlement] Silent Bluetooth print sent to MAC: ${cleanPrinterPath}`);
           }
         } catch (printErr) {
-          console.warn("Direct IP print failed, fallback to system printing:", printErr);
+          console.warn("Direct IP/Bluetooth print failed, fallback to system printing:", printErr);
         }
       }
 
