@@ -53,7 +53,7 @@ Unsubscribe: https://pos-v-20-production.up.railway.app/customer/unsubscribe
     <head>
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>Welcome to MY RESTAURANT</title>
+      <title>Welcome to SITARA'S RESTAURANT</title>
       <!--[if mso]>
       <noscript>
         <xml>

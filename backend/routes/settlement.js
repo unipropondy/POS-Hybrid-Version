@@ -9,12 +9,12 @@ router.get("/total-sales/:terminal", async (req, res) => {
     const pool = await poolPromise;
     const request = pool.request();
 
-    let dateFilter = "ric.start_date = CAST(GETDATE() AS DATE)";
+    let dateFilter = "(CAST(sh.start_date AS DATE) = CAST(GETDATE() AS DATE) OR CAST(sh.LastSettlementDate AS DATE) = CAST(GETDATE() AS DATE) OR CAST(sh.CreatedOn AS DATE) = CAST(GETDATE() AS DATE))";
 
     if (fromDate && toDate) {
       const fDate = fromDate.replace(/[^0-9T:.-]/g, '');
       const tDate = toDate.replace(/[^0-9T:.-]/g, '');
-      dateFilter = `ric.start_date BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE)`;
+      dateFilter = `(CAST(sh.start_date AS DATE) BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE) OR CAST(sh.LastSettlementDate AS DATE) BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE) OR CAST(sh.CreatedOn AS DATE) BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE))`;
     }
 
     let userFilter = "";
@@ -39,7 +39,8 @@ router.get("/total-sales/:terminal", async (req, res) => {
         ISNULL(SUM(sh.SysAmount),0) AS NetTotal
       FROM SettlementHeader sh
       WHERE (sh.IsCancelled = 0 OR sh.IsCancelled IS NULL)
-        AND ${dateFilter.replace(/start_date/g, 'COALESCE(sh.start_date, CAST(sh.LastSettlementDate AS DATE))')}
+        AND ${dateFilter}
+        ${userFilter}
     `);
     const data = result.recordset[0] || {};
     res.json(data);
@@ -58,19 +59,20 @@ router.get("/payment/:terminal/:userId", async (req, res) => {
     const request = pool.request();
 
     request.input("TerminalCode", sql.VarChar, terminal);
+    let shDateFilter = "(CAST(sh.start_date AS DATE) = CAST(GETDATE() AS DATE) OR CAST(sh.LastSettlementDate AS DATE) = CAST(GETDATE() AS DATE) OR CAST(sh.CreatedOn AS DATE) = CAST(GETDATE() AS DATE))";
+    let ptdDateFilter = "CAST(ptd.CreatedDate AS DATE) = CAST(GETDATE() AS DATE)";
+    let pdcDateFilter = "(CAST(pdc.start_date AS DATE) = CAST(GETDATE() AS DATE) OR CAST(pdc.CreatedOn AS DATE) = CAST(GETDATE() AS DATE))";
+    let cctDateFilter = "(CAST(start_date AS DATE) = CAST(GETDATE() AS DATE) OR CAST(CreatedDate AS DATE) = CAST(GETDATE() AS DATE))";
+    let memberPtdDateFilter = "CAST(ptd.CreatedDate AS DATE) = CAST(GETDATE() AS DATE)";
 
-    // Build the start_date filter expression for each data source
-    let dateFilter      = "start_date = CAST(GETDATE() AS DATE)";
-    let ptdDateFilter   = "CAST(ptd.CreatedDate AS DATE) = CAST(GETDATE() AS DATE)";
-    let pdc_DateFilter  = "pdc.start_date = CAST(GETDATE() AS DATE)";
-    let sh_DateFilter   = "CAST(sh.start_date AS DATE) = CAST(GETDATE() AS DATE)";
     if (fromDate && toDate) {
       const fDate = fromDate.replace(/[^0-9T:.-]/g, '');
       const tDate = toDate.replace(/[^0-9T:.-]/g, '');
-      dateFilter     = `start_date BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE)`;
-      ptdDateFilter  = `CAST(ptd.CreatedDate AS DATE) BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE)`;
-      pdc_DateFilter = `pdc.start_date BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE)`;
-      sh_DateFilter  = `CAST(sh.start_date AS DATE) BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE)`;
+      shDateFilter = `(CAST(sh.start_date AS DATE) BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE) OR CAST(sh.LastSettlementDate AS DATE) BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE) OR CAST(sh.CreatedOn AS DATE) BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE))`;
+      ptdDateFilter = `CAST(ptd.CreatedDate AS DATE) BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE)`;
+      pdcDateFilter = `(CAST(pdc.start_date AS DATE) BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE) OR CAST(pdc.CreatedOn AS DATE) BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE))`;
+      cctDateFilter = `(CAST(start_date AS DATE) BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE) OR CAST(CreatedDate AS DATE) BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE))`;
+      memberPtdDateFilter = `CAST(ptd.CreatedDate AS DATE) BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE)`;
     }
 
     let userFilter = "";
@@ -96,7 +98,7 @@ router.get("/payment/:terminal/:userId", async (req, res) => {
       INNER JOIN SettlementHeader sh ON sh.SettlementID = ptd.ReferenceId
       LEFT  JOIN Paymode pm ON pm.Position = ptd.PayModeId
       WHERE ptd.ReferenceType = 'BILL'
-        AND ${ptdDateFilter}
+        AND ${shDateFilter}
         AND UPPER(LTRIM(RTRIM(ISNULL(COALESCE(pm.PayMode, pm.Description), '')))) NOT IN ('CREDIT', 'MEMBER')
         AND ptd.ReferenceId NOT IN (
             SELECT RestaurantBillId FROM RestaurantInvoiceCur
@@ -112,7 +114,7 @@ router.get("/payment/:terminal/:userId", async (req, res) => {
         ISNULL(SUM(pdc.Amount), 0) AS Amount,
         COUNT(*) AS PayCount
       FROM PaymentDetailCur pdc
-      WHERE ${pdc_DateFilter}
+      WHERE ${pdcDateFilter}
         AND UPPER(LTRIM(RTRIM(ISNULL(pdc.Remarks, '')))) NOT IN ('CREDIT', 'MEMBER')
         AND (pdc.RestaurantBillId IS NULL OR pdc.RestaurantBillId NOT IN (
             SELECT RestaurantBillId FROM RestaurantInvoiceCur
@@ -146,7 +148,7 @@ router.get("/payment/:terminal/:userId", async (req, res) => {
         COUNT(*) AS PayCount
       FROM CustomerCreditTransactions
       WHERE TransactionType = 'CREDIT_SALE'
-        AND ${dateFilter.replace(/p\.start_date/g, 'COALESCE(start_date, CAST(CreatedDate AS DATE))')}
+        AND ${cctDateFilter}
         ${creditUserFilter}
       GROUP BY ISNULL(CustomerType, 'CREDIT')
     `);
@@ -169,7 +171,7 @@ router.get("/payment/:terminal/:userId", async (req, res) => {
       INNER JOIN Paymode pm ON ptd.PayModeId = pm.Position
       WHERE ptd.ReferenceType = 'MEMBER'
         AND UPPER(pm.PayMode) NOT LIKE '%CASH%'
-        AND ${dateFilter.replace(/p\.start_date/g, 'CAST(ptd.CreatedDate AS DATE)')}
+        AND ${memberPtdDateFilter}
         ${ledgerUserFilter}
       GROUP BY pm.PayMode
     `);

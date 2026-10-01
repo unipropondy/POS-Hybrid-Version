@@ -211,7 +211,7 @@ router.get("/users-settlement", async (req, res) => {
           ISNULL(SUM(CASE WHEN UPPER(ISNULL(sts.PayMode,'')) LIKE 'YEAHPAY%' THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS YeahPayAmount
         FROM SettlementHeader sh
         LEFT JOIN SettlementTotalSales sts ON sh.SettlementID = sts.SettlementID
-        WHERE COALESCE(sh.start_date, CAST(sh.LastSettlementDate AS DATE)) BETWEEN @fromDate AND @toDate
+        WHERE COALESCE(CAST(sh.LastSettlementDate AS DATE), CAST(sh.CreatedOn AS DATE), sh.start_date) BETWEEN @fromDate AND @toDate
           AND ISNULL(sh.IsCancelled, 0) = 0
         GROUP BY CAST(sh.CashierId AS NVARCHAR(50)), sh.CashierId
       `);
@@ -802,11 +802,17 @@ router.get('/cash-out/:terminal', authenticateToken, async (req, res) => {
     const pool = getPool();
     const request = pool.request();
 
-    let dateFilter = "COALESCE(start_date, CAST(CashOutDate as DATE)) = CAST(GETDATE() as DATE)";
+    let dateFilter = "COALESCE(CAST(CashOutDate as DATE), start_date) = CAST(GETDATE() as DATE)";
     if (fromDate && toDate) {
       request.input("fromDate", sql.Date, new Date(fromDate));
       request.input("toDate", sql.Date, new Date(toDate));
-      dateFilter = "COALESCE(start_date, CAST(CashOutDate as DATE)) BETWEEN @fromDate AND @toDate";
+      dateFilter = "COALESCE(CAST(CashOutDate as DATE), start_date) BETWEEN @fromDate AND @toDate";
+    }
+
+    let userFilter = "";
+    if (userId && userId !== "ALL" && userId !== "0") {
+      request.input("userIdParam", sql.VarChar, userId);
+      userFilter = " AND (LOWER(LTRIM(RTRIM(CreatedBy))) = LOWER(LTRIM(RTRIM(@userIdParam))) OR TRY_CAST(CreatedBy AS NVARCHAR(50)) = @userIdParam)";
     }
 
     let userFilter = "";
@@ -839,11 +845,17 @@ router.get('/cash-in/:terminal', authenticateToken, async (req, res) => {
     const pool = getPool();
     const request = pool.request();
 
-    let dateFilter = "COALESCE(start_date, CAST(CashInDate as DATE)) = CAST(GETDATE() as DATE)";
+    let dateFilter = "COALESCE(CAST(CashInDate as DATE), start_date) = CAST(GETDATE() as DATE)";
     if (fromDate && toDate) {
       request.input("fromDate", sql.Date, new Date(fromDate));
       request.input("toDate", sql.Date, new Date(toDate));
-      dateFilter = "COALESCE(start_date, CAST(CashInDate as DATE)) BETWEEN @fromDate AND @toDate";
+      dateFilter = "COALESCE(CAST(CashInDate as DATE), start_date) BETWEEN @fromDate AND @toDate";
+    }
+
+    let userFilter = "";
+    if (userId && userId !== "ALL" && userId !== "0") {
+      request.input("userIdParam", sql.VarChar, userId);
+      userFilter = " AND (LOWER(LTRIM(RTRIM(ci.CreatedBy))) = LOWER(LTRIM(RTRIM(@userIdParam))) OR TRY_CAST(ci.CreatedBy AS NVARCHAR(50)) = @userIdParam OR LOWER(LTRIM(RTRIM(sh.CashierId))) = LOWER(LTRIM(RTRIM(@userIdParam))) OR TRY_CAST(sh.CashierId AS NVARCHAR(50)) = @userIdParam)";
     }
 
     let userFilter = "";

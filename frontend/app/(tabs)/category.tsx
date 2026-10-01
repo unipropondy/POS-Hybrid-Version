@@ -58,7 +58,7 @@ import { useGeneralSettingsStore } from "@/stores/generalSettingsStore";
 import { getHeldOrders } from "@/stores/heldOrdersStore";
 import { useNotificationStore } from "@/stores/notificationStore";
 import { useCompanySettingsStore } from "@/stores/companySettingsStore";
-import { clearOrderContext, OrderContext, setOrderContext } from "@/stores/orderContextStore";
+import { clearOrderContext, OrderContext, setOrderContext, useOrderContextStore } from "@/stores/orderContextStore";
 import { usePaymentSettingsStore } from "@/stores/paymentSettingsStore";
 import { Image } from "expo-image";
 import {
@@ -1141,6 +1141,28 @@ export default function Category() {
   const [backgroundTheme, setBackgroundTheme] = useState("champagne_fizz");
 
   const [activeTab, setActiveTab] = useState<string>("SECTION_1");
+
+  const orderContext = useOrderContextStore((state) => state.currentOrder);
+
+  const visibleSections = useMemo(() => {
+    if (orderContext?.orderType === "TAKEAWAY") {
+      return ["TAKEAWAY"];
+    }
+    if (orderContext?.orderType === "DINE_IN") {
+      return ["SECTION_1", "SECTION_2", "SECTION_3"];
+    }
+    return SECTIONS;
+  }, [orderContext?.orderType]);
+
+  useEffect(() => {
+    if (orderContext?.orderType === "TAKEAWAY") {
+      setActiveTab("TAKEAWAY");
+    } else if (orderContext?.orderType === "DINE_IN") {
+      if (activeTab === "TAKEAWAY") {
+        setActiveTab("SECTION_1");
+      }
+    }
+  }, [orderContext?.orderType]);
 
   const getSectionNum = (tab: string) => {
     if (tab === "TAKEAWAY") return "4";
@@ -2763,7 +2785,27 @@ export default function Category() {
               style={{ flex: 1 }}
             >
               <View style={[styles.tabsWrapper, { gap: 6 }]}>
-                {SECTIONS.map((section) => {
+                <TouchableOpacity
+                  onPress={() => router.push("/order-type")}
+                  activeOpacity={0.75}
+                  style={[
+                    styles.tabBtn,
+                    {
+                      backgroundColor: "#F1F5F9",
+                      borderColor: "#CBD5E1",
+                      borderWidth: 1,
+                      paddingVertical: 6,
+                      paddingHorizontal: 10,
+                      marginRight: 4,
+                    },
+                  ]}
+                >
+                  <Ionicons name="arrow-back" size={14} color="#0F172A" style={{ marginRight: 4 }} />
+                  <Text style={[styles.tabText, { color: "#0F172A", fontSize: 12, fontFamily: Fonts.bold }]}>
+                    Order Type
+                  </Text>
+                </TouchableOpacity>
+                {visibleSections.map((section) => {
                   const isActive = activeTab === section;
                   const sectionTables = allTables.filter((t: TableItem) => {
                     if (section === "TAKEAWAY") return t.DiningSection === 4;
@@ -3054,7 +3096,27 @@ export default function Category() {
               style={styles.tabsScrollView}
             >
               <View style={[styles.tabsWrapper, { gap: isTablet ? 8 : 6 }]}>
-                {SECTIONS.map((section) => {
+                <TouchableOpacity
+                  onPress={() => router.push("/order-type")}
+                  activeOpacity={0.75}
+                  style={[
+                    styles.tabBtn,
+                    {
+                      backgroundColor: "#F1F5F9",
+                      borderColor: "#CBD5E1",
+                      borderWidth: 1,
+                      paddingVertical: 6,
+                      paddingHorizontal: 12,
+                      marginRight: 4,
+                    },
+                  ]}
+                >
+                  <Ionicons name="arrow-back" size={16} color="#0F172A" style={{ marginRight: 5 }} />
+                  <Text style={[styles.tabText, { color: "#0F172A", fontSize: isTablet ? 15 : 13, fontFamily: Fonts.bold }]}>
+                    Order Type
+                  </Text>
+                </TouchableOpacity>
+                {visibleSections.map((section) => {
                   const isActive = activeTab === section;
                   const sectionTables = allTables.filter((t: TableItem) => {
                     if (section === "TAKEAWAY") return t.DiningSection === 4;
@@ -3342,7 +3404,27 @@ export default function Category() {
             style={styles.tabsScrollView}
           >
             <View style={[styles.tabsWrapper, { gap: isTablet ? 8 : 6 }]}>
-              {SECTIONS.map((section) => {
+              <TouchableOpacity
+                onPress={() => router.push("/order-type")}
+                activeOpacity={0.75}
+                style={[
+                  styles.tabBtn,
+                  {
+                    backgroundColor: "#F1F5F9",
+                    borderColor: "#CBD5E1",
+                    borderWidth: 1,
+                    paddingVertical: 6,
+                    paddingHorizontal: 12,
+                    marginRight: 4,
+                  },
+                ]}
+              >
+                <Ionicons name="arrow-back" size={16} color="#0F172A" style={{ marginRight: 5 }} />
+                <Text style={[styles.tabText, { color: "#0F172A", fontSize: isTablet ? 15 : 13, fontFamily: Fonts.bold }]}>
+                  Order Type
+                </Text>
+              </TouchableOpacity>
+              {visibleSections.map((section) => {
                 const isActive = activeTab === section;
                 const sectionTables = allTables.filter((t: TableItem) => {
                   if (section === "TAKEAWAY") return t.DiningSection === 4;

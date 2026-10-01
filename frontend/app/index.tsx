@@ -18,7 +18,7 @@ export default function Index() {
     if (userName === "KDS") {
       return <Redirect href="/(tabs)/kds" />;
     }
-    return <Redirect href="/(tabs)/category" />;
+    return <Redirect href="/order-type" />;
   }
 
   return <Redirect href="/login" />;
