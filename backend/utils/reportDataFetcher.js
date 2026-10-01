@@ -21,7 +21,7 @@ const normalizePayMode = (paymentMethod = "CASH") => {
 /**
  * Fetch and compute full sales report data for a given date range
  */
-async function fetchFullReportData(startDateStr, endDateStr, pool) {
+async function fetchFullReportData(startDateStr, endDateStr, pool, cashierFilter = null) {
   const companySettings = await getCompanySettings();
   
   const sgtStart = `CAST('${startDateStr}' AS DATE)`;
@@ -103,7 +103,16 @@ async function fetchFullReportData(startDateStr, endDateStr, pool) {
   `;
 
   const salesResult = await pool.request().query(salesQuery);
-  const salesList = salesResult.recordset || [];
+  let salesList = salesResult.recordset || [];
+
+  if (cashierFilter && cashierFilter !== 'ALL') {
+    const filterStr = String(cashierFilter).toLowerCase().trim();
+    salesList = salesList.filter(s => {
+      const cid = String(s.CashierId || '').toLowerCase().trim();
+      const cname = String(s.SER_NAME || '').toLowerCase().trim();
+      return cid === filterStr || cname.includes(filterStr) || filterStr.includes(cid);
+    });
+  }
 
   // 2. Compute Metrics matching frontend sales-report.tsx
   const paymodesRes = await pool.request().query("SELECT Position, PayMode, Description, Active FROM [dbo].[Paymode] ORDER BY Position ASC");

@@ -804,25 +804,26 @@ export default function SalesReport() {
     const endStr = getSingaporeDateString(endObj);
 
     const userName = await AsyncStorage.getItem("userName") || "SR";
+    const token = useAuthStore.getState().token;
+    const authHeaders: Record<string, string> = {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    };
 
     const summaryUrl = `${API_URL}/api/sales/day-end-summary?startDate=${startStr}&endDate=${endStr}`;
-    const summaryRes = await fetch(summaryUrl);
+    const summaryRes = await fetch(summaryUrl, { headers: authHeaders });
     const summaryData = await summaryRes.json();
 
     if (!summaryData.success) {
-      throw new Error("Failed to fetch report data");
+      console.warn("[fetchReportData] day-end-summary returned non-success:", summaryData?.error || summaryRes.status);
+      // Don't throw — fall through with empty summaryData so the backend PDF generator still runs
     }
 
     // We fetch dish report for item-wise data
-    const dishUrl = `${API_URL}/api/reports/dish?filter=custom&date=${startStr}`;
-    // wait, api/reports/dish expects a filter like daily, weekly, monthly, yearly, custom
-    // and for custom it might use the same logic?
-    // actually, api/reports/dish uses getReportDateWhereSql, which doesn't fully support custom dates unless handled.
-    // I'll just pass the filter if it's not custom, otherwise pass daily for now or omit items.
     let items: any[] = [];
     try {
       const dishFilter = downloadFilter === "CUSTOM" ? "daily" : downloadFilter.toLowerCase();
-      const dRes = await fetch(`${API_URL}/api/reports/dish?filter=${dishFilter}&date=${startStr}`);
+      const dRes = await fetch(`${API_URL}/api/reports/dish?filter=${dishFilter}&date=${startStr}`, { headers: authHeaders });
       const dData = await dRes.json();
       if (Array.isArray(dData)) {
         items = dData.map((d: any) => ({
@@ -878,13 +879,22 @@ export default function SalesReport() {
     const sa = summaryData.salesAnalysis || {};
     const vd = summaryData.voidDetail || {};
 
+    const selectedUserObj = availableOperators.find(op => String(op.CashierId) === String(selectedCashierId));
+    const formattedCashierName = selectedCashierId === "ALL"
+      ? "Whole Sales (All Users)"
+      : (selectedUserObj
+          ? `${selectedUserObj.CashierName || ''} ${selectedUserObj.UserLogin && selectedUserObj.UserLogin !== '-' ? `(@${selectedUserObj.UserLogin})` : ''}`.trim()
+          : String(selectedCashierId));
+
     return {
       filterType: downloadFilter,
       period: downloadFilter === "DAILY" ? startStr : `${startStr} to ${endStr}`,
       companyName: summaryData.orgInfo?.Name || 'AL-HAZIMA RESTAURANT PTE LTD',
       companyAddress: summaryData.orgInfo?.Address1_Line1 || 'No 4, Cheong Chin Nam Road, SINGAPORE 599729',
       companyPhone: summaryData.orgInfo?.Address1_Telephone1 || '65130000',
-      cashierName: userName,
+      selectedCashierId,
+      cashierName: formattedCashierName,
+      printedBy: userName,
 
       // Match backend generatePdfDocDefinition expectations
       netSales: sa.baseSales || 0,

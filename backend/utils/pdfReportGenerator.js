@@ -485,6 +485,22 @@ const generateSalesReportPdf = async (reportData) => {
                 ],
                 [
                   {
+                    text: "Sales View :",
+                    fontSize: 6.5,
+                    bold: true,
+                    color: T.slate500,
+                    border: [false, false, false, false],
+                  },
+                  {
+                    text: cashierName || "Whole Sales (All Users)",
+                    fontSize: 6.5,
+                    bold: true,
+                    color: cashierName && cashierName !== "Whole Sales (All Users)" ? T.orange : T.slate700,
+                    border: [false, false, false, false],
+                  },
+                ],
+                [
+                  {
                     text: "Generated On :",
                     fontSize: 6.5,
                     bold: true,
@@ -507,7 +523,7 @@ const generateSalesReportPdf = async (reportData) => {
                     border: [false, false, false, false],
                   },
                   {
-                    text: "Admin",
+                    text: printedBy || "Admin",
                     fontSize: 6.5,
                     color: T.slate700,
                     border: [false, false, false, false],

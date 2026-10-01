@@ -47,7 +47,12 @@ router.post('/download-pdf', async (req, res) => {
       }
     }
 
-    const enrichedData = await fetchFullReportData(startDateStr, endDateStr, pool);
+    const cashierFilter = reportData.selectedCashierId || reportData.cashierId || (reportData.cashierName !== 'Whole Sales (All Users)' ? reportData.cashierName : undefined);
+    const enrichedData = await fetchFullReportData(startDateStr, endDateStr, pool, cashierFilter);
+
+    if (reportData.cashierName) {
+      enrichedData.cashierName = reportData.cashierName;
+    }
 
     const docDef = await generateSalesReportPdf(enrichedData);
     const pdfBuffer = await createPdfBinary(docDef);
@@ -217,7 +222,12 @@ router.post('/email-pdf', async (req, res) => {
       }
     }
 
-    const enrichedData = await fetchFullReportData(startDateStr, endDateStr, pool);
+    const cashierFilter = reportData.selectedCashierId || reportData.cashierId || (reportData.cashierName !== 'Whole Sales (All Users)' ? reportData.cashierName : undefined);
+    const enrichedData = await fetchFullReportData(startDateStr, endDateStr, pool, cashierFilter);
+
+    if (reportData.cashierName) {
+      enrichedData.cashierName = reportData.cashierName;
+    }
 
     const recipientCheck = normalizeAndValidateRecipient(email);
     if (!recipientCheck.ok) {
