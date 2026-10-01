@@ -2461,22 +2461,22 @@ export default function SettlementScreen() {
             );
             await SunmiModule.printText(`Generated: ${formatDateTime(new Date())}\n\n`);
 
-            if (selectedCashierId === "ALL" && loginWiseSales.length > 0) {
-              await SunmiModule.printText("================================\n");
-              await SunmiModule.printText("    CASHIER SALES BREAKDOWN\n");
-              await SunmiModule.printText("================================\n");
-              for (const u of loginWiseSales) {
-                await SunmiModule.printText(formatTwoCols32(`${u.CashierName.toUpperCase()}`, formatCurrency(u.TotalSales || 0)) + "\n");
-              }
-              await SunmiModule.printText("--------------------------------\n");
-            }
-
             const formatTwoCols32 = (left: string, right: string) => {
               const spaceCount = 32 - left.length - right.length;
               return spaceCount > 0
                 ? `${left}${" ".repeat(spaceCount)}${right}\n`
                 : `${left}\n${right.padStart(32, " ")}\n`;
             };
+
+            if (selectedCashierId === "ALL" && loginWiseSales.length > 0) {
+              await SunmiModule.printText("================================\n");
+              await SunmiModule.printText("    CASHIER SALES BREAKDOWN\n");
+              await SunmiModule.printText("================================\n");
+              for (const u of loginWiseSales) {
+                await SunmiModule.printText(formatTwoCols32(`${u.CashierName.toUpperCase()}`, formatCurrency(u.TotalSales || 0)));
+              }
+              await SunmiModule.printText("--------------------------------\n");
+            }
 
             await SunmiModule.printText("================================\n");
             await SunmiModule.printText("         SALES SUMMARY\n");
