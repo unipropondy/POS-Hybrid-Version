@@ -1407,7 +1407,7 @@ export default function SettlementScreen() {
         terminalCode: selectedTerminal === "ALL" ? "" : selectedTerminal,
         date: getLocalDateStr(selectedDate),
         attachmentUrl: cashOutForm.AttachmentUrl || null,
-        createdBy: currentUser?.userName || currentUser?.username || currentUser?.id || currentUser?.userId || 'Admin',
+        createdBy: currentUser?.userName || currentUser?.userId || 'Admin',
       };
 
       let res;
@@ -1581,7 +1581,7 @@ export default function SettlementScreen() {
         terminalCode: selectedTerminal === "ALL" ? "" : selectedTerminal,
         date: getLocalDateStr(selectedDate),
         attachmentUrl: cashInForm.AttachmentUrl || null,
-        createdBy: currentUser?.userName || currentUser?.username || currentUser?.id || currentUser?.userId || 'Admin',
+        createdBy: currentUser?.userName || currentUser?.userId || 'Admin',
       };
 
       let res;

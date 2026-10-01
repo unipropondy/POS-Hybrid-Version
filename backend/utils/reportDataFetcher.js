@@ -449,6 +449,45 @@ async function fetchFullReportData(startDateStr, endDateStr, pool) {
   const artistResult = await pool.request().query(artistQuery);
   const artistSalesList = artistResult.recordset || [];
 
+  // 5b. Login-wise cashier breakdown (for PDF cashier section)
+  const loginWiseQuery = `
+    SELECT
+      ISNULL(um.FullName, ISNULL(um.UserName, sh.CashierId)) AS CashierName,
+      sh.CashierId,
+      COUNT(DISTINCT sh.SettlementID) AS TotalBills,
+      SUM(ISNULL(sh.SysAmount, 0)) AS TotalSales,
+      SUM(CASE WHEN UPPER(ISNULL(sts.PayMode,'')) = 'CASH' THEN ISNULL(sts.SysAmount,0) ELSE 0 END) AS CashAmount,
+      SUM(CASE WHEN UPPER(ISNULL(sts.PayMode,'')) = 'CARD' THEN ISNULL(sts.SysAmount,0) ELSE 0 END) AS CardAmount,
+      SUM(CASE WHEN UPPER(ISNULL(sts.PayMode,'')) = 'NETS' THEN ISNULL(sts.SysAmount,0) ELSE 0 END) AS NetsAmount,
+      SUM(CASE WHEN UPPER(ISNULL(sts.PayMode,'')) = 'PAYNOW' THEN ISNULL(sts.SysAmount,0) ELSE 0 END) AS PayNowAmount,
+      SUM(CASE WHEN UPPER(ISNULL(sts.PayMode,'')) = 'CREDIT' THEN ISNULL(sts.SysAmount,0) ELSE 0 END) AS CreditAmount
+    FROM SettlementHeader sh
+    LEFT JOIN SettlementTotalSales sts ON sh.SettlementID = sts.SettlementID
+    LEFT JOIN UserMaster um ON LOWER(CAST(sh.CashierId AS VARCHAR(100))) = LOWER(CAST(um.UserId AS VARCHAR(100)))
+      OR LOWER(CAST(sh.CashierId AS VARCHAR(100))) = LOWER(CAST(um.UserName AS VARCHAR(100)))
+    WHERE sh.IsCancelled = 0
+      AND ${shWhere.replace(/sh\./g, 'sh.')}
+    GROUP BY sh.CashierId, ISNULL(um.FullName, ISNULL(um.UserName, sh.CashierId))
+    ORDER BY TotalSales DESC;
+  `;
+  let loginWiseSales = [];
+  try {
+    const loginWiseResult = await pool.request().query(loginWiseQuery);
+    loginWiseSales = (loginWiseResult.recordset || []).map(r => ({
+      CashierId: r.CashierId,
+      CashierName: r.CashierName || String(r.CashierId || 'UNKNOWN'),
+      TotalBills: Number(r.TotalBills) || 0,
+      TotalSales: Number(r.TotalSales) || 0,
+      CashAmount: Number(r.CashAmount) || 0,
+      CardAmount: Number(r.CardAmount) || 0,
+      NetsAmount: Number(r.NetsAmount) || 0,
+      PayNowAmount: Number(r.PayNowAmount) || 0,
+      CreditAmount: Number(r.CreditAmount) || 0,
+    }));
+  } catch (lwErr) {
+    console.warn('[reportDataFetcher] login-wise query failed (non-fatal):', lwErr.message);
+  }
+
   // 6. Format SGT time period string
   const formatSgtDate = (dateStr) => {
     const d = new Date(dateStr);
@@ -580,6 +619,7 @@ async function fetchFullReportData(startDateStr, endDateStr, pool) {
     trendData,
 
     // Reports lists
+    loginWiseSales,
     categories: categoriesList,
     items: itemsList,
     artistSales: artistSalesList

@@ -293,6 +293,8 @@ router.get("/users-settlement", async (req, res) => {
         CashierName: u.CashierName,
         UserLogin: u.UserLogin,
         RoleName: u.RoleName,
+        TotalBills: salesData.TotalBills || 0,
+        CancelledBills: salesData.CancelledBills || 0,
         TotalSales: salesData.TotalSales || 0,
         TotalSubTotal: salesData.TotalSubTotal || 0,
         TotalDiscount: salesData.TotalDiscount || 0,

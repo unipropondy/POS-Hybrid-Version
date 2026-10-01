@@ -776,7 +776,13 @@ export default function SalesReport() {
     const endObj = new Date();
     const startObj = new Date();
 
-    if (downloadFilter === "WEEKLY") {
+    if (downloadFilter === "DAILY") {
+      // Use the active business date (e.g. 2026-09-29), not today's calendar date,
+      // because settlement data is keyed to the business day, not the wall clock date.
+      const bizDate = activeBusinessDate || getSingaporeDateString(new Date());
+      startObj.setTime(new Date(bizDate).getTime());
+      endObj.setTime(new Date(bizDate).getTime());
+    } else if (downloadFilter === "WEEKLY") {
       startObj.setDate(startObj.getDate() - 6);
     } else if (downloadFilter === "MONTHLY") {
       startObj.setDate(1);
