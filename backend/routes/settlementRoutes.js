@@ -190,30 +190,88 @@ router.get("/users-settlement", async (req, res) => {
       .input("fromDate", sql.Date, new Date(dateStr))
       .input("toDate", sql.Date, new Date(endDateStr))
       .query(`
+        WITH HeaderTotals AS (
+          SELECT
+            sh.CashierId,
+            COUNT(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 THEN 1 END) AS TotalBills,
+            ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 THEN sh.SubTotal ELSE 0 END), 0) AS TotalSubTotal,
+            ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 THEN sh.DiscountAmount ELSE 0 END), 0) AS TotalDiscount,
+            ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 THEN sh.ServiceCharge ELSE 0 END), 0) AS TotalServiceCharge,
+            ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 THEN sh.TotalTax ELSE 0 END), 0) AS TotalTax,
+            ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 THEN sh.TakeawayCharge ELSE 0 END), 0) AS TotalTakeaway,
+            ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 THEN sh.VoidItemAmount ELSE 0 END), 0) AS TotalVoidAmount,
+            ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 THEN sh.VoidItemQty ELSE 0 END), 0) AS TotalVoidQty,
+            ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 THEN sh.RoundedBy ELSE 0 END), 0) AS TotalRounded,
+            ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 THEN sh.SysAmount ELSE 0 END), 0) AS TotalSales,
+            ISNULL(SUM(CASE WHEN sh.IsCancelled = 1 THEN 1 ELSE 0 END), 0) AS CancelledBills
+          FROM SettlementHeader sh
+          WHERE COALESCE(sh.start_date, CAST(sh.LastSettlementDate AS DATE)) BETWEEN @fromDate AND @toDate
+          GROUP BY sh.CashierId
+        ),
+        PaymentTotals AS (
+          SELECT
+            sh.CashierId,
+            ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 AND UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('CASH','CAS','1') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS CashAmount,
+            ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 AND UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('CARD','VISA','MASTER','MASTERCARD','AMEX') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS CardAmount,
+            ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 AND UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('PAYNOW','3') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS PayNowAmount,
+            ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 AND UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('NETS','2') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS NetsAmount,
+            ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 AND UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('MEMBER','5') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS MemberAmount,
+            ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 AND UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('CREDIT','6') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS CreditAmount,
+            ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 AND UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('GRAB','10') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS GrabAmount,
+            ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 AND UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('FOODPANDA','9') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS FoodPandaAmount,
+            ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 AND UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('UPI','4','GPAY') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS UpiAmount,
+            ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 AND UPPER(ISNULL(sts.PayMode,'')) LIKE 'YEAHPAY%' THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS YeahPayAmount
+          FROM SettlementHeader sh
+          LEFT JOIN SettlementTotalSales sts ON sh.SettlementID = sts.SettlementID
+          WHERE COALESCE(sh.start_date, CAST(sh.LastSettlementDate AS DATE)) BETWEEN @fromDate AND @toDate
+          GROUP BY sh.CashierId
+        ),
+        CreditCollections AS (
+          SELECT
+            cct.CreatedBy AS CashierIdRaw,
+            ISNULL(SUM(cct.PaidAmount), 0) AS CreditCollectedAmount
+          FROM CustomerCreditTransactions cct
+          WHERE cct.TransactionType = 'PAYMENT'
+            AND ISNULL(cct.CustomerType, 'CREDIT') = 'CREDIT'
+            AND CAST(COALESCE(cct.start_date, cct.CreatedDate) AS DATE) BETWEEN @fromDate AND @toDate
+          GROUP BY cct.CreatedBy
+        )
         SELECT
           CAST(sh.CashierId AS NVARCHAR(50)) AS CashierIdRaw,
           sh.CashierId,
-          ISNULL(SUM(sh.SubTotal), 0) AS TotalSubTotal,
-          ISNULL(SUM(sh.DiscountAmount), 0) AS TotalDiscount,
-          ISNULL(SUM(sh.ServiceCharge), 0) AS TotalServiceCharge,
-          ISNULL(SUM(sh.TotalTax), 0) AS TotalTax,
-          ISNULL(SUM(sh.TakeawayCharge), 0) AS TotalTakeaway,
-          ISNULL(SUM(ISNULL(sts.SysAmount, sh.SysAmount)), 0) AS TotalSales,
-          ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('CASH','CAS','1') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS CashAmount,
-          ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('CARD','VISA','MASTER','MASTERCARD','AMEX') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS CardAmount,
-          ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('PAYNOW','3') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS PayNowAmount,
-          ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('NETS','2') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS NetsAmount,
-          ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('MEMBER','5') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS MemberAmount,
-          ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('CREDIT','6') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS CreditAmount,
-          ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('GRAB','10') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS GrabAmount,
-          ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('FOODPANDA','9') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS FoodPandaAmount,
-          ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('UPI','4','GPAY') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS UpiAmount,
-          ISNULL(SUM(CASE WHEN UPPER(ISNULL(sts.PayMode,'')) LIKE 'YEAHPAY%' THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS YeahPayAmount
+          ISNULL(h.TotalSubTotal, 0) AS TotalSubTotal,
+          ISNULL(h.TotalDiscount, 0) AS TotalDiscount,
+          ISNULL(h.TotalServiceCharge, 0) AS TotalServiceCharge,
+          ISNULL(h.TotalTax, 0) AS TotalTax,
+          ISNULL(h.TotalTakeaway, 0) AS TotalTakeaway,
+          ISNULL(h.TotalSales, 0) AS TotalSales,
+          ISNULL(p.CashAmount, 0) AS CashAmount,
+          ISNULL(p.CardAmount, 0) AS CardAmount,
+          ISNULL(p.PayNowAmount, 0) AS PayNowAmount,
+          ISNULL(p.NetsAmount, 0) AS NetsAmount,
+          ISNULL(p.MemberAmount, 0) AS MemberAmount,
+          ISNULL(p.CreditAmount, 0) AS CreditAmount,
+          ISNULL(p.GrabAmount, 0) AS GrabAmount,
+          ISNULL(p.FoodPandaAmount, 0) AS FoodPandaAmount,
+          ISNULL(p.UpiAmount, 0) AS UpiAmount,
+          ISNULL(p.YeahPayAmount, 0) AS YeahPayAmount,
+          ISNULL(cc.CreditCollectedAmount, 0) AS CreditCollectedAmount
         FROM SettlementHeader sh
-        LEFT JOIN SettlementTotalSales sts ON sh.SettlementID = sts.SettlementID
-        WHERE COALESCE(CAST(sh.LastSettlementDate AS DATE), CAST(sh.CreatedOn AS DATE), sh.start_date) BETWEEN @fromDate AND @toDate
+        LEFT JOIN HeaderTotals h ON h.CashierId = sh.CashierId
+        LEFT JOIN PaymentTotals p ON p.CashierId = sh.CashierId
+        LEFT JOIN CreditCollections cc ON (
+          TRY_CAST(cc.CashierIdRaw AS UNIQUEIDENTIFIER) = TRY_CAST(sh.CashierId AS UNIQUEIDENTIFIER)
+          OR CAST(cc.CashierIdRaw AS NVARCHAR(50)) = CAST(sh.CashierId AS NVARCHAR(50))
+          OR LOWER(LTRIM(RTRIM(cc.CashierIdRaw))) = LOWER(LTRIM(RTRIM(sh.CashierId)))
+        )
+        WHERE COALESCE(sh.start_date, CAST(sh.LastSettlementDate AS DATE)) BETWEEN @fromDate AND @toDate
+        WHERE COALESCE(sh.start_date, CAST(sh.LastSettlementDate AS DATE), CAST(sh.CreatedOn AS DATE)) BETWEEN @fromDate AND @toDate
           AND ISNULL(sh.IsCancelled, 0) = 0
-        GROUP BY CAST(sh.CashierId AS NVARCHAR(50)), sh.CashierId
+        GROUP BY
+          CAST(sh.CashierId AS NVARCHAR(50)), sh.CashierId,
+          h.TotalSubTotal, h.TotalDiscount, h.TotalServiceCharge, h.TotalTax, h.TotalTakeaway, h.TotalSales,
+          p.CashAmount, p.CardAmount, p.PayNowAmount, p.NetsAmount, p.MemberAmount, p.CreditAmount, p.GrabAmount, p.FoodPandaAmount, p.UpiAmount, p.YeahPayAmount,
+          cc.CreditCollectedAmount
       `);
 
     const salesMap = {};
@@ -252,6 +310,7 @@ router.get("/users-settlement", async (req, res) => {
         FoodPandaAmount: salesData.FoodPandaAmount || 0,
         UpiAmount: salesData.UpiAmount || 0,
         YeahPayAmount: salesData.YeahPayAmount || 0,
+        CreditCollectedAmount: salesData.CreditCollectedAmount || 0,
       };
     });
 

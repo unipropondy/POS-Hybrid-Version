@@ -97,7 +97,7 @@ const TransactionCard = React.memo(
         <View style={styles.txOrderInfo}>
           <Text style={styles.txTitle} numberOfLines={1}>
             {item.OrderType === "LEDGER" 
-              ? `${item.OrderId || 'Member Payment Collected'}: ${item.Section || 'Customer'}`
+              ? `${item.OrderId || (item.CustomerType === 'MEMBER' ? 'Member Payment Collected' : 'Credit Payment Collected')}: ${item.Section || 'Customer'}`
               : (SCREEN_W < 450 ? `#${formatOrderId(item).split("-").pop()}` : `Order #${formatOrderId(item)}`)}
           </Text>
           {item.OrderType !== "LEDGER" && item.CustomerName && (modeUpper === "CREDIT" || modeUpper === "MEMBER") && (

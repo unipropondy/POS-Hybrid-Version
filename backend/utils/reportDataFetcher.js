@@ -28,8 +28,8 @@ async function fetchFullReportData(startDateStr, endDateStr, pool) {
   const sgtEnd = `DATEADD(DAY, 1, CAST('${endDateStr}' AS DATE))`;
 
   // 1. Fetch combined sales list (same logic as /all endpoint)
-  const shWhere = `sh.start_date >= CAST('${startDateStr}' AS DATE) AND sh.start_date <= CAST('${endDateStr}' AS DATE)`;
-  const cctWhere = `CAST(cct.CreatedDate AS DATE) >= CAST('${startDateStr}' AS DATE) AND CAST(cct.CreatedDate AS DATE) <= CAST('${endDateStr}' AS DATE)`;
+  const shWhere = `COALESCE(sh.start_date, CAST(sh.LastSettlementDate AS DATE)) >= CAST('${startDateStr}' AS DATE) AND COALESCE(sh.start_date, CAST(sh.LastSettlementDate AS DATE)) <= CAST('${endDateStr}' AS DATE)`;
+  const cctWhere = `COALESCE(cct.start_date, CAST(cct.CreatedDate AS DATE)) >= CAST('${startDateStr}' AS DATE) AND COALESCE(cct.start_date, CAST(cct.CreatedDate AS DATE)) <= CAST('${endDateStr}' AS DATE)`;
 
   const salesQuery = `
     SELECT 
@@ -68,13 +68,20 @@ async function fetchFullReportData(startDateStr, endDateStr, pool) {
     SELECT 
       cct.TransactionId AS SettlementID,
       cct.CreatedDate AS SettlementDate,
-      CASE WHEN mm.MemberId IS NOT NULL THEN 'Member Payment Collected' ELSE 'Credit Payment Collected' END AS OrderId,
+      CASE 
+        WHEN cct.CustomerType = 'CREDIT' THEN 'Credit Payment Collected'
+        WHEN cct.CustomerType = 'MEMBER' THEN 'Member Payment Collected'
+        WHEN m.CustomerId IS NOT NULL THEN 'Credit Payment Collected'
+        WHEN mm.MemberId IS NOT NULL THEN 'Member Payment Collected'
+        ELSE 'Credit Payment Collected'
+      END AS OrderId,
       'LEDGER' AS OrderType,
       'LEDGER' AS TableNo,
-      COALESCE(mm.Name, m.Name, 'Customer') AS Section,
+      COALESCE(m.Name, mm.Name, 'Customer') AS Section,
       CAST(cct.CreatedBy AS VARCHAR(50)) AS CashierId,
       cct.Remarks AS BillNo,
       'Cashier' AS SER_NAME,
+      NULL AS entryStatus,
       cct.PaymentMethod AS RawPayMode,
       cct.PaidAmount AS SysAmount,
       cct.PaidAmount AS SubTotal,
@@ -90,8 +97,8 @@ async function fetchFullReportData(startDateStr, endDateStr, pool) {
       0 AS RoundedBy,
       0 AS OutstandingAmount
     FROM CustomerCreditTransactions cct
-    LEFT JOIN CreditCustomerMaster m ON cct.MemberId = m.CustomerId
-    LEFT JOIN MemberMaster mm ON cct.MemberId = mm.MemberId
+    LEFT JOIN CreditCustomerMaster m ON cct.MemberId = m.CustomerId AND (cct.CustomerType = 'CREDIT' OR cct.CustomerType IS NULL)
+    LEFT JOIN MemberMaster mm ON cct.MemberId = mm.MemberId AND (cct.CustomerType = 'MEMBER' OR (cct.CustomerType IS NULL AND m.CustomerId IS NULL))
     WHERE cct.TransactionType = 'PAYMENT' AND ${cctWhere}
   `;
 
@@ -224,6 +231,7 @@ async function fetchFullReportData(startDateStr, endDateStr, pool) {
   const orderTypesTotal = dineInCount + takeawayCount;
   const dineInPct = orderTypesTotal > 0 ? (dineInCount / orderTypesTotal) * 100 : 0;
   const takeawayPct = orderTypesTotal > 0 ? (takeawayCount / orderTypesTotal) * 100 : 0;
+  const qrOrderCount = 0;
   const qrPct = totalTransactions > 0 ? (qrOrderCount / totalTransactions) * 100 : 0;
 
   // 3. Fetch category report (AppReport + ProfessionalReport union)

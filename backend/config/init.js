@@ -478,6 +478,34 @@ async function initDB(pool) {
       END
     `);
 
+    // Upgrade: Add start_date column to PaymentTransactionDetails for business date alignment
+    await runQuery("Upgrade PaymentTransactionDetails - Add start_date", `
+      IF COL_LENGTH('dbo.PaymentTransactionDetails', 'start_date') IS NULL
+      BEGIN
+          ALTER TABLE [dbo].[PaymentTransactionDetails] ADD [start_date] DATE NULL
+      END
+    `);
+
+    // Backfill start_date for PaymentTransactionDetails
+    await runQuery("Backfill PaymentTransactionDetails start_date", `
+      UPDATE ptd
+      SET ptd.start_date = COALESCE(sh.start_date, CAST(sh.LastSettlementDate AS DATE))
+      FROM PaymentTransactionDetails ptd
+      JOIN SettlementHeader sh ON sh.SettlementID = ptd.ReferenceId
+      WHERE ptd.start_date IS NULL AND ptd.ReferenceType = 'BILL';
+
+      UPDATE ptd
+      SET ptd.start_date = cct.start_date
+      FROM PaymentTransactionDetails ptd
+      JOIN CustomerCreditTransactions cct ON cct.MemberId = ptd.ReferenceId AND cct.TransactionType = 'PAYMENT' AND cct.start_date IS NOT NULL
+      WHERE ptd.start_date IS NULL AND ptd.ReferenceType = 'MEMBER';
+
+      UPDATE PaymentTransactionDetails
+      SET start_date = CAST(CreatedDate AS DATE)
+      WHERE start_date IS NULL;
+    `);
+
+
     // 15. Create CustomerCreditTransactions table for credit and payment ledger history
     // Upgrade Detector: Drop old table format if missing new 'BillAmount' column
     await runQuery("Upgrade CustomerCreditTransactions Detector", `
@@ -908,7 +936,7 @@ async function initDB(pool) {
           } else if (['DECIMAL', 'NUMERIC'].includes(typeDef)) {
             typeDef += `(${col.NUMERIC_PRECISION || 18}, ${col.NUMERIC_SCALE || 2})`;
           }
-          await runQuery(`Auto-Sync [${col.TABLE_NAME}].[${col.COLUMN_NAME}]`, `ALTER TABLE [dbo].[${col.TABLE_NAME}] ADD [${col.COLUMN_NAME}] ${typeDef} NULL`);
+          await runQuery(`Auto-Sync [${col.TABLE_NAME}].[${col.COLUMN_NAME}]`, `IF COL_LENGTH('dbo.${col.TABLE_NAME}', '${col.COLUMN_NAME}') IS NULL ALTER TABLE [dbo].[${col.TABLE_NAME}] ADD [${col.COLUMN_NAME}] ${typeDef} NULL`);
         }
       }
     } catch (e) {

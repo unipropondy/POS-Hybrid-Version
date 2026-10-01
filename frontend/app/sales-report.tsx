@@ -1312,7 +1312,7 @@ export default function SalesReport() {
         const roundedSysAmount = Math.round(((s.SysAmount || 0) + Number.EPSILON) * 100) / 100;
 
         if (s.OrderType === 'LEDGER') {
-          if (s.OrderId === 'Credit Payment Collected') {
+          if (s.OrderId === 'Credit Payment Collected' || s.CustomerType === 'CREDIT') {
             acc.CreditPaymentsCollected += roundedSysAmount;
           } else {
             acc.MemberPaymentsCollected += roundedSysAmount;

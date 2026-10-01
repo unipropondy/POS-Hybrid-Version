@@ -220,8 +220,19 @@ if (!gatewayResponse.success) {
     }
 
     // ============================================================
-    // 3️⃣ ALWAYS save to PaymentTransactionDetails (REMOVED extra columns)
+    // 3️⃣ ALWAYS save to PaymentTransactionDetails (including start_date)
     // ============================================================
+    let ptdStartDate;
+    if (startDate !== undefined) {
+      ptdStartDate = startDate;
+    } else {
+      ptdStartDate = null;
+      const activeDayRes = await transaction.request().query("SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC");
+      if (activeDayRes.recordset.length > 0) {
+        ptdStartDate = activeDayRes.recordset[0].StartDate;
+      }
+    }
+
     const detailReq = new sql.Request(transaction);
     detailReq
       .input("ReferenceType", sql.NVarChar(50), referenceType)
@@ -229,15 +240,16 @@ if (!gatewayResponse.success) {
       .input("PayModeId", sql.Int, payModeId)
       .input("Amount", sql.Decimal(18, 2), amount)
       .input("ReferenceNo", sql.NVarChar(100), gatewayReferenceNo || referenceNo)
-      .input("CreatedBy", sql.UniqueIdentifier, toGuidOrNull(cashierId));
+      .input("CreatedBy", sql.UniqueIdentifier, toGuidOrNull(cashierId))
+      .input("startDate", sql.Date, ptdStartDate);
 
     await detailReq.query(`
       INSERT INTO [dbo].[PaymentTransactionDetails] (
         PaymentTransactionId, ReferenceType, ReferenceId, PayModeId, Amount, 
-        ReferenceNo, CreatedDate, CreatedBy
+        ReferenceNo, CreatedDate, CreatedBy, start_date
       ) VALUES (
         NEWID(), @ReferenceType, @ReferenceId, @PayModeId, @Amount, 
-        @ReferenceNo, GETDATE(), @CreatedBy
+        @ReferenceNo, GETDATE(), @CreatedBy, @startDate
       )
     `);
 

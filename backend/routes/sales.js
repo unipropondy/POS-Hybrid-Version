@@ -116,9 +116,13 @@ const resolveBusinessDateColumn = (col) => {
     const prefix = cleanCol.includes(".") ? cleanCol.split(".")[0] + "." : "";
     return `COALESCE(${prefix}start_date, ${prefix}LastSettlementDate)`;
   }
-  if (cleanCol.includes("ptd.CreatedDate") || cleanCol.includes("ptd.CreatedOn")) {
+  if (cleanCol.includes("ptd.")) {
     const prefix = cleanCol.includes(".") ? cleanCol.split(".")[0] + "." : "";
-    return `COALESCE(${prefix}start_date, ${prefix}CreatedDate, ${prefix}CreatedOn)`;
+    return `COALESCE(${prefix}start_date, ${prefix}CreatedDate)`;
+  }
+  if (cleanCol.includes("cct.")) {
+    const prefix = cleanCol.includes(".") ? cleanCol.split(".")[0] + "." : "";
+    return `COALESCE(${prefix}start_date, ${prefix}CreatedDate)`;
   }
   if (cleanCol.includes("InvoiceDate")) {
     const prefix = cleanCol.includes(".") ? cleanCol.split(".")[0] + "." : "";
@@ -383,7 +387,13 @@ router.get("/all", async (req, res) => {
              NULL AS CreditOrderNo,
              sh.GuestName as GuestName,
              sh.Pax as Pax,
-             COALESCE(sh.entry_status, ro.entry_status) AS entryStatus
+             COALESCE(sh.entry_status, ro.entry_status) AS entryStatus,
+             COALESCE(mm.Phone, ccm.Phone, mm_sale.Phone, ccm_sale.Phone) AS CustomerPhone,
+             CASE 
+               WHEN mm.MemberId IS NOT NULL OR mm_sale.MemberId IS NOT NULL THEN 'MEMBER'
+               WHEN ccm.CustomerId IS NOT NULL OR ccm_sale.CustomerId IS NOT NULL THEN 'CREDIT'
+               ELSE NULL
+             END AS CustomerType
            FROM SettlementHeader sh
            LEFT JOIN RestaurantOrderCur ro ON sh.BillNo = ro.OrderNumber
            LEFT JOIN (
@@ -399,51 +409,59 @@ router.get("/all", async (req, res) => {
            LEFT JOIN CreditCustomerMaster ccm_sale ON cct_sale.MemberId = ccm_sale.CustomerId
            LEFT JOIN UserMaster um ON TRY_CAST(sh.CashierId AS UNIQUEIDENTIFIER) = um.UserId
            WHERE ${shWhere}
- 
+
            UNION ALL
- 
+
            SELECT 
              cct.TransactionId AS SettlementID,
              cct.CreatedDate AS SettlementDate,
-             CAST(cct.CreatedDate AS DATE) AS BusinessDate,
-             CASE WHEN mm.MemberId IS NOT NULL THEN 'Member Payment Collected' ELSE 'Credit Payment Collected' END AS OrderId,
+             COALESCE(cct.start_date, CAST(cct.CreatedDate AS DATE)) AS BusinessDate,
+             CASE 
+               WHEN cct.CustomerType = 'CREDIT' THEN 'Credit Payment Collected'
+               WHEN cct.CustomerType = 'MEMBER' THEN 'Member Payment Collected'
+               WHEN m.CustomerId IS NOT NULL THEN 'Credit Payment Collected'
+               WHEN mm.MemberId IS NOT NULL THEN 'Member Payment Collected'
+               ELSE 'Credit Payment Collected'
+             END AS OrderId,
              'LEDGER' AS OrderType,
              'LEDGER' AS TableNo,
-             COALESCE(mm.Name, m.Name, 'Customer') AS Section,
-            CAST(cct.CreatedBy AS VARCHAR(50)) AS CashierId,
-            cct.Remarks AS BillNo,
-            'Cashier' AS SER_NAME,
+             COALESCE(m.Name, mm.Name, 'Customer') AS Section,
+             CAST(cct.CreatedBy AS VARCHAR(50)) AS CashierId,
+             cct.Remarks AS BillNo,
+             'Cashier' AS SER_NAME,
              ISNULL(um.FullName, ISNULL(um.UserName, 'Unknown')) AS CashierName,
              cct.PaymentMethod AS PayMode,
-            cct.PaidAmount AS SysAmount,
-            cct.PaidAmount AS ManualAmount,
-            cct.PaidAmount AS SubTotal,
-            0 AS DiscountAmount,
-            NULL AS DiscountType,
-            0 AS ServiceCharge,
-            0 AS TotalTax,
-            0 AS TakeawayCharge,
-            1 AS ReceiptCount,
-            0 AS VoidQty,
-            0 AS VoidAmount,
-            0 AS IsCancelled,
-            NULL AS CancellationReason,
-            NULL AS CancelledDate,
-            NULL AS CancelledByUserName,
-            NULL AS MasterOrderId,
-            0 AS TotalDiscountAmount,
-            0 AS TotalLineItemDiscountAmount,
-            0 AS RoundedBy,
-            0 AS DiscountPercentage,
-            0 AS OutstandingAmount,
-            COALESCE(mm.Name, m.Name) AS CustomerName,
+             cct.PaidAmount AS SysAmount,
+             cct.PaidAmount AS ManualAmount,
+             cct.PaidAmount AS SubTotal,
+             0 AS DiscountAmount,
+             NULL AS DiscountType,
+             0 AS ServiceCharge,
+             0 AS TotalTax,
+             0 AS TakeawayCharge,
+             1 AS ReceiptCount,
+             0 AS VoidQty,
+             0 AS VoidAmount,
+             0 AS IsCancelled,
+             NULL AS CancellationReason,
+             NULL AS CancelledDate,
+             NULL AS CancelledByUserName,
+             NULL AS MasterOrderId,
+             0 AS TotalDiscountAmount,
+             0 AS TotalLineItemDiscountAmount,
+             0 AS RoundedBy,
+             0 AS DiscountPercentage,
+             0 AS OutstandingAmount,
+             COALESCE(m.Name, mm.Name) AS CustomerName,
              (SELECT TOP 1 tx.BillNo FROM CustomerCreditAllocations cca JOIN CustomerCreditTransactions tx ON cca.InvoiceTransactionId = tx.TransactionId WHERE cca.PaymentTransactionId = cct.TransactionId) AS CreditOrderNo,
-            NULL AS GuestName,
-            NULL AS Pax,
-            NULL AS entryStatus
-          FROM CustomerCreditTransactions cct
-          LEFT JOIN CreditCustomerMaster m ON cct.MemberId = m.CustomerId
-          LEFT JOIN MemberMaster mm ON cct.MemberId = mm.MemberId
+             COALESCE(m.Name, mm.Name) AS GuestName,
+             NULL AS Pax,
+             NULL AS entryStatus,
+             COALESCE(m.Phone, mm.Phone) AS CustomerPhone,
+             ISNULL(cct.CustomerType, CASE WHEN m.CustomerId IS NOT NULL THEN 'CREDIT' ELSE 'MEMBER' END) AS CustomerType
+           FROM CustomerCreditTransactions cct
+           LEFT JOIN CreditCustomerMaster m ON cct.MemberId = m.CustomerId AND (cct.CustomerType = 'CREDIT' OR cct.CustomerType IS NULL)
+           LEFT JOIN MemberMaster mm ON cct.MemberId = mm.MemberId AND (cct.CustomerType = 'MEMBER' OR (cct.CustomerType IS NULL AND m.CustomerId IS NULL))
            LEFT JOIN UserMaster um ON TRY_CAST(cct.CreatedBy AS UNIQUEIDENTIFIER) = um.UserId
            WHERE cct.TransactionType = 'PAYMENT' AND ${cctWhere}
         ) CombinedSales
@@ -490,7 +508,13 @@ router.get("/all", async (req, res) => {
              NULL AS CreditOrderNo,
              sh.GuestName as GuestName,
              sh.Pax as Pax,
-             COALESCE(sh.entry_status, ro.entry_status) AS entryStatus
+             COALESCE(sh.entry_status, ro.entry_status) AS entryStatus,
+             COALESCE(mm.Phone, ccm.Phone, mm_sale.Phone, ccm_sale.Phone) AS CustomerPhone,
+             CASE 
+               WHEN mm.MemberId IS NOT NULL OR mm_sale.MemberId IS NOT NULL THEN 'MEMBER'
+               WHEN ccm.CustomerId IS NOT NULL OR ccm_sale.CustomerId IS NOT NULL THEN 'CREDIT'
+               ELSE NULL
+             END AS CustomerType
            FROM SettlementHeader sh
            LEFT JOIN RestaurantOrderCur ro ON sh.BillNo = ro.OrderNumber
            LEFT JOIN (
@@ -511,11 +535,17 @@ router.get("/all", async (req, res) => {
            SELECT 
              cct.TransactionId AS SettlementID,
              cct.CreatedDate AS SettlementDate,
-             CAST(cct.CreatedDate AS DATE) AS BusinessDate,
-             CASE WHEN mm.MemberId IS NOT NULL THEN 'Member Payment Collected' ELSE 'Credit Payment Collected' END AS OrderId,
+             COALESCE(cct.start_date, CAST(cct.CreatedDate AS DATE)) AS BusinessDate,
+             CASE 
+               WHEN cct.CustomerType = 'CREDIT' THEN 'Credit Payment Collected'
+               WHEN cct.CustomerType = 'MEMBER' THEN 'Member Payment Collected'
+               WHEN m.CustomerId IS NOT NULL THEN 'Credit Payment Collected'
+               WHEN mm.MemberId IS NOT NULL THEN 'Member Payment Collected'
+               ELSE 'Credit Payment Collected'
+             END AS OrderId,
              'LEDGER' AS OrderType,
              'LEDGER' AS TableNo,
-             COALESCE(mm.Name, m.Name, 'Customer') AS Section,
+             COALESCE(m.Name, mm.Name, 'Customer') AS Section,
              CAST(cct.CreatedBy AS VARCHAR(50)) AS CashierId,
             cct.Remarks AS BillNo,
             'Cashier' AS SER_NAME,
@@ -542,14 +572,16 @@ router.get("/all", async (req, res) => {
             0 AS RoundedBy,
             0 AS DiscountPercentage,
             0 AS OutstandingAmount,
-            COALESCE(mm.Name, m.Name) AS CustomerName,
+            COALESCE(m.Name, mm.Name) AS CustomerName,
              (SELECT TOP 1 tx.BillNo FROM CustomerCreditAllocations cca JOIN CustomerCreditTransactions tx ON cca.InvoiceTransactionId = tx.TransactionId WHERE cca.PaymentTransactionId = cct.TransactionId) AS CreditOrderNo,
-            NULL AS GuestName,
+            COALESCE(m.Name, mm.Name) AS GuestName,
             NULL AS Pax,
-            NULL AS entryStatus
+            NULL AS entryStatus,
+            COALESCE(m.Phone, mm.Phone) AS CustomerPhone,
+            ISNULL(cct.CustomerType, CASE WHEN m.CustomerId IS NOT NULL THEN 'CREDIT' ELSE 'MEMBER' END) AS CustomerType
           FROM CustomerCreditTransactions cct
-          LEFT JOIN CreditCustomerMaster m ON cct.MemberId = m.CustomerId
-          LEFT JOIN MemberMaster mm ON cct.MemberId = mm.MemberId
+          LEFT JOIN CreditCustomerMaster m ON cct.MemberId = m.CustomerId AND (cct.CustomerType = 'CREDIT' OR cct.CustomerType IS NULL)
+          LEFT JOIN MemberMaster mm ON cct.MemberId = mm.MemberId AND (cct.CustomerType = 'MEMBER' OR (cct.CustomerType IS NULL AND m.CustomerId IS NULL))
            LEFT JOIN UserMaster um ON TRY_CAST(cct.CreatedBy AS UNIQUEIDENTIFIER) = um.UserId
            WHERE cct.TransactionType = 'PAYMENT'
          ) CombinedSales
@@ -961,9 +993,56 @@ router.get("/login-wise-sales", async (req, res) => {
     const date = req.query.date;
     const { startDate, endDate } = req.query;
     const dateWhere = getReportDateWhereSql(filter, "sh.LastSettlementDate", date, startDate, endDate);
+    const cctDateWhere = getReportDateWhereSql(filter, "cct.CreatedDate", date, startDate, endDate);
     console.log(`[REPORT API] type=login-wise-sales filter=${filter} date=${date || 'today'} range=${startDate || ''}..${endDate || ''}`);
 
     const result = await pool.request().query(`
+      WITH HeaderTotals AS (
+        SELECT
+          sh.CashierId,
+          COUNT(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 THEN 1 END) AS TotalBills,
+          ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 THEN sh.SubTotal ELSE 0 END), 0) AS TotalSubTotal,
+          ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 THEN sh.DiscountAmount ELSE 0 END), 0) AS TotalDiscount,
+          ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 THEN sh.ServiceCharge ELSE 0 END), 0) AS TotalServiceCharge,
+          ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 THEN sh.TotalTax ELSE 0 END), 0) AS TotalTax,
+          ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 THEN sh.TakeawayCharge ELSE 0 END), 0) AS TotalTakeaway,
+          ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 THEN sh.VoidItemAmount ELSE 0 END), 0) AS TotalVoidAmount,
+          ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 THEN sh.VoidItemQty ELSE 0 END), 0) AS TotalVoidQty,
+          ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 THEN sh.RoundedBy ELSE 0 END), 0) AS TotalRounded,
+          ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 THEN sh.SysAmount ELSE 0 END), 0) AS TotalSales,
+          ISNULL(SUM(CASE WHEN sh.IsCancelled = 1 THEN 1 ELSE 0 END), 0) AS CancelledBills
+        FROM SettlementHeader sh
+        WHERE ${dateWhere}
+        GROUP BY sh.CashierId
+      ),
+      PaymentTotals AS (
+        SELECT
+          sh.CashierId,
+          ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 AND UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('CASH','CAS','1') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS CashAmount,
+          ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 AND UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('CARD','VISA','MASTER','MASTERCARD','AMEX') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS CardAmount,
+          ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 AND UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('PAYNOW','3') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS PayNowAmount,
+          ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 AND UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('NETS','2') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS NetsAmount,
+          ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 AND UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('MEMBER','5') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS MemberAmount,
+          ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 AND UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('CREDIT','6') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS CreditAmount,
+          ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 AND UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('GRAB','10') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS GrabAmount,
+          ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 AND UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('FOODPANDA','9') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS FoodPandaAmount,
+          ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 AND UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('UPI','4','GPAY') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS UpiAmount,
+          ISNULL(SUM(CASE WHEN ISNULL(sh.IsCancelled, 0) = 0 AND UPPER(ISNULL(sts.PayMode,'')) LIKE 'YEAHPAY%' THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS YeahPayAmount
+        FROM SettlementHeader sh
+        LEFT JOIN SettlementTotalSales sts ON sh.SettlementID = sts.SettlementID
+        WHERE ${dateWhere}
+        GROUP BY sh.CashierId
+      ),
+      CreditCollections AS (
+        SELECT
+          cct.CreatedBy AS CashierIdRaw,
+          ISNULL(SUM(cct.PaidAmount), 0) AS CreditCollectedAmount
+        FROM CustomerCreditTransactions cct
+        WHERE cct.TransactionType = 'PAYMENT'
+          AND ISNULL(cct.CustomerType, 'CREDIT') = 'CREDIT'
+          AND ${cctDateWhere}
+        GROUP BY cct.CreatedBy
+      )
       SELECT
         u.UserId AS CashierId,
         ISNULL(NULLIF(LTRIM(RTRIM(u.FullName)), ''), u.UserName) AS CashierName,
@@ -971,86 +1050,54 @@ router.get("/login-wise-sales", async (req, res) => {
         ISNULL(u.UserCode, '-') AS UserCode,
         ISNULL(g.UserGroupCode, 'CASHIER') AS RoleCode,
         ISNULL(g.UserGroupName, 'Cashier') AS RoleName,
-        COUNT(DISTINCT sh.SettlementID) AS TotalBills,
-        ISNULL(SUM(sh.SubTotal), 0) AS TotalSubTotal,
-        ISNULL(SUM(sh.DiscountAmount), 0) AS TotalDiscount,
-        ISNULL(SUM(sh.ServiceCharge), 0) AS TotalServiceCharge,
-        ISNULL(SUM(sh.TotalTax), 0) AS TotalTax,
-        ISNULL(SUM(sh.TakeawayCharge), 0) AS TotalTakeaway,
-        ISNULL(SUM(sh.VoidItemAmount), 0) AS TotalVoidAmount,
-        ISNULL(SUM(sh.VoidItemQty), 0) AS TotalVoidQty,
-        ISNULL(SUM(sh.RoundedBy), 0) AS TotalRounded,
-        ISNULL(SUM(ISNULL(sts.SysAmount, sh.SysAmount)), 0) AS TotalSales,
-        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('CASH','CAS','1') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS CashAmount,
-        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('CARD','VISA','MASTER','MASTERCARD','AMEX') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS CardAmount,
-        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('PAYNOW','3') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS PayNowAmount,
-        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('NETS','2') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS NetsAmount,
-        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('MEMBER','5') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS MemberAmount,
-        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('CREDIT','6') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS CreditAmount,
-        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('GRAB','10') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS GrabAmount,
-        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('FOODPANDA','9') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS FoodPandaAmount,
-        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('UPI','4','GPAY') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS UpiAmount,
-        ISNULL(SUM(CASE WHEN UPPER(ISNULL(sts.PayMode,'')) LIKE 'YEAHPAY%' THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS YeahPayAmount,
-        ISNULL(SUM(CASE WHEN sh.IsCancelled = 1 THEN 1 ELSE 0 END), 0) AS CancelledBills
+        ISNULL(h.TotalBills, 0) AS TotalBills,
+        ISNULL(h.TotalSubTotal, 0) AS TotalSubTotal,
+        ISNULL(h.TotalDiscount, 0) AS TotalDiscount,
+        ISNULL(h.TotalServiceCharge, 0) AS TotalServiceCharge,
+        ISNULL(h.TotalTax, 0) AS TotalTax,
+        ISNULL(h.TotalTakeaway, 0) AS TotalTakeaway,
+        ISNULL(h.TotalVoidAmount, 0) AS TotalVoidAmount,
+        ISNULL(h.TotalVoidQty, 0) AS TotalVoidQty,
+        ISNULL(h.TotalRounded, 0) AS TotalRounded,
+        ISNULL(h.TotalSales, 0) AS TotalSales,
+        ISNULL(p.CashAmount, 0) AS CashAmount,
+        ISNULL(p.CardAmount, 0) AS CardAmount,
+        ISNULL(p.PayNowAmount, 0) AS PayNowAmount,
+        ISNULL(p.NetsAmount, 0) AS NetsAmount,
+        ISNULL(p.MemberAmount, 0) AS MemberAmount,
+        ISNULL(p.CreditAmount, 0) AS CreditAmount,
+        ISNULL(p.GrabAmount, 0) AS GrabAmount,
+        ISNULL(p.FoodPandaAmount, 0) AS FoodPandaAmount,
+        ISNULL(p.UpiAmount, 0) AS UpiAmount,
+        ISNULL(p.YeahPayAmount, 0) AS YeahPayAmount,
+        ISNULL(h.CancelledBills, 0) AS CancelledBills,
+        ISNULL(cc.CreditCollectedAmount, 0) AS CreditCollectedAmount
       FROM (
         SELECT CAST(UserId AS NVARCHAR(50)) AS UserId, UserName, FullName, UserCode, UserGroupid FROM UserMaster
       ) u
       LEFT JOIN UserGroupMaster g ON u.UserGroupid = g.UserGroupId
-      LEFT JOIN SettlementHeader sh ON (
-        TRY_CAST(sh.CashierId AS UNIQUEIDENTIFIER) = u.UserId 
-        OR CAST(sh.CashierId AS NVARCHAR(50)) = u.UserId
-        OR LOWER(LTRIM(RTRIM(sh.CashierId))) = LOWER(LTRIM(RTRIM(u.UserName)))
-        OR LOWER(LTRIM(RTRIM(sh.CashierId))) = LOWER(LTRIM(RTRIM(u.UserCode)))
-        OR LOWER(LTRIM(RTRIM(sh.CashierId))) = LOWER(LTRIM(RTRIM(u.FullName)))
-      ) AND (${dateWhere})
-      LEFT JOIN SettlementTotalSales sts ON sh.SettlementID = sts.SettlementID
-      GROUP BY
-        u.UserId, u.UserName, u.FullName, u.UserCode,
-        g.UserGroupCode, g.UserGroupName
-
-      UNION ALL
-
-      SELECT
-        CAST(sh.CashierId AS NVARCHAR(50)) AS CashierId,
-        'Unknown / Unassigned' AS CashierName,
-        '-' AS UserLogin,
-        '-' AS UserCode,
-        'UNKNOWN' AS RoleCode,
-        'Unknown' AS RoleName,
-        COUNT(DISTINCT sh.SettlementID) AS TotalBills,
-        ISNULL(SUM(sh.SubTotal), 0) AS TotalSubTotal,
-        ISNULL(SUM(sh.DiscountAmount), 0) AS TotalDiscount,
-        ISNULL(SUM(sh.ServiceCharge), 0) AS TotalServiceCharge,
-        ISNULL(SUM(sh.TotalTax), 0) AS TotalTax,
-        ISNULL(SUM(sh.TakeawayCharge), 0) AS TotalTakeaway,
-        ISNULL(SUM(sh.VoidItemAmount), 0) AS TotalVoidAmount,
-        ISNULL(SUM(sh.VoidItemQty), 0) AS TotalVoidQty,
-        ISNULL(SUM(sh.RoundedBy), 0) AS TotalRounded,
-        ISNULL(SUM(ISNULL(sts.SysAmount, sh.SysAmount)), 0) AS TotalSales,
-        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('CASH','CAS','1') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS CashAmount,
-        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('CARD','VISA','MASTER','MASTERCARD','AMEX') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS CardAmount,
-        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('PAYNOW','3') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS PayNowAmount,
-        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('NETS','2') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS NetsAmount,
-        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('MEMBER','5') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS MemberAmount,
-        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('CREDIT','6') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS CreditAmount,
-        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('GRAB','10') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS GrabAmount,
-        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('FOODPANDA','9') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS FoodPandaAmount,
-        ISNULL(SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(sts.PayMode,'')))) IN ('UPI','4','GPAY') THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS UpiAmount,
-        ISNULL(SUM(CASE WHEN UPPER(ISNULL(sts.PayMode,'')) LIKE 'YEAHPAY%' THEN ISNULL(sts.SysAmount,0) ELSE 0 END), 0) AS YeahPayAmount,
-        ISNULL(SUM(CASE WHEN sh.IsCancelled = 1 THEN 1 ELSE 0 END), 0) AS CancelledBills
-      FROM SettlementHeader sh
-      LEFT JOIN SettlementTotalSales sts ON sh.SettlementID = sts.SettlementID
-      WHERE (${dateWhere}) 
-        AND (
-          sh.CashierId IS NULL 
-          OR (
-            TRY_CAST(sh.CashierId AS UNIQUEIDENTIFIER) NOT IN (SELECT UserId FROM UserMaster WHERE UserId IS NOT NULL)
-            AND LOWER(LTRIM(RTRIM(sh.CashierId))) NOT IN (SELECT LOWER(LTRIM(RTRIM(UserName))) FROM UserMaster WHERE UserName IS NOT NULL)
-            AND LOWER(LTRIM(RTRIM(sh.CashierId))) NOT IN (SELECT LOWER(LTRIM(RTRIM(UserCode))) FROM UserMaster WHERE UserCode IS NOT NULL)
-            AND LOWER(LTRIM(RTRIM(sh.CashierId))) NOT IN (SELECT LOWER(LTRIM(RTRIM(FullName))) FROM UserMaster WHERE FullName IS NOT NULL)
-          )
-        )
-      GROUP BY CAST(sh.CashierId AS NVARCHAR(50))
+      LEFT JOIN HeaderTotals h ON (
+        TRY_CAST(h.CashierId AS UNIQUEIDENTIFIER) = u.UserId 
+        OR CAST(h.CashierId AS NVARCHAR(50)) = u.UserId
+        OR LOWER(LTRIM(RTRIM(h.CashierId))) = LOWER(LTRIM(RTRIM(u.UserName)))
+        OR LOWER(LTRIM(RTRIM(h.CashierId))) = LOWER(LTRIM(RTRIM(u.UserCode)))
+        OR LOWER(LTRIM(RTRIM(h.CashierId))) = LOWER(LTRIM(RTRIM(u.FullName)))
+      )
+      LEFT JOIN PaymentTotals p ON (
+        TRY_CAST(p.CashierId AS UNIQUEIDENTIFIER) = u.UserId 
+        OR CAST(p.CashierId AS NVARCHAR(50)) = u.UserId
+        OR LOWER(LTRIM(RTRIM(p.CashierId))) = LOWER(LTRIM(RTRIM(u.UserName)))
+        OR LOWER(LTRIM(RTRIM(p.CashierId))) = LOWER(LTRIM(RTRIM(u.UserCode)))
+        OR LOWER(LTRIM(RTRIM(p.CashierId))) = LOWER(LTRIM(RTRIM(u.FullName)))
+      )
+      LEFT JOIN CreditCollections cc ON (
+        TRY_CAST(cc.CashierIdRaw AS UNIQUEIDENTIFIER) = u.UserId
+        OR CAST(cc.CashierIdRaw AS NVARCHAR(50)) = u.UserId
+        OR LOWER(LTRIM(RTRIM(cc.CashierIdRaw))) = LOWER(LTRIM(RTRIM(u.UserName)))
+        OR LOWER(LTRIM(RTRIM(cc.CashierIdRaw))) = LOWER(LTRIM(RTRIM(u.UserCode)))
+        OR LOWER(LTRIM(RTRIM(cc.CashierIdRaw))) = LOWER(LTRIM(RTRIM(u.FullName)))
+      )
+      WHERE ISNULL(h.TotalSales, 0) > 0 OR ISNULL(cc.CreditCollectedAmount, 0) > 0
       ORDER BY TotalSales DESC, CashierName ASC
     `);
 
@@ -1084,7 +1131,13 @@ router.get("/login-wise-settlement", async (req, res) => {
         COUNT(DISTINCT sh.SettlementID) AS ReceiptCount
       FROM SettlementHeader sh
       INNER JOIN SettlementTotalSales sts ON sh.SettlementID = sts.SettlementID
-      LEFT JOIN UserMaster um ON TRY_CAST(sh.CashierId AS UNIQUEIDENTIFIER) = um.UserId
+      LEFT JOIN UserMaster um ON (
+        TRY_CAST(sh.CashierId AS UNIQUEIDENTIFIER) = um.UserId
+        OR CAST(sh.CashierId AS NVARCHAR(50)) = um.UserId
+        OR LOWER(LTRIM(RTRIM(sh.CashierId))) = LOWER(LTRIM(RTRIM(um.UserName)))
+        OR LOWER(LTRIM(RTRIM(sh.CashierId))) = LOWER(LTRIM(RTRIM(um.UserCode)))
+        OR LOWER(LTRIM(RTRIM(sh.CashierId))) = LOWER(LTRIM(RTRIM(um.FullName)))
+      )
       WHERE ${dateWhere}
         AND ISNULL(sh.IsCancelled, 0) = 0
       GROUP BY
@@ -1613,12 +1666,20 @@ router.get("/day-end-summary", async (req, res) => {
       .query(`
         WITH RawCollections AS (
           SELECT 
-            CASE WHEN mm.MemberId IS NOT NULL THEN 'MEMBER' ELSE 'CREDIT' END AS CustomerType,
+            CASE 
+              WHEN cct.CustomerType = 'CREDIT' THEN 'CREDIT'
+              WHEN cct.CustomerType = 'MEMBER' THEN 'MEMBER'
+              WHEN ccm.CustomerId IS NOT NULL THEN 'CREDIT'
+              WHEN mm.MemberId IS NOT NULL THEN 'MEMBER'
+              ELSE 'CREDIT'
+            END AS CustomerType,
             UPPER(ISNULL(pm.Description, 'CASH')) AS PaymodeName,
             ptd.Amount
           FROM PaymentTransactionDetails ptd
           INNER JOIN Paymode pm ON pm.Position = ptd.PayModeId
-          LEFT JOIN MemberMaster mm ON ptd.ReferenceId = mm.MemberId
+          LEFT JOIN CustomerCreditTransactions cct ON ptd.ReferenceId = cct.TransactionId
+          LEFT JOIN CreditCustomerMaster ccm ON (ptd.ReferenceId = ccm.CustomerId OR cct.MemberId = ccm.CustomerId)
+          LEFT JOIN MemberMaster mm ON (ptd.ReferenceId = mm.MemberId OR cct.MemberId = mm.MemberId)
           WHERE ptd.ReferenceType = 'MEMBER'
             AND ${ptdWhereSql}
         )
@@ -2492,9 +2553,9 @@ router.post("/save", async (req, res) => {
 
               -- 3. PaymentTransactionDetails (for /detail/:id/payments breakdown)
               INSERT INTO [dbo].[PaymentTransactionDetails] (
-                PaymentTransactionId, ReferenceType, ReferenceId, PayModeId, Amount, ReferenceNo, CreatedBy, CreatedDate
+                PaymentTransactionId, ReferenceType, ReferenceId, PayModeId, Amount, ReferenceNo, CreatedBy, CreatedDate, start_date
               ) VALUES (
-                NEWID(), 'BILL', @RestaurantBillId, @Paymode, @Amount, @ReferenceNumber, @CreatedBy, GETDATE()
+                NEWID(), 'BILL', @RestaurantBillId, @Paymode, @Amount, @ReferenceNumber, @CreatedBy, GETDATE(), @startDate
               );
             `);
           console.log(`[SAVE SALE] PaymentDetail Sync Success. Rows affected: ${payResult.rowsAffected.join(', ')}`);

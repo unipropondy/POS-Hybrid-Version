@@ -30,7 +30,7 @@ import {
 } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { getSingaporeTimeTodayRange, formatToSingaporeDateTime } from "../../utils/timezoneHelper";
+import { getSingaporeTimeTodayRange, formatToSingaporeDateTime, getSingaporeDateString } from "../../utils/timezoneHelper";
 
 
 interface CustomDatePickerProps {
@@ -698,7 +698,11 @@ export default function SettlementScreen() {
 
   const pad = (n: number) => n.toString().padStart(2, '0');
   const formatLocal = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:00`;
-  const getLocalDateStr = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  // CRITICAL: Always use Singapore timezone for date strings sent to the backend.
+  // Device may be in IST (UTC+5:30), so JS local methods like .getDate() would return
+  // the wrong date (e.g. Sept 30 instead of Oct 1) since getSingaporeTimeTodayRange()
+  // returns UTC+8 midnight which is 21:30 in IST = previous calendar day.
+  const getLocalDateStr = (d: Date) => getSingaporeDateString(d);
 
   const formatDateTime = (date: Date) => {
     const d = date.getDate().toString().padStart(2, '0');
@@ -2533,7 +2537,7 @@ const fetchDayHistory = async () => {
                   <Text style={{ fontFamily: Fonts.bold, color: Theme.success, fontSize: isTablet ? 12 : 11 }}>Net Sales</Text>
                 </View>
                 <Text style={{ fontFamily: Fonts.black, fontSize: isTablet ? 22 : 16, color: Theme.success, marginTop: 5 }} numberOfLines={1} adjustsFontSizeToFit>
-                  {formatCurrency(selectedCashierId === "ALL" ? netSales : (loginWiseSales.find(r => r.CashierId === selectedCashierId)?.TotalSales || 0))}
+                  {formatCurrency(selectedCashierId === "ALL" ? (totalSales.NetTotal || loginWiseSales.reduce((sum, r) => sum + (parseFloat(r.TotalSales) || 0), 0) || netSales) : (loginWiseSales.find(r => r.CashierId === selectedCashierId)?.TotalSales || 0))}
                 </Text>
               </View>
 
@@ -2568,12 +2572,18 @@ const fetchDayHistory = async () => {
                 <View style={[styles.cardBody, { flex: 1 }]}>
                   {(() => {
                     const selRecord = loginWiseSales.find(r => r.CashierId === selectedCashierId);
-                    const subT = totalSales.SubTotal !== undefined ? totalSales.SubTotal : (selRecord?.TotalSubTotal || 0);
-                    const discT = totalSales.DiscountAmount !== undefined ? totalSales.DiscountAmount : (selRecord?.TotalDiscount || 0);
-                    const scT = totalSales.ServiceCharge !== undefined ? totalSales.ServiceCharge : (selRecord?.TotalServiceCharge || 0);
-                    const twT = totalSales.TakeawayCharge !== undefined ? totalSales.TakeawayCharge : (selRecord?.TotalTakeaway || 0);
-                    const gstT = totalSales.TotalTax !== undefined ? totalSales.TotalTax : (selRecord?.TotalTax || 0);
-                    const netT = selectedCashierId === "ALL" ? netSales : (loginWiseSales.find(r => r.CashierId === selectedCashierId)?.TotalSales || netSales);
+                    const sumSubTotal = loginWiseSales.reduce((sum, r) => sum + (parseFloat(r.TotalSubTotal) || 0), 0);
+                    const sumDiscount = loginWiseSales.reduce((sum, r) => sum + (parseFloat(r.TotalDiscount) || 0), 0);
+                    const sumServiceCharge = loginWiseSales.reduce((sum, r) => sum + (parseFloat(r.TotalServiceCharge) || 0), 0);
+                    const sumTakeaway = loginWiseSales.reduce((sum, r) => sum + (parseFloat(r.TotalTakeaway) || 0), 0);
+                    const sumTax = loginWiseSales.reduce((sum, r) => sum + (parseFloat(r.TotalTax) || 0), 0);
+                    const sumSales = loginWiseSales.reduce((sum, r) => sum + (parseFloat(r.TotalSales) || 0), 0);
+
+                    const subT = selectedCashierId !== "ALL" ? (selRecord?.TotalSubTotal || 0) : ((totalSales.SubTotal !== undefined && totalSales.SubTotal > 0) ? totalSales.SubTotal : sumSubTotal);
+                    const discT = selectedCashierId !== "ALL" ? (selRecord?.TotalDiscount || 0) : ((totalSales.DiscountAmount !== undefined && totalSales.DiscountAmount > 0) ? totalSales.DiscountAmount : sumDiscount);
+                    const scT = selectedCashierId !== "ALL" ? (selRecord?.TotalServiceCharge || 0) : ((totalSales.ServiceCharge !== undefined && totalSales.ServiceCharge > 0) ? totalSales.ServiceCharge : sumServiceCharge);
+                    const twT = selectedCashierId !== "ALL" ? (selRecord?.TotalTakeaway || 0) : ((totalSales.TakeawayCharge !== undefined && totalSales.TakeawayCharge > 0) ? totalSales.TakeawayCharge : sumTakeaway);
+                    const gstT = selectedCashierId !== "ALL" ? (selRecord?.TotalTax || 0) : ((totalSales.TotalTax !== undefined && totalSales.TotalTax > 0) ? totalSales.TotalTax : sumTax);
 
                     return (
                       <>
@@ -2619,7 +2629,9 @@ const fetchDayHistory = async () => {
 
                   <View style={[styles.row, styles.highlightRow, { marginTop: 'auto' }]}>
                     <Text style={[styles.rowLabel, styles.highlightText]}>Net Sales</Text>
-                    <Text style={[styles.rowValue, styles.highlightText]}>{formatCurrency(selectedCashierId === "ALL" ? netSales : (loginWiseSales.find(r => r.CashierId === selectedCashierId)?.TotalSales || 0))}</Text>
+                    <Text style={[styles.rowValue, styles.highlightText]}>
+                      {formatCurrency(selectedCashierId === "ALL" ? (totalSales.NetTotal || loginWiseSales.reduce((sum, r) => sum + (parseFloat(r.TotalSales) || 0), 0) || netSales) : (loginWiseSales.find(r => r.CashierId === selectedCashierId)?.TotalSales || 0))}
+                    </Text>
                   </View>
                 </View>
               </View>
@@ -2710,8 +2722,8 @@ const fetchDayHistory = async () => {
                       </Text>
                     </TouchableOpacity>
                   ))}
-                  {/* Auto-generated system rows: Credit Settlement — READ ONLY */}
-                  {cashInEntries.filter(ci => ci.CashInType === 'LEDGER' || ci.Reason === 'Ledger Payment' || ci.Reason === 'Credit Settlement').map((ci, i) => (
+                  {/* Auto-generated system rows: Credit Settlement — READ ONLY (only render if not already in payments) */}
+                  {cashInEntries.filter(ci => (ci.CashInType === 'LEDGER' || ci.Reason === 'Ledger Payment' || ci.Reason === 'Credit Settlement') && !payments.some(p => p.PaymodeName?.toUpperCase().includes("CREDIT SETTLEMENT"))).map((ci, i) => (
                     <View
                       key={`ci-sys-${i}`}
                       style={[styles.tableRow, { alignItems: 'center', opacity: 0.88 }]}
@@ -2813,12 +2825,13 @@ const fetchDayHistory = async () => {
                   {/* CREDIT ACTIVITY SUBSECTION */}
                   {(() => {
                     const creditIssuedToday = creditOutstanding.reduce((sum, c) => sum + (parseFloat(c.BilledAmount || c.Amount || 0) || 0), 0);
-                    const creditSettledToday = payments
+                    const paymentsCreditSettled = payments
                       .filter(p => {
                         const name = p.PaymodeName?.toUpperCase() || "";
                         return name.includes("LEDGER") || name.includes("CREDIT SETTLEMENT") || name.includes("CREDIT COLLECTED");
                       })
-                      .reduce((sum, p) => sum + (parseFloat(p.Amount) || 0), 0) + ledgerCashIn;
+                      .reduce((sum, p) => sum + (parseFloat(p.Amount) || 0), 0);
+                    const creditSettledToday = Math.max(paymentsCreditSettled, ledgerCashIn);
                     const creditUnpaidToday = creditOutstanding.reduce((sum, c) => sum + (parseFloat(c.Amount || 0) || 0), 0);
 
                     return (
