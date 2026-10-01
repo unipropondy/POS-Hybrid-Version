@@ -870,7 +870,12 @@ router.get('/cash-out/:terminal', authenticateToken, async (req, res) => {
     let userFilter = "";
     if (userId && userId !== "ALL" && userId !== "0") {
       request.input("userIdParam", sql.VarChar, userId);
-      userFilter = " AND (LOWER(LTRIM(RTRIM(CreatedBy))) = LOWER(LTRIM(RTRIM(@userIdParam))) OR TRY_CAST(CreatedBy AS NVARCHAR(50)) = @userIdParam)";
+      userFilter = ` AND (
+        LOWER(LTRIM(RTRIM(CreatedBy))) = LOWER(LTRIM(RTRIM(@userIdParam))) 
+        OR TRY_CAST(CreatedBy AS NVARCHAR(50)) = @userIdParam
+        OR CreatedBy IN (SELECT UserName FROM UserMaster WHERE CAST(UserId AS NVARCHAR(50)) = @userIdParam OR LOWER(LTRIM(RTRIM(UserName))) = LOWER(LTRIM(RTRIM(@userIdParam))) OR LOWER(LTRIM(RTRIM(FullName))) = LOWER(LTRIM(RTRIM(@userIdParam))))
+        OR CreatedBy IN (SELECT FullName FROM UserMaster WHERE CAST(UserId AS NVARCHAR(50)) = @userIdParam OR LOWER(LTRIM(RTRIM(UserName))) = LOWER(LTRIM(RTRIM(@userIdParam))) OR LOWER(LTRIM(RTRIM(FullName))) = LOWER(LTRIM(RTRIM(@userIdParam))))
+      )`;
     }
 
     let query = `
@@ -907,7 +912,14 @@ router.get('/cash-in/:terminal', authenticateToken, async (req, res) => {
     let userFilter = "";
     if (userId && userId !== "ALL" && userId !== "0") {
       request.input("userIdParam", sql.VarChar, userId);
-      userFilter = " AND (LOWER(LTRIM(RTRIM(ci.CreatedBy))) = LOWER(LTRIM(RTRIM(@userIdParam))) OR TRY_CAST(ci.CreatedBy AS NVARCHAR(50)) = @userIdParam OR LOWER(LTRIM(RTRIM(sh.CashierId))) = LOWER(LTRIM(RTRIM(@userIdParam))) OR TRY_CAST(sh.CashierId AS NVARCHAR(50)) = @userIdParam)";
+      userFilter = ` AND (
+        LOWER(LTRIM(RTRIM(ci.CreatedBy))) = LOWER(LTRIM(RTRIM(@userIdParam))) 
+        OR TRY_CAST(ci.CreatedBy AS NVARCHAR(50)) = @userIdParam 
+        OR LOWER(LTRIM(RTRIM(sh.CashierId))) = LOWER(LTRIM(RTRIM(@userIdParam))) 
+        OR TRY_CAST(sh.CashierId AS NVARCHAR(50)) = @userIdParam
+        OR ci.CreatedBy IN (SELECT UserName FROM UserMaster WHERE CAST(UserId AS NVARCHAR(50)) = @userIdParam OR LOWER(LTRIM(RTRIM(UserName))) = LOWER(LTRIM(RTRIM(@userIdParam))) OR LOWER(LTRIM(RTRIM(FullName))) = LOWER(LTRIM(RTRIM(@userIdParam))))
+        OR ci.CreatedBy IN (SELECT FullName FROM UserMaster WHERE CAST(UserId AS NVARCHAR(50)) = @userIdParam OR LOWER(LTRIM(RTRIM(UserName))) = LOWER(LTRIM(RTRIM(@userIdParam))) OR LOWER(LTRIM(RTRIM(FullName))) = LOWER(LTRIM(RTRIM(@userIdParam))))
+      )`;
     }
 
     let query = `
@@ -962,7 +974,7 @@ router.post('/cash-in', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Valid amount is required' });
     }
 
-    const createdBy = req.user?.userName || req.user?.username || 'Admin';
+    const createdBy = req.body.createdBy || req.user?.userName || req.user?.username || req.user?.id || req.user?.userId || 'Admin';
     const pool = getPool();
 
     const targetDate = date ? new Date(date) : new Date();
@@ -1063,7 +1075,7 @@ router.post('/cash-out', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Valid amount is required' });
     }
 
-    const createdBy = req.user?.userName || req.user?.username || 'Admin';
+    const createdBy = req.body.createdBy || req.user?.userName || req.user?.username || req.user?.id || req.user?.userId || 'Admin';
     const pool = getPool();
 
     // Generate simple auto-incrementing/timestamp-based CashOutNo
