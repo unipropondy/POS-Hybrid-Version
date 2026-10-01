@@ -264,7 +264,6 @@ router.get("/users-settlement", async (req, res) => {
           OR CAST(cc.CashierIdRaw AS NVARCHAR(50)) = CAST(sh.CashierId AS NVARCHAR(50))
           OR LOWER(LTRIM(RTRIM(cc.CashierIdRaw))) = LOWER(LTRIM(RTRIM(sh.CashierId)))
         )
-        WHERE COALESCE(sh.start_date, CAST(sh.LastSettlementDate AS DATE)) BETWEEN @fromDate AND @toDate
         WHERE COALESCE(sh.start_date, CAST(sh.LastSettlementDate AS DATE), CAST(sh.CreatedOn AS DATE)) BETWEEN @fromDate AND @toDate
           AND ISNULL(sh.IsCancelled, 0) = 0
         GROUP BY

@@ -986,6 +986,13 @@ const fetchDayHistory = async () => {
 
   const salesCash = normalCashSales;
 
+  const creditSettlementCashFromPayments = payments
+    .filter(p => {
+      const name = (p.PaymodeName || "").toUpperCase().trim();
+      return name.includes("CREDIT SETTLEMENT - CASH") || name.includes("CREDIT SETTLEMENT CASH");
+    })
+    .reduce((sum, p) => sum + (parseFloat(p.Amount) || 0), 0);
+
   const ledgerCashIn = cashInEntries
     .filter(ci => ci.CashInType === 'LEDGER' || ci.Reason === 'Ledger Payment' || ci.Reason === 'Credit Settlement')
     .reduce((sum, ci) => sum + (parseFloat(ci.Amount) || 0), 0);
@@ -997,20 +1004,22 @@ const fetchDayHistory = async () => {
   const cashInTransactionsSum = transactions.filter(t => t.TransactionType === "IN").reduce((sum, t) => sum + (parseFloat(t.Amount) || 0), 0);
   const cashOutTransactionsSum = transactions.filter(t => t.TransactionType === "OUT").reduce((sum, t) => sum + (parseFloat(t.Amount) || 0), 0);
 
-  const displayManualCashIn = ledgerCashIn + manualCashIn;
+  const effectiveLedgerCashIn = ledgerCashIn + creditSettlementCashFromPayments;
 
-  const displayCashInCard = salesCash + ledgerCashIn + manualCashIn + cashInTransactionsSum;
+  const displayManualCashIn = effectiveLedgerCashIn + manualCashIn;
+
+  const displayCashInCard = salesCash + effectiveLedgerCashIn + manualCashIn + cashInTransactionsSum;
 
   const displayCashOutCard = totalCashOut + cashOutTransactionsSum;
 
-  const totalCashIn = salesCash + displayOpeningAmount + ledgerCashIn + manualCashIn + cashInTransactionsSum;
+  const totalCashIn = salesCash + displayOpeningAmount + effectiveLedgerCashIn + manualCashIn + cashInTransactionsSum;
 
   const totalCashOutSum = totalCashOut + cashOutTransactionsSum;
 
   const nonCashTotal = payments
     .filter(p => {
       const name = p.PaymodeName?.toUpperCase().trim() || "";
-      return name !== 'CASH' && name !== 'CASHBOX' && name !== 'CASH BOX' && name !== 'FOC';
+      return name !== 'CASH' && name !== 'CASHBOX' && name !== 'CASH BOX' && name !== 'FOC' && !name.includes("CREDIT SETTLEMENT - CASH") && !name.includes("CREDIT SETTLEMENT CASH");
     })
     .reduce((sum, p) => sum + (parseFloat(p.Amount) || 0), 0);
 
@@ -1511,7 +1520,7 @@ const fetchDayHistory = async () => {
       const businessDateStr = isRangeMode
         ? `${selectedDate.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' })} - ${selectedEndDate.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' })}`
         : selectedDate.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
-      const cashInTotalSum = totalCashInEntries + transactions.filter(t => t.TransactionType === "IN").reduce((sum, t) => sum + (parseFloat(t.Amount) || 0), 0);
+      const cashInTotalSum = totalCashInEntries + creditSettlementCashFromPayments + transactions.filter(t => t.TransactionType === "IN").reduce((sum, t) => sum + (parseFloat(t.Amount) || 0), 0);
 
       const creditIssuedToday = creditOutstanding.reduce((sum, c) => sum + (parseFloat(c.BilledAmount || c.Amount || 0) || 0), 0);
       const creditSettledToday = payments
