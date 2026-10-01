@@ -815,12 +815,6 @@ router.get('/cash-out/:terminal', authenticateToken, async (req, res) => {
       userFilter = " AND (LOWER(LTRIM(RTRIM(CreatedBy))) = LOWER(LTRIM(RTRIM(@userIdParam))) OR TRY_CAST(CreatedBy AS NVARCHAR(50)) = @userIdParam)";
     }
 
-    let userFilter = "";
-    if (userId && userId !== "ALL" && userId !== "0") {
-      request.input("userIdParam", sql.VarChar, userId);
-      userFilter = " AND (LOWER(LTRIM(RTRIM(CreatedBy))) = LOWER(LTRIM(RTRIM(@userIdParam))) OR TRY_CAST(CreatedBy AS NVARCHAR(50)) = @userIdParam)";
-    }
-
     let query = `
       SELECT CashOutId, CashOutNo, CashOutDate, Amount, Reason, Remarks, PaymentMode, ReferenceNo, TerminalCode, CreatedBy, CreatedOn, start_date, AttachmentUrl
       FROM CashOutEntry 
@@ -850,12 +844,6 @@ router.get('/cash-in/:terminal', authenticateToken, async (req, res) => {
       request.input("fromDate", sql.Date, new Date(fromDate));
       request.input("toDate", sql.Date, new Date(toDate));
       dateFilter = "COALESCE(CAST(CashInDate as DATE), start_date) BETWEEN @fromDate AND @toDate";
-    }
-
-    let userFilter = "";
-    if (userId && userId !== "ALL" && userId !== "0") {
-      request.input("userIdParam", sql.VarChar, userId);
-      userFilter = " AND (LOWER(LTRIM(RTRIM(ci.CreatedBy))) = LOWER(LTRIM(RTRIM(@userIdParam))) OR TRY_CAST(ci.CreatedBy AS NVARCHAR(50)) = @userIdParam OR LOWER(LTRIM(RTRIM(sh.CashierId))) = LOWER(LTRIM(RTRIM(@userIdParam))) OR TRY_CAST(sh.CashierId AS NVARCHAR(50)) = @userIdParam)";
     }
 
     let userFilter = "";
