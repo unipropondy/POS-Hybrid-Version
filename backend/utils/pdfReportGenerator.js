@@ -295,6 +295,8 @@ const generateSalesReportPdf = async (reportData) => {
     companyPhone = "",
     period = "",
     printedOn = "",
+    cashierName = "",
+    printedBy = "",
     totalSales = 0,
     totalCollections = 0,
     creditPaymentsCollected = 0,
