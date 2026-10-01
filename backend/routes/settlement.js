@@ -63,7 +63,7 @@ router.get("/payment/:terminal/:userId", async (req, res) => {
     let shDateFilter     = "CAST(COALESCE(sh.start_date, CAST(sh.LastSettlementDate AS DATE), CAST(sh.CreatedOn AS DATE)) AS DATE) = CAST(GETDATE() AS DATE)";
     let cctBizDateFilter = "CAST(COALESCE(start_date, CreatedDate) AS DATE) = CAST(GETDATE() AS DATE)";
     let ptdDateFilter    = "COALESCE(ptd.start_date, CAST(ptd.CreatedDate AS DATE)) = CAST(GETDATE() AS DATE)";
-    let pdcDateFilter    = "COALESCE(pdc.start_date, CAST(pdc.CreatedDate AS DATE)) = CAST(GETDATE() AS DATE)";
+    let pdcDateFilter    = "COALESCE(pdc.start_date, CAST(pdc.CreatedOn AS DATE)) = CAST(GETDATE() AS DATE)";
 
     if (fromDate && toDate) {
       const fDate = fromDate.replace(/[^0-9T:.-]/g, '');
@@ -71,7 +71,7 @@ router.get("/payment/:terminal/:userId", async (req, res) => {
       shDateFilter     = `CAST(COALESCE(sh.start_date, CAST(sh.LastSettlementDate AS DATE), CAST(sh.CreatedOn AS DATE)) AS DATE) BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE)`;
       cctBizDateFilter = `CAST(COALESCE(start_date, CreatedDate) AS DATE) BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE)`;
       ptdDateFilter    = `COALESCE(ptd.start_date, CAST(ptd.CreatedDate AS DATE)) BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE)`;
-      pdcDateFilter    = `COALESCE(pdc.start_date, CAST(pdc.CreatedDate AS DATE)) BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE)`;
+      pdcDateFilter    = `COALESCE(pdc.start_date, CAST(pdc.CreatedOn AS DATE)) BETWEEN CAST('${fDate}' AS DATE) AND CAST('${tDate}' AS DATE)`;
     }
 
     let userFilter = "";
