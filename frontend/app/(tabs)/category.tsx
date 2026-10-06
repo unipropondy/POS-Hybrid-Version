@@ -1130,6 +1130,13 @@ export default function Category() {
   const { width, height } = useWindowDimensions();
   const router = useRouter();
   const [availableWidth, setAvailableWidth] = useState(780);
+  const { settings, fetchSettings } = useGeneralSettingsStore();
+
+  useFocusEffect(
+    React.useCallback(() => {
+      fetchSettings();
+    }, [])
+  );
 
   const onContainerLayout = (event: any) => {
     const { width } = event.nativeEvent.layout;
@@ -2785,26 +2792,28 @@ export default function Category() {
               style={{ flex: 1 }}
             >
               <View style={[styles.tabsWrapper, { gap: 6 }]}>
-                <TouchableOpacity
-                  onPress={() => router.push("/order-type")}
-                  activeOpacity={0.75}
-                  style={[
-                    styles.tabBtn,
-                    {
-                      backgroundColor: "#F1F5F9",
-                      borderColor: "#CBD5E1",
-                      borderWidth: 1,
-                      paddingVertical: 6,
-                      paddingHorizontal: 10,
-                      marginRight: 4,
-                    },
-                  ]}
-                >
-                  <Ionicons name="arrow-back" size={14} color="#0F172A" style={{ marginRight: 4 }} />
-                  <Text style={[styles.tabText, { color: "#0F172A", fontSize: 12, fontFamily: Fonts.bold }]}>
-                    Order Type
-                  </Text>
-                </TouchableOpacity>
+                {settings?.enableQuickServe === true && (
+                  <TouchableOpacity
+                    onPress={() => router.push("/order-type")}
+                    activeOpacity={0.75}
+                    style={[
+                      styles.tabBtn,
+                      {
+                        backgroundColor: "#F1F5F9",
+                        borderColor: "#CBD5E1",
+                        borderWidth: 1,
+                        paddingVertical: 6,
+                        paddingHorizontal: 10,
+                        marginRight: 4,
+                      },
+                    ]}
+                  >
+                    <Ionicons name="arrow-back" size={14} color="#0F172A" style={{ marginRight: 4 }} />
+                    <Text style={[styles.tabText, { color: "#0F172A", fontSize: 12, fontFamily: Fonts.bold }]}>
+                      Order Type
+                    </Text>
+                  </TouchableOpacity>
+                )}
                 {visibleSections.map((section) => {
                   const isActive = activeTab === section;
                   const sectionTables = allTables.filter((t: TableItem) => {
@@ -3096,26 +3105,28 @@ export default function Category() {
               style={styles.tabsScrollView}
             >
               <View style={[styles.tabsWrapper, { gap: isTablet ? 8 : 6 }]}>
-                <TouchableOpacity
-                  onPress={() => router.push("/order-type")}
-                  activeOpacity={0.75}
-                  style={[
-                    styles.tabBtn,
-                    {
-                      backgroundColor: "#F1F5F9",
-                      borderColor: "#CBD5E1",
-                      borderWidth: 1,
-                      paddingVertical: 6,
-                      paddingHorizontal: 12,
-                      marginRight: 4,
-                    },
-                  ]}
-                >
-                  <Ionicons name="arrow-back" size={16} color="#0F172A" style={{ marginRight: 5 }} />
-                  <Text style={[styles.tabText, { color: "#0F172A", fontSize: isTablet ? 15 : 13, fontFamily: Fonts.bold }]}>
-                    Order Type
-                  </Text>
-                </TouchableOpacity>
+                {settings?.enableQuickServe === true && (
+                  <TouchableOpacity
+                    onPress={() => router.push("/order-type")}
+                    activeOpacity={0.75}
+                    style={[
+                      styles.tabBtn,
+                      {
+                        backgroundColor: "#F1F5F9",
+                        borderColor: "#CBD5E1",
+                        borderWidth: 1,
+                        paddingVertical: 6,
+                        paddingHorizontal: 12,
+                        marginRight: 4,
+                      },
+                    ]}
+                  >
+                    <Ionicons name="arrow-back" size={16} color="#0F172A" style={{ marginRight: 5 }} />
+                    <Text style={[styles.tabText, { color: "#0F172A", fontSize: isTablet ? 15 : 13, fontFamily: Fonts.bold }]}>
+                      Order Type
+                    </Text>
+                  </TouchableOpacity>
+                )}
                 {visibleSections.map((section) => {
                   const isActive = activeTab === section;
                   const sectionTables = allTables.filter((t: TableItem) => {
@@ -3404,26 +3415,28 @@ export default function Category() {
             style={styles.tabsScrollView}
           >
             <View style={[styles.tabsWrapper, { gap: isTablet ? 8 : 6 }]}>
-              <TouchableOpacity
-                onPress={() => router.push("/order-type")}
-                activeOpacity={0.75}
-                style={[
-                  styles.tabBtn,
-                  {
-                    backgroundColor: "#F1F5F9",
-                    borderColor: "#CBD5E1",
-                    borderWidth: 1,
-                    paddingVertical: 6,
-                    paddingHorizontal: 12,
-                    marginRight: 4,
-                  },
-                ]}
-              >
-                <Ionicons name="arrow-back" size={16} color="#0F172A" style={{ marginRight: 5 }} />
-                <Text style={[styles.tabText, { color: "#0F172A", fontSize: isTablet ? 15 : 13, fontFamily: Fonts.bold }]}>
-                  Order Type
-                </Text>
-              </TouchableOpacity>
+              {settings?.enableQuickServe === true && (
+                <TouchableOpacity
+                  onPress={() => router.push("/order-type")}
+                  activeOpacity={0.75}
+                  style={[
+                    styles.tabBtn,
+                    {
+                      backgroundColor: "#F1F5F9",
+                      borderColor: "#CBD5E1",
+                      borderWidth: 1,
+                      paddingVertical: 6,
+                      paddingHorizontal: 12,
+                      marginRight: 4,
+                    },
+                  ]}
+                >
+                  <Ionicons name="arrow-back" size={16} color="#0F172A" style={{ marginRight: 5 }} />
+                  <Text style={[styles.tabText, { color: "#0F172A", fontSize: isTablet ? 15 : 13, fontFamily: Fonts.bold }]}>
+                    Order Type
+                  </Text>
+                </TouchableOpacity>
+              )}
               {visibleSections.map((section) => {
                 const isActive = activeTab === section;
                 const sectionTables = allTables.filter((t: TableItem) => {

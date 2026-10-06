@@ -120,6 +120,9 @@ export default function GeneralSettingsScreen() {
   const [enableCombo, setEnableCombo] = useState(
     settings.enableCombo !== undefined ? settings.enableCombo : true,
   );
+  const [enableQuickServe, setEnableQuickServe] = useState(
+    settings.enableQuickServe !== undefined ? settings.enableQuickServe : true,
+  );
   const [showLoyalty, setShowLoyalty] = useState(
     settings.showLoyalty !== undefined ? settings.showLoyalty : true,
   );
@@ -217,6 +220,9 @@ export default function GeneralSettingsScreen() {
     );
     setEnableCombo(
       settings.enableCombo !== undefined ? settings.enableCombo : true,
+    );
+    setEnableQuickServe(
+      settings.enableQuickServe !== undefined ? settings.enableQuickServe : true,
     );
     setShowLoyalty(
       settings.showLoyalty !== undefined ? settings.showLoyalty : true,
@@ -361,6 +367,7 @@ export default function GeneralSettingsScreen() {
         SVCIdentification,
         enableKDSPrint,
         enableCombo,
+        enableQuickServe,
         showLoyalty,
         showRewardPoints,
         showPromoCode,
@@ -591,6 +598,13 @@ export default function GeneralSettingsScreen() {
           icon: "fast-food-outline",
           value: enableCombo,
           onToggle: setEnableCombo,
+        },
+        {
+          title: "Quick Serve Feature",
+          desc: "Show the Quick Serve option in the Order Type screen.",
+          icon: "flash-outline",
+          value: enableQuickServe,
+          onToggle: setEnableQuickServe,
         },
         {
           title: "Loyalty Feature",

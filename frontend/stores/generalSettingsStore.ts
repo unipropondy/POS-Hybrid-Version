@@ -16,6 +16,7 @@ export interface GeneralSettings {
   SVCIdentification: boolean;
   enableKDSPrint: boolean;
   enableCombo: boolean;
+  enableQuickServe: boolean;
   showLoyalty: boolean;
   showRewardPoints: boolean;
   showPromoCode: boolean;
@@ -53,6 +54,7 @@ export const useGeneralSettingsStore = create<GeneralSettingsState>()(
         SVCIdentification: true,
         enableKDSPrint: true,
         enableCombo: true,
+        enableQuickServe: true,
         showLoyalty: true,
         showRewardPoints: true,
         showPromoCode: true,
@@ -90,6 +92,7 @@ export const useGeneralSettingsStore = create<GeneralSettingsState>()(
                 SVCIdentification: data.SVCIdentification !== undefined ? Boolean(data.SVCIdentification) : true,
                 enableKDSPrint: data.EnableKDSPrint !== undefined ? Boolean(data.EnableKDSPrint) : true,
                 enableCombo: data.EnableCombo !== undefined ? Boolean(data.EnableCombo) : true,
+                enableQuickServe: data.EnableQuickServe !== undefined ? Boolean(data.EnableQuickServe) : true,
                 showLoyalty: data.ShowLoyalty !== undefined ? Boolean(data.ShowLoyalty) : true,
                 showRewardPoints: data.ShowRewardPoints !== undefined ? Boolean(data.ShowRewardPoints) : true,
                 showPromoCode: data.ShowPromoCode !== undefined ? Boolean(data.ShowPromoCode) : true,
@@ -140,6 +143,7 @@ export const useGeneralSettingsStore = create<GeneralSettingsState>()(
             SVCIdentification: updatedSettings.SVCIdentification,
             enableKDSPrint: updatedSettings.enableKDSPrint,
             enableCombo: updatedSettings.enableCombo,
+            enableQuickServe: updatedSettings.enableQuickServe,
             showLoyalty: updatedSettings.showLoyalty,
             showRewardPoints: updatedSettings.showRewardPoints,
             showPromoCode: updatedSettings.showPromoCode,

@@ -43,6 +43,7 @@ const FIELD_DEFINITIONS = {
   EnableCashDrawer: { category: "GENERAL_SETTINGS", label: "Enable Cash Drawer" },
   EnableKDSPrint: { category: "GENERAL_SETTINGS", label: "Enable KDS Print" },
   EnableCombo: { category: "GENERAL_SETTINGS", label: "Enable Combo Dishes" },
+  EnableQuickServe: { category: "GENERAL_SETTINGS", label: "Quick Serve Feature" },
   ShowLoyalty: { category: "GENERAL_SETTINGS", label: "Show Loyalty" },
   ShowRewardPoints: { category: "GENERAL_SETTINGS", label: "Show Reward Points" },
   ShowPromoCode: { category: "GENERAL_SETTINGS", label: "Show Promo Code" },

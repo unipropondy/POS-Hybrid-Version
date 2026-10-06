@@ -39,6 +39,14 @@ router.get("/", async (req, res) => {
 
       IF NOT EXISTS (
         SELECT * FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'EnableQuickServe'
+      )
+      BEGIN
+        ALTER TABLE AppSettings ADD EnableQuickServe BIT DEFAULT 1 WITH VALUES;
+      END
+
+      IF NOT EXISTS (
+        SELECT * FROM INFORMATION_SCHEMA.COLUMNS
         WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'ShowLoyalty'
       )
       BEGIN
@@ -142,6 +150,8 @@ router.get("/", async (req, res) => {
       END
     `).catch(err => console.warn("Failed self-healing AppSettings column:", err.message));
 
+    invalidateCache();
+
     const settings = await getAppSettings();
     res.json({
       ...(settings || {}),
@@ -156,6 +166,7 @@ router.get("/", async (req, res) => {
       EnableReceiptPrint: settings?.EnableReceiptPrint !== undefined ? (settings.EnableReceiptPrint ? 1 : 0) : 1,
       EnableVoiceSuccess: settings?.EnableVoiceSuccess !== undefined ? (settings.EnableVoiceSuccess ? 1 : 0) : 1,
       EnableNotificationSound: settings?.EnableNotificationSound !== undefined ? (settings.EnableNotificationSound ? 1 : 0) : 1,
+      EnableQuickServe: settings?.EnableQuickServe !== undefined ? (settings.EnableQuickServe ? 1 : 0) : 1,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -165,7 +176,7 @@ router.get("/", async (req, res) => {
 // 🔹 UPDATE Settings
 router.post("/update", async (req, res) => {
   try {
-    const { upiId, shopName, qrCodeUrl, enableKOT, enableKDS, enableCheckoutBill, enableCheckoutFlow, enableDirectProcessToPay, customerSideDisplay, enableGuestDetailsPopup, enableCashDrawer, SVCIdentification, enableKDSPrint, enableCombo, showLoyalty, showRewardPoints, showPromoCode, enableOnlinePayment, enableQROrderAutoPrint, enableComboPrint, enableRequestService, enableCookingInstructions, enableDirectPaymentToProcess, enableSkipSummaryScreen, enableReceiptPrint, enableVoiceSuccess, enableNotificationSound } = req.body;
+    const { upiId, shopName, qrCodeUrl, enableKOT, enableKDS, enableCheckoutBill, enableCheckoutFlow, enableDirectProcessToPay, customerSideDisplay, enableGuestDetailsPopup, enableCashDrawer, SVCIdentification, enableKDSPrint, enableCombo, enableQuickServe, showLoyalty, showRewardPoints, showPromoCode, enableOnlinePayment, enableQROrderAutoPrint, enableComboPrint, enableRequestService, enableCookingInstructions, enableDirectPaymentToProcess, enableSkipSummaryScreen, enableReceiptPrint, enableVoiceSuccess, enableNotificationSound } = req.body;
     const pool = await poolPromise;
 
     // Snapshot existing app settings before update
@@ -193,6 +204,7 @@ router.post("/update", async (req, res) => {
       .input("EnableKDSPrint", sql.Bit, enableKDSPrint !== undefined ? enableKDSPrint : 1)
       .input("SVCIdentification", sql.Bit, SVCIdentification !== undefined ? SVCIdentification : 1)
       .input("EnableCombo", sql.Bit, enableCombo !== undefined ? enableCombo : 1)
+      .input("EnableQuickServe", sql.Bit, enableQuickServe !== undefined ? enableQuickServe : 1)
       .input("ShowLoyalty", sql.Bit, showLoyalty !== undefined ? showLoyalty : 1)
       .input("ShowRewardPoints", sql.Bit, showRewardPoints !== undefined ? showRewardPoints : 1)
       .input("ShowPromoCode", sql.Bit, showPromoCode !== undefined ? showPromoCode : 1)
@@ -225,6 +237,7 @@ router.post("/update", async (req, res) => {
             EnableKDSPrint = @EnableKDSPrint,
             SVCIdentification = @SVCIdentification,
             EnableCombo = @EnableCombo,
+            EnableQuickServe = @EnableQuickServe,
             ShowLoyalty = @ShowLoyalty,
             ShowRewardPoints = @ShowRewardPoints,
             ShowPromoCode = @ShowPromoCode,
@@ -242,8 +255,8 @@ router.post("/update", async (req, res) => {
         END
         ELSE
         BEGIN
-          INSERT INTO AppSettings (UPI_ID, ShopName, PayNow_QR_Url, EnableKOT, EnableKDS, EnableCheckoutBill, EnableCheckoutFlow, EnableDirectProcessToPay, CustomerSideDisplay, EnableGuestDetailsPopup, EnableCashDrawer, EnableKDSPrint, SVCIdentification, EnableCombo, ShowLoyalty, ShowRewardPoints, ShowPromoCode, EnableOnlinePayment, EnableQROrderAutoPrint, EnableComboPrint, EnableRequestService, EnableCookingInstructions, EnableDirectPaymentToProcess, EnableSkipSummaryScreen, EnableReceiptPrint, EnableVoiceSuccess, EnableNotificationSound, UpdatedOn)
-          VALUES (@UPI, @Shop, @QR, @EnableKOT, @EnableKDS, @EnableCheckoutBill, @EnableCheckoutFlow, @EnableDirectProcessToPay, @CustomerSideDisplay, @EnableGuestDetailsPopup, @EnableCashDrawer, @EnableKDSPrint, @SVCIdentification, @EnableCombo, @ShowLoyalty, @ShowRewardPoints, @ShowPromoCode, @EnableOnlinePayment, @EnableQROrderAutoPrint, @EnableComboPrint, @EnableRequestService, @EnableCookingInstructions, @EnableDirectPaymentToProcess, @EnableSkipSummaryScreen, @EnableReceiptPrint, @EnableVoiceSuccess, @EnableNotificationSound, GETDATE())
+          INSERT INTO AppSettings (UPI_ID, ShopName, PayNow_QR_Url, EnableKOT, EnableKDS, EnableCheckoutBill, EnableCheckoutFlow, EnableDirectProcessToPay, CustomerSideDisplay, EnableGuestDetailsPopup, EnableCashDrawer, EnableKDSPrint, SVCIdentification, EnableCombo, EnableQuickServe, ShowLoyalty, ShowRewardPoints, ShowPromoCode, EnableOnlinePayment, EnableQROrderAutoPrint, EnableComboPrint, EnableRequestService, EnableCookingInstructions, EnableDirectPaymentToProcess, EnableSkipSummaryScreen, EnableReceiptPrint, EnableVoiceSuccess, EnableNotificationSound, UpdatedOn)
+          VALUES (@UPI, @Shop, @QR, @EnableKOT, @EnableKDS, @EnableCheckoutBill, @EnableCheckoutFlow, @EnableDirectProcessToPay, @CustomerSideDisplay, @EnableGuestDetailsPopup, @EnableCashDrawer, @EnableKDSPrint, @SVCIdentification, @EnableCombo, @EnableQuickServe, @ShowLoyalty, @ShowRewardPoints, @ShowPromoCode, @EnableOnlinePayment, @EnableQROrderAutoPrint, @EnableComboPrint, @EnableRequestService, @EnableCookingInstructions, @EnableDirectPaymentToProcess, @EnableSkipSummaryScreen, @EnableReceiptPrint, @EnableVoiceSuccess, @EnableNotificationSound, GETDATE())
         END
       `);
 
@@ -271,6 +284,7 @@ router.post("/update", async (req, res) => {
       EnableKDSPrint: enableKDSPrint !== undefined ? (enableKDSPrint ? 1 : 0) : (oldAppSettings.EnableKDSPrint ? 1 : 0),
       SVCIdentification: SVCIdentification !== undefined ? (SVCIdentification ? 1 : 0) : (oldAppSettings.SVCIdentification ? 1 : 0),
       EnableCombo: enableCombo !== undefined ? (enableCombo ? 1 : 0) : (oldAppSettings.EnableCombo ? 1 : 0),
+      EnableQuickServe: enableQuickServe !== undefined ? (enableQuickServe ? 1 : 0) : (oldAppSettings.EnableQuickServe ? 1 : 0),
       ShowLoyalty: showLoyalty !== undefined ? (showLoyalty ? 1 : 0) : (oldAppSettings.ShowLoyalty ? 1 : 0),
       ShowRewardPoints: showRewardPoints !== undefined ? (showRewardPoints ? 1 : 0) : (oldAppSettings.ShowRewardPoints ? 1 : 0),
       ShowPromoCode: showPromoCode !== undefined ? (showPromoCode ? 1 : 0) : (oldAppSettings.ShowPromoCode ? 1 : 0),
