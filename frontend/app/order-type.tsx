@@ -13,6 +13,7 @@ import {
   ActivityIndicator,
   Modal,
 } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -633,7 +634,7 @@ export default function OrderTypeSelectionScreen() {
         </View>
       </View>
 
-      {/* COMING SOON MODAL FOR QUICK SERVE */}
+      {/* ULTRA-PREMIUM COMING SOON MODAL FOR QUICK SERVE */}
       <Modal
         visible={showQuickServeModal}
         transparent
@@ -642,24 +643,77 @@ export default function OrderTypeSelectionScreen() {
       >
         <View style={styles.modalOverlay}>
           <View style={styles.comingSoonModalCard}>
-            <View style={styles.comingSoonIconCircle}>
-              <Ionicons name="sparkles" size={32} color="#22C55E" />
-            </View>
-            <Text style={styles.comingSoonTitle}>Quick Serve Mode</Text>
-            <View style={styles.comingSoonBadge}>
-              <Ionicons name="time-outline" size={14} color="#15803D" style={{ marginRight: 4 }} />
-              <Text style={styles.comingSoonBadgeText}>COMING SOON</Text>
-            </View>
-            <Text style={styles.comingSoonDesc}>
-              Rapid billing for high-volume walk-in counters is under active development and will be available soon!
-            </Text>
-            <TouchableOpacity
-              style={styles.comingSoonBtn}
-              onPress={() => setShowQuickServeModal(false)}
-              activeOpacity={0.85}
+            {/* Top Gradient Header Banner */}
+            <LinearGradient
+              colors={["#047857", "#10B981", "#34D399"]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.modalHeaderBanner}
             >
-              <Text style={styles.comingSoonBtnText}>Got it, Close</Text>
-            </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.modalCloseBtn}
+                onPress={() => setShowQuickServeModal(false)}
+                activeOpacity={0.75}
+              >
+                <Ionicons name="close" size={18} color="#FFFFFF" />
+              </TouchableOpacity>
+              <View style={styles.bannerSparkleBg}>
+                <Ionicons name="sparkles-outline" size={80} color="rgba(255, 255, 255, 0.15)" />
+              </View>
+            </LinearGradient>
+
+            {/* Overlapping Hero Icon Circle */}
+            <View style={styles.heroIconWrapper}>
+              <View style={styles.comingSoonIconCircle}>
+                <Ionicons name="flash" size={34} color="#059669" />
+              </View>
+            </View>
+
+            {/* Modal Body Content */}
+            <View style={styles.modalBodyContent}>
+              <Text style={styles.comingSoonTitle}>Quick Serve POS ⚡</Text>
+
+              <View style={styles.comingSoonBadge}>
+                <View style={styles.pulseDot} />
+                <Text style={styles.comingSoonBadgeText}>FEATURE IN DEVELOPMENT</Text>
+              </View>
+
+              <Text style={styles.comingSoonDesc}>
+                High-speed walk-in counter billing, instant checkout, and direct kitchen dispatch are currently being crafted for maximum efficiency!
+              </Text>
+
+              {/* Feature Chips */}
+              <View style={styles.modalFeatureGrid}>
+                <View style={styles.modalFeatureChip}>
+                  <Ionicons name="flash-outline" size={14} color="#059669" />
+                  <Text style={styles.modalFeatureChipText}>Instant Pay</Text>
+                </View>
+                <View style={styles.modalFeatureChip}>
+                  <Ionicons name="print-outline" size={14} color="#059669" />
+                  <Text style={styles.modalFeatureChipText}>Direct KOT</Text>
+                </View>
+                <View style={styles.modalFeatureChip}>
+                  <Ionicons name="speedometer-outline" size={14} color="#059669" />
+                  <Text style={styles.modalFeatureChipText}>Fast Counter</Text>
+                </View>
+              </View>
+
+              <TouchableOpacity
+                onPress={() => setShowQuickServeModal(false)}
+                activeOpacity={0.88}
+                style={{ width: "100%", marginTop: 4 }}
+              >
+                <LinearGradient
+                  colors={["#10B981", "#059669"]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.comingSoonBtnGradient}
+                >
+                  <Text style={styles.comingSoonBtnText}>Got It, Close</Text>
+                  <Ionicons name="arrow-forward" size={16} color="#FFFFFF" style={{ marginLeft: 6 }} />
+                </LinearGradient>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -674,7 +728,7 @@ const styles = StyleSheet.create({
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: "rgba(15, 23, 42, 0.6)",
+    backgroundColor: "rgba(15, 23, 42, 0.65)",
     justifyContent: "center",
     alignItems: "center",
     padding: 20,
@@ -683,76 +737,172 @@ const styles = StyleSheet.create({
     width: "100%",
     maxWidth: 420,
     backgroundColor: "#FFFFFF",
-    borderRadius: 24,
-    padding: 28,
+    borderRadius: 28,
+    overflow: "hidden",
     alignItems: "center",
     ...Platform.select({
       ios: {
         shadowColor: "#0F172A",
-        shadowOffset: { width: 0, height: 10 },
-        shadowOpacity: 0.15,
-        shadowRadius: 20,
+        shadowOffset: { width: 0, height: 16 },
+        shadowOpacity: 0.22,
+        shadowRadius: 28,
       },
       android: {
-        elevation: 10,
+        elevation: 16,
       },
       web: {
-        boxShadow: "0 20px 40px rgba(15, 23, 42, 0.15)",
+        boxShadow: "0 25px 50px -12px rgba(15, 23, 42, 0.25)",
       },
     }),
   },
-  comingSoonIconCircle: {
-    width: 68,
-    height: 68,
-    borderRadius: 34,
-    backgroundColor: "#F0FDF4",
-    borderWidth: 1.5,
-    borderColor: "#BBF7D0",
+  modalHeaderBanner: {
+    width: "100%",
+    height: 110,
+    position: "relative",
     justifyContent: "center",
     alignItems: "center",
-    marginBottom: 16,
+  },
+  modalCloseBtn: {
+    position: "absolute",
+    top: 14,
+    right: 14,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "rgba(255, 255, 255, 0.22)",
+    justifyContent: "center",
+    alignItems: "center",
+    zIndex: 10,
+  },
+  bannerSparkleBg: {
+    position: "absolute",
+    right: -10,
+    top: -10,
+  },
+  heroIconWrapper: {
+    marginTop: -38,
+    zIndex: 10,
+  },
+  comingSoonIconCircle: {
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 4,
+    borderColor: "#ECFDF5",
+    justifyContent: "center",
+    alignItems: "center",
+    ...Platform.select({
+      ios: {
+        shadowColor: "#059669",
+        shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 0.2,
+        shadowRadius: 10,
+      },
+      android: {
+        elevation: 6,
+      },
+      web: {
+        boxShadow: "0 10px 25px rgba(5, 150, 105, 0.2)",
+      },
+    }),
+  },
+  modalBodyContent: {
+    width: "100%",
+    paddingHorizontal: 24,
+    paddingTop: 12,
+    paddingBottom: 24,
+    alignItems: "center",
   },
   comingSoonTitle: {
     fontFamily: Fonts.extraBold || "System",
-    fontSize: 22,
+    fontSize: 23,
     color: "#0F172A",
-    marginBottom: 8,
+    marginBottom: 6,
+    textAlign: "center",
   },
   comingSoonBadge: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#DCFCE7",
+    backgroundColor: "#ECFDF5",
+    borderWidth: 1,
+    borderColor: "#A7F3D0",
     paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 12,
+    paddingVertical: 4,
+    borderRadius: 14,
     marginBottom: 14,
+  },
+  pulseDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: "#10B981",
+    marginRight: 6,
   },
   comingSoonBadgeText: {
     fontFamily: Fonts.bold || "System",
-    fontSize: 11,
-    color: "#15803D",
-    letterSpacing: 0.5,
+    fontSize: 10.5,
+    color: "#047857",
+    letterSpacing: 0.6,
   },
   comingSoonDesc: {
     fontFamily: Fonts.medium || "System",
-    fontSize: 14,
+    fontSize: 13.5,
     color: "#64748B",
     textAlign: "center",
     lineHeight: 20,
-    marginBottom: 24,
+    marginBottom: 18,
   },
-  comingSoonBtn: {
+  modalFeatureGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "center",
+    gap: 8,
+    marginBottom: 22,
+  },
+  modalFeatureChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    backgroundColor: "#F8FAFC",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 10,
+  },
+  modalFeatureChipText: {
+    fontFamily: Fonts.semiBold || "System",
+    fontSize: 11.5,
+    color: "#334155",
+  },
+  comingSoonBtnGradient: {
     width: "100%",
-    backgroundColor: "#22C55E",
     paddingVertical: 14,
-    borderRadius: 14,
+    borderRadius: 16,
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
+    ...Platform.select({
+      ios: {
+        shadowColor: "#059669",
+        shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 0.3,
+        shadowRadius: 10,
+      },
+      android: {
+        elevation: 6,
+      },
+      web: {
+        boxShadow: "0 8px 20px rgba(5, 150, 105, 0.3)",
+      },
+    }),
   },
   comingSoonBtnText: {
     fontFamily: Fonts.bold || "System",
     fontSize: 15,
     color: "#FFFFFF",
+    letterSpacing: 0.3,
   },
   ambientBlob1: {
     position: "absolute",
