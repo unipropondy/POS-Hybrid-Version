@@ -102,7 +102,7 @@ router.get("/payment/:terminal/:userId", async (req, res) => {
     const billsResult = await request.query(`
       -- PRIMARY: PaymentTransactionDetails joined to SettlementHeader for date + Paymode for name
       SELECT
-        LTRIM(RTRIM(ISNULL(COALESCE(pm.PayMode, pm.Description), ''))) AS PaymodeName,
+        LTRIM(RTRIM(ISNULL(COALESCE(NULLIF(LTRIM(RTRIM(pm.Description)), ''), pm.PayMode), ''))) AS PaymodeName,
         ISNULL(SUM(ptd.Amount), 0) AS Amount,
         COUNT(*) AS PayCount
       FROM PaymentTransactionDetails ptd
@@ -110,13 +110,13 @@ router.get("/payment/:terminal/:userId", async (req, res) => {
       LEFT  JOIN Paymode pm ON pm.Position = ptd.PayModeId
       WHERE ptd.ReferenceType = 'BILL'
         AND ${shDateFilter}
-        AND UPPER(LTRIM(RTRIM(ISNULL(COALESCE(pm.PayMode, pm.Description), '')))) NOT IN ('CREDIT', 'MEMBER')
+        AND UPPER(LTRIM(RTRIM(ISNULL(COALESCE(NULLIF(LTRIM(RTRIM(pm.Description)), ''), pm.PayMode), '')))) NOT IN ('CREDIT', 'MEMBER')
         AND ptd.ReferenceId NOT IN (
             SELECT RestaurantBillId FROM RestaurantInvoiceCur
             WHERE StatusCode = 4 AND RestaurantBillId IS NOT NULL
         )
         ${userFilter}
-      GROUP BY LTRIM(RTRIM(ISNULL(COALESCE(pm.PayMode, pm.Description), '')))
+      GROUP BY LTRIM(RTRIM(ISNULL(COALESCE(NULLIF(LTRIM(RTRIM(pm.Description)), ''), pm.PayMode), '')))
 
       UNION ALL
 

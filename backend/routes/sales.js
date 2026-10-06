@@ -62,7 +62,7 @@ const normalizeReportPayModeSql = (columnName = "sts.PayMode", settlementIdColum
 
   const rawSql = `
     UPPER(ISNULL(
-      (SELECT TOP 1 LTRIM(RTRIM(Description)) 
+      (SELECT TOP 1 LTRIM(RTRIM(COALESCE(NULLIF(LTRIM(RTRIM(Description)), ''), PayMode))) 
        FROM Paymode pm 
        WHERE LTRIM(RTRIM(pm.PayMode)) = LTRIM(RTRIM(ISNULL(${resolvedPayMode}, '')))
           OR LTRIM(RTRIM(pm.Description)) = LTRIM(RTRIM(ISNULL(${resolvedPayMode}, '')))
@@ -71,7 +71,7 @@ const normalizeReportPayModeSql = (columnName = "sts.PayMode", settlementIdColum
       CASE
         WHEN UPPER(LTRIM(RTRIM(ISNULL(${resolvedPayMode}, '')))) IN ('YEAHPAY PAYNOW', '7') OR UPPER(${resolvedPayMode}) LIKE '%YEAHPAY%PAYNOW%' THEN 'YEAHPAY PAYNOW'
         WHEN UPPER(LTRIM(RTRIM(ISNULL(${resolvedPayMode}, '')))) IN ('YEAHPAY CARD', '8') OR UPPER(${resolvedPayMode}) LIKE '%YEAHPAY%CARD%' THEN 'YEAHPAY CARD'
-        WHEN UPPER(LTRIM(RTRIM(ISNULL(${resolvedPayMode}, '')))) IN ('CAS', 'CASH', '', '1') THEN 'CASH'
+        WHEN UPPER(LTRIM(RTRIM(ISNULL(${resolvedPayMode}, '')))) IN ('CAS', 'CASH', '1') THEN 'CASH'
         WHEN UPPER(LTRIM(RTRIM(ISNULL(${resolvedPayMode}, '')))) IN ('CARD', 'VISA', 'MASTER', 'MASTERCARD', 'AMEX', 'DINERS') THEN 'CARD'
         WHEN (UPPER(LTRIM(RTRIM(ISNULL(${resolvedPayMode}, '')))) IN ('PAYNOW', '3') OR UPPER(${resolvedPayMode}) LIKE '%PAYNOW%') AND UPPER(${resolvedPayMode}) NOT LIKE '%YEAHPAY%' THEN 'PAYNOW'
         WHEN UPPER(LTRIM(RTRIM(ISNULL(${resolvedPayMode}, '')))) IN ('GRAB', '10') OR UPPER(${resolvedPayMode}) LIKE '%GRAB%' THEN 'GRAB'
@@ -876,13 +876,17 @@ router.get("/detail/:id/payments", async (req, res) => {
           ptd.PayModeId,
           ptd.Amount,
           ptd.ReferenceNo,
-          COALESCE(pm.Description, pm.PayMode) AS PayModeName
+          COALESCE(NULLIF(LTRIM(RTRIM(pm.Description)), ''), LTRIM(RTRIM(pm.PayMode)), 'CASH') AS PayModeName
         FROM PaymentTransactionDetails ptd
         LEFT JOIN Paymode pm ON pm.Position = ptd.PayModeId
         WHERE ptd.ReferenceId = @Id AND ptd.ReferenceType = 'BILL'
       `);
     
-    let payments = result.recordset || [];
+    let payments = (result.recordset || []).map(row => ({
+      ...row,
+      PayModeName: (row.PayModeName && row.PayModeName.trim()) ? row.PayModeName.trim() : 'CASH'
+    }));
+
     if (payments.length === 0) {
       // Fallback 1: Query PaymentDetailCur / PaymentDetail to see if there is a single payment mode recorded
       const pdResult = await pool.request()
@@ -891,7 +895,7 @@ router.get("/detail/:id/payments", async (req, res) => {
           SELECT 
             pd.RestaurantBillId AS ReferenceId,
             pd.Amount,
-            COALESCE(pm.Description, pm.PayMode) AS PayModeName
+            COALESCE(NULLIF(LTRIM(RTRIM(pm.Description)), ''), LTRIM(RTRIM(pm.PayMode)), 'CASH') AS PayModeName
           FROM PaymentDetailCur pd
           LEFT JOIN Paymode pm ON pd.Paymode = pm.Position
           WHERE pd.RestaurantBillId = @Id
@@ -905,7 +909,7 @@ router.get("/detail/:id/payments", async (req, res) => {
           PayModeId: null,
           Amount: row.Amount,
           ReferenceNo: null,
-          PayModeName: row.PayModeName ? row.PayModeName.trim() : 'CASH'
+          PayModeName: (row.PayModeName && row.PayModeName.trim()) ? row.PayModeName.trim() : 'CASH'
         }));
       } else {
         // Fallback 2: Query SettlementTotalSales or SettlementHeader to get the single payment mode and total amount
@@ -930,11 +934,12 @@ router.get("/detail/:id/payments", async (req, res) => {
           const paymodeNameResult = await pool.request()
             .input("PayMode", sql.VarChar(50), row.PayMode || '')
             .query(`
-              SELECT TOP 1 COALESCE(Description, PayMode) AS PayModeName
+              SELECT TOP 1 COALESCE(NULLIF(LTRIM(RTRIM(Description)), ''), LTRIM(RTRIM(PayMode)), 'CASH') AS PayModeName
               FROM Paymode
               WHERE PayMode = @PayMode OR Description = @PayMode OR CAST(Position AS VARCHAR(10)) = @PayMode
             `);
-          const payModeName = paymodeNameResult.recordset[0]?.PayModeName || row.PayMode || 'CASH';
+          const rawResolvedName = paymodeNameResult.recordset[0]?.PayModeName || row.PayMode;
+          const payModeName = (rawResolvedName && rawResolvedName.trim()) ? rawResolvedName.trim() : 'CASH';
           payments = [{
             PaymentTransactionId: null,
             ReferenceType: 'BILL',
@@ -942,7 +947,7 @@ router.get("/detail/:id/payments", async (req, res) => {
             PayModeId: null,
             Amount: row.Amount,
             ReferenceNo: null,
-            PayModeName: payModeName ? payModeName.trim() : 'CASH'
+            PayModeName: payModeName
           }];
       }
     }

@@ -56,7 +56,8 @@ async function processSplitPayments({
     // Resolve paymode
     let dbPaymode = activePaymodes.find(pm => 
       pm.Position === Number(payment.payModeId) || 
-      String(pm.PayMode).trim().toUpperCase() === String(payment.payModeId || payment.payMode || "").trim().toUpperCase()
+      String(pm.PayMode).trim().toUpperCase() === String(payment.payModeId || payment.payMode || "").trim().toUpperCase() ||
+      (pm.Description && String(pm.Description).trim().toUpperCase() === String(payment.payModeId || payment.payMode || "").trim().toUpperCase())
     );
 
     if (!dbPaymode) {
@@ -64,7 +65,7 @@ async function processSplitPayments({
     }
 
     const payModeId = dbPaymode.Position;
-    const payModeName = dbPaymode.PayMode;
+    const payModeName = ((dbPaymode.Description && dbPaymode.Description.trim()) || dbPaymode.PayMode).trim();
     const referenceNo = payment.referenceNo || payment.referenceNumber || null;
 
     // ============================================================

@@ -28,8 +28,8 @@ async function fetchFullReportData(startDateStr, endDateStr, pool, cashierFilter
   const sgtEnd = `DATEADD(DAY, 1, CAST('${endDateStr}' AS DATE))`;
 
   // 1. Fetch combined sales list (same logic as /all endpoint)
-  const shWhere = `COALESCE(sh.start_date, CAST(sh.LastSettlementDate AS DATE)) >= CAST('${startDateStr}' AS DATE) AND COALESCE(sh.start_date, CAST(sh.LastSettlementDate AS DATE)) <= CAST('${endDateStr}' AS DATE)`;
-  const cctWhere = `COALESCE(cct.start_date, CAST(cct.CreatedDate AS DATE)) >= CAST('${startDateStr}' AS DATE) AND COALESCE(cct.start_date, CAST(cct.CreatedDate AS DATE)) <= CAST('${endDateStr}' AS DATE)`;
+  const shWhere = `CAST(COALESCE(sh.start_date, CAST(sh.LastSettlementDate AS DATE), CAST(sh.CreatedOn AS DATE)) AS DATE) >= CAST('${startDateStr}' AS DATE) AND CAST(COALESCE(sh.start_date, CAST(sh.LastSettlementDate AS DATE), CAST(sh.CreatedOn AS DATE)) AS DATE) <= CAST('${endDateStr}' AS DATE)`;
+  const cctWhere = `CAST(COALESCE(cct.start_date, CAST(cct.CreatedDate AS DATE)) AS DATE) >= CAST('${startDateStr}' AS DATE) AND CAST(COALESCE(cct.start_date, CAST(cct.CreatedDate AS DATE)) AS DATE) <= CAST('${endDateStr}' AS DATE)`;
 
   const salesQuery = `
     SELECT 
@@ -132,7 +132,7 @@ async function fetchFullReportData(startDateStr, endDateStr, pool, cashierFilter
   const breakdown = {};
   const breakdownCounts = {};
   allPaymodes.forEach(pm => {
-    const key = pm.PayMode.toUpperCase().trim();
+    const key = ((pm.Description && pm.Description.trim()) || pm.PayMode).toUpperCase().trim();
     breakdown[key] = 0;
     breakdownCounts[key] = 0;
   });
@@ -184,7 +184,7 @@ async function fetchFullReportData(startDateStr, endDateStr, pool, cashierFilter
      // First pass: try exact match against all database payment modes
      let matchedMode = allPaymodes.find(pm => {
        const name = pm.PayMode.toUpperCase().trim();
-       const desc = (pm.Description || pm.PayMode).toUpperCase().trim();
+       const desc = ((pm.Description && pm.Description.trim()) || pm.PayMode).toUpperCase().trim();
        return rawMode === name || rawMode === desc;
      });
 
@@ -192,11 +192,12 @@ async function fetchFullReportData(startDateStr, endDateStr, pool, cashierFilter
     if (!matchedMode) {
       matchedMode = allPaymodes.find(pm => {
         const name = pm.PayMode.toUpperCase().trim();
-        if ((name === "PAYNOW" || name === "PAY NOW" || name === "UPI" || name === "GPAY") &&
+        const desc = ((pm.Description && pm.Description.trim()) || pm.PayMode).toUpperCase().trim();
+        if ((name === "PAYNOW" || desc === "PAYNOW" || name === "PAY NOW" || desc === "PAY NOW" || name === "UPI" || name === "GPAY") &&
             (rawMode.includes("PAYNOW") || rawMode.includes("PAY NOW") || rawMode.includes("UPI") || rawMode.includes("GPAY") || rawMode.includes("PHONE") || rawMode.includes("PAYTM"))) {
           return true;
         }
-        if ((name === "CASH" || name === "CAS") && (rawMode === "CASH" || rawMode === "CAS")) {
+        if ((name === "CASH" || desc === "CASH" || name === "CAS") && (rawMode === "CASH" || rawMode === "CAS")) {
           return true;
         }
         return false;
@@ -204,7 +205,7 @@ async function fetchFullReportData(startDateStr, endDateStr, pool, cashierFilter
     }
 
     if (matchedMode) {
-      const name = matchedMode.PayMode.toUpperCase().trim();
+      const name = ((matchedMode.Description && matchedMode.Description.trim()) || matchedMode.PayMode).toUpperCase().trim();
       breakdown[name] = (breakdown[name] || 0) + (s.SysAmount || 0);
       breakdownCounts[name] = (breakdownCounts[name] || 0) + 1;
       if (name === "CREDIT") {
