@@ -1810,29 +1810,36 @@ export default function SalesReport() {
 
   const handleConfirmCancelOrder = async () => {
     if (!selectedOrder) return;
-    try {
-      setShowCancelOrderConfirm(false);
-      setLoadingDetails(true);
-      const res = await fetch(`${API_URL}/api/sales/settlement/${selectedOrder.SettlementID}/cancel`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reason: cancellationReason }),
-      });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        showToast({ type: "success", message: "Order cancelled successfully" });
-        setCancellationReason("");
-        await refreshOrder(selectedOrder.SettlementID);
-        fetchSales();
-      } else {
-        showToast({ type: "error", message: data.error || "Failed to cancel order" });
+    promptPassword(
+      "Admin Password Required",
+      `Verify Admin credentials to cancel Order #${formatOrderId(selectedOrder)}`,
+      "ADMIN",
+      async () => {
+        try {
+          setShowCancelOrderConfirm(false);
+          setLoadingDetails(true);
+          const res = await fetch(`${API_URL}/api/sales/settlement/${selectedOrder.SettlementID}/cancel`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ reason: cancellationReason }),
+          });
+          const data = await res.json();
+          if (res.ok && data.success) {
+            showToast({ type: "success", message: "Order cancelled successfully" });
+            setCancellationReason("");
+            await refreshOrder(selectedOrder.SettlementID);
+            fetchSales();
+          } else {
+            showToast({ type: "error", message: data.error || "Failed to cancel order" });
+          }
+        } catch (err: any) {
+          console.error(err);
+          showToast({ type: "error", message: err.message || "An error occurred" });
+        } finally {
+          setLoadingDetails(false);
+        }
       }
-    } catch (err: any) {
-      console.error(err);
-      showToast({ type: "error", message: err.message || "An error occurred" });
-    } finally {
-      setLoadingDetails(false);
-    }
+    );
   };
 
 

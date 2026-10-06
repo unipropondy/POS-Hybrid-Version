@@ -434,10 +434,55 @@ class UniversalPrinter {
     }
   }
 
+  static async detectUsbPrinters(): Promise<Array<{ name: string; port: string; status: string; isUsb: boolean }>> {
+    try {
+      const res = await fetch(`http://localhost:3050/api/printers`);
+      const data = await res.json();
+      if (data && data.success && Array.isArray(data.printers)) {
+        return data.printers;
+      }
+    } catch (e) {
+      console.warn("[UniversalPrinter] Could not fetch USB printers from print bridge:", e);
+    }
+    return [];
+  }
+
+  private static async waitForJobCompletion(
+    jobId: string,
+    timeoutMs: number = 7000
+  ): Promise<{ success: boolean; error?: string }> {
+    const startTime = Date.now();
+    while (Date.now() - startTime < timeoutMs) {
+      await new Promise((r) => setTimeout(r, 350));
+      try {
+        const res = await fetch(`${API_URL}/api/print-jobs/status/${jobId}`);
+        const data = await res.json();
+        if (data && data.success) {
+          if (data.status === "COMPLETED") {
+            return { success: true };
+          }
+          if (data.status === "FAILED") {
+            return {
+              success: false,
+              error: data.error || "Print job failed on thermal printer.",
+            };
+          }
+        }
+      } catch (e) {
+        // continue polling
+      }
+    }
+    return {
+      success: false,
+      error: "Print job timeout. Please check if the USB printer is connected and powered on.",
+    };
+  }
+
   private static async queuePrintJob(
     printerType: number,
     kitchenTypeValue: string | number | undefined,
-    content: string
+    content: string,
+    waitForResult: boolean = true
   ): Promise<boolean> {
     try {
       const storeId = "STORE_001";
@@ -457,17 +502,40 @@ class UniversalPrinter {
       const data = await response.json();
       if (data.success !== true || !data.jobId) {
         console.warn(`[UniversalPrinter] queuePrintJob failed — backend returned:`, data);
+        if (Platform.OS === 'web') {
+          alert(`Print Queue Error: ${data.error || 'Failed to queue print job'}`);
+        } else {
+          Alert.alert("Print Queue Error", data.error || "Failed to queue print job");
+        }
         return false;
       }
-      // ✅ Fire-and-forget: the print bridge / APK will poll and execute the job.
-      // Do NOT poll for completion here — that 8s wait caused silent drops on Android browser
-      // when the screen dimmed or focus was lost during the polling window.
+
       console.log(`✅ [UniversalPrinter] Print job ${data.jobId} queued to bridge (Printer: ${data.printerName || data.printerIp || 'unknown'})`);
-      // Invalidate bridge cache so the next print reflects actual bridge state
       this._bridgeOnlineCache = null;
+
+      if (waitForResult) {
+        const result = await this.waitForJobCompletion(data.jobId);
+        if (result.success) {
+          console.log(`🎉 [UniversalPrinter] Print job ${data.jobId} completed successfully!`);
+          return true;
+        } else {
+          console.warn(`❌ [UniversalPrinter] Print job ${data.jobId} failed:`, result.error);
+          if (Platform.OS === 'web') {
+            alert(`Printer Error: ${result.error || 'Printing to USB/Receipt printer failed.'}`);
+          } else {
+            Alert.alert("Printer Error", result.error || "Printing to USB/Receipt printer failed.");
+          }
+          return false;
+        }
+      }
       return true;
-    } catch (e) {
+    } catch (e: any) {
       console.warn("[UniversalPrinter] Failed to queue print job:", e);
+      if (Platform.OS === 'web') {
+        alert(`Connection Error: ${e.message || 'Could not reach print service'}`);
+      } else {
+        Alert.alert("Connection Error", e.message || "Could not reach print service");
+      }
       return false;
     }
   }

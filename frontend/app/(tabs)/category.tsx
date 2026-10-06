@@ -1152,6 +1152,9 @@ export default function Category() {
   const orderContext = useOrderContextStore((state) => state.currentOrder);
 
   const visibleSections = useMemo(() => {
+    if (settings?.enableQuickServe === false) {
+      return SECTIONS;
+    }
     if (orderContext?.orderType === "TAKEAWAY") {
       return ["TAKEAWAY"];
     }
@@ -1159,9 +1162,12 @@ export default function Category() {
       return ["SECTION_1", "SECTION_2", "SECTION_3"];
     }
     return SECTIONS;
-  }, [orderContext?.orderType]);
+  }, [orderContext?.orderType, settings?.enableQuickServe]);
 
   useEffect(() => {
+    if (settings?.enableQuickServe === false) {
+      return;
+    }
     if (orderContext?.orderType === "TAKEAWAY") {
       setActiveTab("TAKEAWAY");
     } else if (orderContext?.orderType === "DINE_IN") {
@@ -1169,7 +1175,7 @@ export default function Category() {
         setActiveTab("SECTION_1");
       }
     }
-  }, [orderContext?.orderType]);
+  }, [orderContext?.orderType, settings?.enableQuickServe]);
 
   const getSectionNum = (tab: string) => {
     if (tab === "TAKEAWAY") return "4";

@@ -40,17 +40,10 @@ export default function OrderTypeSelectionScreen() {
   const toast = useToast();
   const { settings, fetchSettings } = useGeneralSettingsStore();
 
-  const [menuOpen, setMenuOpen] = useState(false);
   const [showQuickServeModal, setShowQuickServeModal] = useState(false);
   const [currentTime, setCurrentTime] = useState<string>("");
   const [currentDate, setCurrentDate] = useState<string>("");
   const [hoveredCard, setHoveredCard] = useState<number | null>(null);
-
-  // Accordion state for Category-style dropdown menu
-  const [isTablesExpanded, setIsTablesExpanded] = useState(false);
-  const [isStaffExpanded, setIsStaffExpanded] = useState(false);
-  const [isCustomerExpanded, setIsCustomerExpanded] = useState(false);
-  const [isReportsExpanded, setIsReportsExpanded] = useState(false);
 
   // Dynamic company settings from Receipt/Company settings API
   const [companyInfo, setCompanyInfo] = useState<{
@@ -133,17 +126,6 @@ export default function OrderTypeSelectionScreen() {
     setShowQuickServeModal(true);
   };
 
-  // Menu item navigation handler
-  const handleMenuNavigate = (route: string) => {
-    setMenuOpen(false);
-    if (route === "logout") {
-      logout();
-      router.replace("/login");
-    } else {
-      router.push(route as any);
-    }
-  };
-
   return (
     <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
       <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
@@ -189,7 +171,7 @@ export default function OrderTypeSelectionScreen() {
           </View>
         </View>
 
-        {/* Right: User Avatar & Menu Button */}
+        {/* Right: User Avatar */}
         <View style={styles.headerRight}>
           <View style={styles.userInfo}>
             <View style={styles.avatarCircle}>
@@ -201,278 +183,8 @@ export default function OrderTypeSelectionScreen() {
               <Text style={styles.userRole}>{user?.role || "ADMIN"}</Text>
             </View>
           </View>
-
-          {/* Menu Button */}
-          <TouchableOpacity
-            style={[styles.menuButton, menuOpen && styles.menuButtonActive]}
-            activeOpacity={0.85}
-            onPress={() => setMenuOpen(!menuOpen)}
-          >
-            <Ionicons name={menuOpen ? "close" : "grid-outline"} size={17} color="#FFFFFF" />
-            <Text style={styles.menuButtonText}>Menu</Text>
-          </TouchableOpacity>
         </View>
       </View>
-
-      {/* DROPDOWN MENU MODAL / OVERLAY (EXACT UI FROM CATEGORY SCREEN) */}
-      {menuOpen && (
-        <Pressable style={styles.menuOverlay} onPress={() => setMenuOpen(false)}>
-          <View style={[styles.menuModalContainer, { top: insets.top + 62 }]}>
-            {/* Top Banner Header (Orange Gradient Banner from Category Screen) */}
-            <View style={styles.menuModalHeaderOrange}>
-              <View style={styles.headerAvatarContainer}>
-                <Image
-                  source={{ uri: DEFAULT_AVATAR }}
-                  style={styles.headerAvatarImage}
-                />
-              </View>
-              <View style={styles.headerUserTextCol}>
-                <Text style={styles.headerUserNameTextOrange}>
-                  {(user?.userName || "UNIPRO").toUpperCase()}
-                </Text>
-                <Text style={styles.headerUserRoleTextOrange}>
-                  {(user?.role || "ADMIN").toUpperCase()}
-                </Text>
-              </View>
-            </View>
-
-            {/* Menu List Items with Accordion Dropdowns matching Category Screen */}
-            <ScrollView style={styles.menuListScrollView} showsVerticalScrollIndicator={false}>
-              <View style={styles.menuListBody}>
-                {/* 1. Tables (Expandable Dropdown) */}
-                <TouchableOpacity
-                  style={[styles.menuRowItem, isTablesExpanded && styles.menuRowItemExpanded]}
-                  activeOpacity={0.7}
-                  onPress={() => setIsTablesExpanded(!isTablesExpanded)}
-                >
-                  <View style={styles.menuRowLeft}>
-                    <View style={styles.menuIconBox}>
-                      <Ionicons name="grid-outline" size={18} color="#E95709" />
-                    </View>
-                    <Text style={styles.menuRowText}>Tables</Text>
-                  </View>
-                  <Ionicons
-                    name={isTablesExpanded ? "chevron-down" : "chevron-forward"}
-                    size={18}
-                    color="#64748B"
-                  />
-                </TouchableOpacity>
-
-                {isTablesExpanded && (
-                  <View style={styles.subMenuContainer}>
-                    <TouchableOpacity
-                      style={styles.subMenuItem}
-                      onPress={() => handleMenuNavigate("/locked-tables")}
-                    >
-                      <View style={styles.subIconBox}>
-                        <Ionicons name="lock-closed-outline" size={16} color="#E95709" />
-                      </View>
-                      <Text style={styles.subMenuItemText}>Locked Tables</Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      style={styles.subMenuItem}
-                      onPress={() => {
-                        useOrderContextStore.getState().setOrderContext({ orderType: "DINE_IN" });
-                        handleMenuNavigate("/(tabs)/category");
-                      }}
-                    >
-                      <View style={styles.subIconBox}>
-                        <Ionicons name="swap-horizontal-outline" size={16} color="#E95709" />
-                      </View>
-                      <Text style={styles.subMenuItemText}>Transfer Table</Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      style={styles.subMenuItem}
-                      onPress={() => handleMenuNavigate("/table-master")}
-                    >
-                      <View style={styles.subIconBox}>
-                        <Ionicons name="create-outline" size={16} color="#E95709" />
-                      </View>
-                      <Text style={styles.subMenuItemText}>Table Master</Text>
-                    </TouchableOpacity>
-                  </View>
-                )}
-
-                {/* 2. Staff (Expandable Dropdown) */}
-                <TouchableOpacity
-                  style={[styles.menuRowItem, isStaffExpanded && styles.menuRowItemExpanded]}
-                  activeOpacity={0.7}
-                  onPress={() => setIsStaffExpanded(!isStaffExpanded)}
-                >
-                  <View style={styles.menuRowLeft}>
-                    <View style={styles.menuIconBox}>
-                      <Ionicons name="people-outline" size={18} color="#E95709" />
-                    </View>
-                    <Text style={styles.menuRowText}>Staff</Text>
-                  </View>
-                  <Ionicons
-                    name={isStaffExpanded ? "chevron-down" : "chevron-forward"}
-                    size={18}
-                    color="#64748B"
-                  />
-                </TouchableOpacity>
-
-                {isStaffExpanded && (
-                  <View style={styles.subMenuContainer}>
-                    <TouchableOpacity
-                      style={styles.subMenuItem}
-                      onPress={() => handleMenuNavigate("/waiters")}
-                    >
-                      <View style={styles.subIconBox}>
-                        <Ionicons name="people" size={16} color="#E95709" />
-                      </View>
-                      <Text style={styles.subMenuItemText}>Waiters</Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      style={styles.subMenuItem}
-                      onPress={() => handleMenuNavigate("/StaffAttendance")}
-                    >
-                      <View style={styles.subIconBox}>
-                        <Ionicons name="calendar-outline" size={16} color="#E95709" />
-                      </View>
-                      <Text style={styles.subMenuItemText}>Staff Attendance</Text>
-                    </TouchableOpacity>
-                  </View>
-                )}
-
-                {/* 3. Customer (Expandable Dropdown) */}
-                <TouchableOpacity
-                  style={[styles.menuRowItem, isCustomerExpanded && styles.menuRowItemExpanded]}
-                  activeOpacity={0.7}
-                  onPress={() => setIsCustomerExpanded(!isCustomerExpanded)}
-                >
-                  <View style={styles.menuRowLeft}>
-                    <View style={styles.menuIconBox}>
-                      <Ionicons name="person-add-outline" size={18} color="#E95709" />
-                    </View>
-                    <Text style={styles.menuRowText}>Customer</Text>
-                  </View>
-                  <Ionicons
-                    name={isCustomerExpanded ? "chevron-down" : "chevron-forward"}
-                    size={18}
-                    color="#64748B"
-                  />
-                </TouchableOpacity>
-
-                {isCustomerExpanded && (
-                  <View style={styles.subMenuContainer}>
-                    <TouchableOpacity
-                      style={styles.subMenuItem}
-                      onPress={() => handleMenuNavigate("/members")}
-                    >
-                      <View style={styles.subIconBox}>
-                        <Ionicons name="ribbon-outline" size={16} color="#E95709" />
-                      </View>
-                      <Text style={styles.subMenuItemText}>Loyalty & Customers</Text>
-                    </TouchableOpacity>
-                  </View>
-                )}
-
-                {/* 4. Settlement */}
-                <TouchableOpacity
-                  style={styles.menuRowItem}
-                  activeOpacity={0.7}
-                  onPress={() => handleMenuNavigate("/receivables")}
-                >
-                  <View style={styles.menuRowLeft}>
-                    <View style={styles.menuIconBox}>
-                      <Ionicons name="calculator-outline" size={18} color="#E95709" />
-                    </View>
-                    <Text style={styles.menuRowText}>Settlement</Text>
-                  </View>
-                </TouchableOpacity>
-
-                {/* 5. Reports (Expandable Dropdown) */}
-                <TouchableOpacity
-                  style={[styles.menuRowItem, isReportsExpanded && styles.menuRowItemExpanded]}
-                  activeOpacity={0.7}
-                  onPress={() => setIsReportsExpanded(!isReportsExpanded)}
-                >
-                  <View style={styles.menuRowLeft}>
-                    <View style={styles.menuIconBox}>
-                      <Ionicons name="document-text-outline" size={18} color="#E95709" />
-                    </View>
-                    <Text style={styles.menuRowText}>Reports</Text>
-                  </View>
-                  <Ionicons
-                    name={isReportsExpanded ? "chevron-down" : "chevron-forward"}
-                    size={18}
-                    color="#64748B"
-                  />
-                </TouchableOpacity>
-
-                {isReportsExpanded && (
-                  <View style={styles.subMenuContainer}>
-                    <TouchableOpacity
-                      style={styles.subMenuItem}
-                      onPress={() => handleMenuNavigate("/sales-report")}
-                    >
-                      <View style={styles.subIconBox}>
-                        <Ionicons name="bar-chart-outline" size={16} color="#E95709" />
-                      </View>
-                      <Text style={styles.subMenuItemText}>Sales Reports</Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      style={styles.subMenuItem}
-                      onPress={() => handleMenuNavigate("/day-end")}
-                    >
-                      <View style={styles.subIconBox}>
-                        <Ionicons name="today-outline" size={16} color="#E95709" />
-                      </View>
-                      <Text style={styles.subMenuItemText}>Day End Summary</Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      style={styles.subMenuItem}
-                      onPress={() => handleMenuNavigate("/cash-drawer-report")}
-                    >
-                      <View style={styles.subIconBox}>
-                        <Ionicons name="wallet-outline" size={16} color="#E95709" />
-                      </View>
-                      <Text style={styles.subMenuItemText}>Cash Drawer</Text>
-                    </TouchableOpacity>
-                  </View>
-                )}
-
-                {/* 6. Settings */}
-                <TouchableOpacity
-                  style={styles.menuRowItem}
-                  activeOpacity={0.7}
-                  onPress={() => handleMenuNavigate("/general-settings")}
-                >
-                  <View style={styles.menuRowLeft}>
-                    <View style={[styles.menuIconBox, { backgroundColor: "#F1F5F9" }]}>
-                      <Ionicons name="settings-outline" size={18} color="#64748B" />
-                    </View>
-                    <Text style={styles.menuRowText}>Settings</Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={18} color="#64748B" />
-                </TouchableOpacity>
-
-                <View style={styles.menuDivider} />
-
-                {/* Logout */}
-                <TouchableOpacity
-                  style={styles.menuRowItem}
-                  activeOpacity={0.7}
-                  onPress={() => handleMenuNavigate("logout")}
-                >
-                  <View style={styles.menuRowLeft}>
-                    <View style={[styles.menuIconBox, { backgroundColor: "#FEE2E2" }]}>
-                      <Ionicons name="log-out-outline" size={18} color="#EF4444" />
-                    </View>
-                    <Text style={[styles.menuRowText, { color: "#EF4444" }]}>Logout</Text>
-                  </View>
-                </TouchableOpacity>
-              </View>
-            </ScrollView>
-          </View>
-        </Pressable>
-      )}
 
       {/* MAIN CONTENT AREA - FIXED NON-SCROLL FIT */}
       <View style={styles.mainFixedContainer}>

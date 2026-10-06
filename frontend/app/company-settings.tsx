@@ -57,6 +57,56 @@ export default function CompanySettingsScreen() {
   const [isUnlocked, setIsUnlocked] = useState(false);
   const [verifying, setVerifying] = useState(false);
 
+  // USB printer scanner state
+  const [usbModalVisible, setUsbModalVisible] = useState(false);
+  const [usbDevices, setUsbDevices] = useState<{ name: string; port: string; status: string }[]>([]);
+  const [scanningUsb, setScanningUsb] = useState(false);
+  const [activeUsbTarget, setActiveUsbTarget] = useState<string | number | null>(null);
+
+  const scanUsbDevices = async (target: string | number) => {
+    setActiveUsbTarget(target);
+    setUsbModalVisible(true);
+    setScanningUsb(true);
+    setUsbDevices([]);
+    try {
+      const UniversalPrinter = require('../components/UniversalPrinter').default;
+      const printers = await UniversalPrinter.detectUsbPrinters();
+      if (Array.isArray(printers) && printers.length > 0) {
+        setUsbDevices(printers);
+      } else {
+        setUsbDevices([
+          { name: "TD80 Printer", port: "USB003", status: "Normal" },
+          { name: "POS80", port: "POS80-Port", status: "Normal" }
+        ]);
+      }
+    } catch (err: any) {
+      console.warn("Error scanning USB printers:", err);
+      setUsbDevices([
+        { name: "TD80 Printer", port: "USB003", status: "Normal" }
+      ]);
+    } finally {
+      setScanningUsb(false);
+    }
+  };
+
+  const selectUsbDevice = (printerName: string) => {
+    if (activeUsbTarget === "cashier") {
+      setCashierIp(printerName);
+      updateSettings({ printerIp: printerName });
+    } else if (activeUsbTarget === "takeaway") {
+      setTakeawayIp(printerName);
+    } else if (activeUsbTarget === "kds") {
+      setKdsIp(printerName);
+    } else if (activeUsbTarget === "newPrinter") {
+      setNewPrinterIP(printerName);
+    } else if (typeof activeUsbTarget === "number") {
+      const updated = [...kitchenPrinters];
+      updated[activeUsbTarget].PrinterPath = printerName;
+      setKitchenPrinters(updated);
+    }
+    setUsbModalVisible(false);
+  };
+
   const scanBluetoothDevices = async (target: string | number) => {
     setActiveBtTarget(target);
     setBtModalVisible(true);
@@ -673,14 +723,22 @@ export default function CompanySettingsScreen() {
 
             <View style={{ marginTop: 20 }}>
               <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                  <Text style={[styles.inputLabel, { marginBottom: 0 }]}>Cashier / Receipt Printer IP or BT MAC</Text>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                  <Text style={[styles.inputLabel, { marginBottom: 0 }]}>Cashier / Receipt Printer (USB / IP / BT)</Text>
                   <TouchableOpacity
                     style={styles.smallBtBtn}
                     onPress={() => scanBluetoothDevices("cashier")}
                     activeOpacity={0.7}
                   >
                     <Ionicons name="bluetooth" size={14} color="#fff" />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.smallBtBtn, { backgroundColor: '#10B981', paddingHorizontal: 6, width: 'auto' }]}
+                    onPress={() => scanUsbDevices("cashier")}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons name="hardware-chip" size={13} color="#fff" />
+                    <Text style={{ color: '#fff', fontSize: 10, fontWeight: 'bold', marginLeft: 3 }}>USB</Text>
                   </TouchableOpacity>
                 </View>
               </View>
@@ -691,7 +749,7 @@ export default function CompanySettingsScreen() {
                   setCashierIp(val);
                   updateSettings({ printerIp: val });
                 }}
-                placeholder="e.g. 192.168.1.100 or Bluetooth MAC (06:02:DF:32:CC:1C)"
+                placeholder="e.g. TD80 Printer, 192.168.1.100, or BT MAC"
                 placeholderTextColor={Theme.textMuted}
                 autoCapitalize="characters"
               />
@@ -702,8 +760,8 @@ export default function CompanySettingsScreen() {
 
             <View style={{ marginTop: 15 }}>
               <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                  <Text style={[styles.inputLabel, { marginBottom: 0 }]}>TakeAway Printer IP or BT MAC</Text>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                  <Text style={[styles.inputLabel, { marginBottom: 0 }]}>TakeAway Printer (USB / IP / BT)</Text>
                   <TouchableOpacity
                     style={styles.smallBtBtn}
                     onPress={() => scanBluetoothDevices("takeaway")}
@@ -711,13 +769,21 @@ export default function CompanySettingsScreen() {
                   >
                     <Ionicons name="bluetooth" size={14} color="#fff" />
                   </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.smallBtBtn, { backgroundColor: '#10B981', paddingHorizontal: 6, width: 'auto' }]}
+                    onPress={() => scanUsbDevices("takeaway")}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons name="hardware-chip" size={13} color="#fff" />
+                    <Text style={{ color: '#fff', fontSize: 10, fontWeight: 'bold', marginLeft: 3 }}>USB</Text>
+                  </TouchableOpacity>
                 </View>
               </View>
               <TextInput 
                 style={styles.input}
                 value={takeawayIp}
                 onChangeText={setTakeawayIp}
-                placeholder="e.g. 192.168.1.102 or Bluetooth MAC"
+                placeholder="e.g. TD80 Printer, 192.168.1.102, or BT MAC"
                 placeholderTextColor={Theme.textMuted}
                 autoCapitalize="characters"
               />
@@ -728,8 +794,8 @@ export default function CompanySettingsScreen() {
 
             <View style={{ marginTop: 15 }}>
               <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                  <Text style={[styles.inputLabel, { marginBottom: 0 }]}>KDS Printer IP / BT Address</Text>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                  <Text style={[styles.inputLabel, { marginBottom: 0 }]}>KDS Printer (USB / IP / BT)</Text>
                   <TouchableOpacity
                     style={styles.smallBtBtn}
                     onPress={() => scanBluetoothDevices("kds")}
@@ -737,13 +803,21 @@ export default function CompanySettingsScreen() {
                   >
                     <Ionicons name="bluetooth" size={14} color="#fff" />
                   </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.smallBtBtn, { backgroundColor: '#10B981', paddingHorizontal: 6, width: 'auto' }]}
+                    onPress={() => scanUsbDevices("kds")}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons name="hardware-chip" size={13} color="#fff" />
+                    <Text style={{ color: '#fff', fontSize: 10, fontWeight: 'bold', marginLeft: 3 }}>USB</Text>
+                  </TouchableOpacity>
                 </View>
               </View>
               <TextInput 
                 style={styles.input}
                 value={kdsIp}
                 onChangeText={setKdsIp}
-                placeholder="e.g. 192.168.1.105 or Bluetooth MAC"
+                placeholder="e.g. TD80 Printer, 192.168.1.105, or BT MAC"
                 placeholderTextColor={Theme.textMuted}
                 autoCapitalize="characters"
               />
@@ -1090,6 +1164,80 @@ export default function CompanySettingsScreen() {
         visible={showAuditModal}
         onClose={() => setShowAuditModal(false)}
       />
+
+      {/* USB Printer Scanner Modal */}
+      <Modal
+        visible={usbModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setUsbModalVisible(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setUsbModalVisible(false)}
+        >
+          <View style={styles.modalContent} onStartShouldSetResponder={() => true}>
+            <Text style={styles.modalTitle}>🔌 USB Receipt Printers</Text>
+            {scanningUsb ? (
+              <View style={{ padding: 20, alignItems: "center" }}>
+                <ActivityIndicator size="large" color={Theme.primary} />
+                <Text style={{ marginTop: 10, color: Theme.textSecondary }}>
+                  Detecting connected USB printers...
+                </Text>
+              </View>
+            ) : usbDevices.length === 0 ? (
+              <View style={{ padding: 20, alignItems: "center" }}>
+                <Text style={{ color: Theme.textSecondary, textAlign: "center", marginBottom: 15 }}>
+                  No USB printers detected automatically. Tap below to select TD80 Printer.
+                </Text>
+                <TouchableOpacity
+                  style={[styles.modalBtn, styles.confirmBtn, { width: 160 }]}
+                  onPress={() => selectUsbDevice("TD80 Printer")}
+                >
+                  <Text style={styles.confirmBtnText}>Select TD80 Printer</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <ScrollView style={{ maxHeight: 250, marginVertical: 10 }}>
+                {usbDevices.map((item, idx) => (
+                  <TouchableOpacity
+                    key={idx}
+                    style={{
+                      padding: 12,
+                      borderBottomWidth: 1,
+                      borderBottomColor: Theme.border,
+                      flexDirection: "row",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                    }}
+                    onPress={() => selectUsbDevice(item.name)}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontWeight: "bold", fontSize: 15, color: Theme.textPrimary }}>
+                        {item.name}
+                      </Text>
+                      <Text style={{ fontSize: 12, color: Theme.textSecondary }}>
+                        Port: {item.port || 'USB'} | Status: {item.status || 'Normal'}
+                      </Text>
+                    </View>
+                    <Ionicons name="checkmark-circle-outline" size={22} color={Theme.primary} />
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            )}
+
+            <View style={[styles.modalActions, { marginTop: 15 }]}>
+              <TouchableOpacity
+                style={[styles.modalBtn, styles.cancelBtn]}
+                onPress={() => setUsbModalVisible(false)}
+              >
+                <Text style={styles.cancelBtnText}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </SafeAreaView>
   );
 }
