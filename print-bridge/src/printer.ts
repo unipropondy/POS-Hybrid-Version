@@ -2,7 +2,7 @@ import * as net from 'net';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { logger } from './logger';
 
 /**
@@ -209,6 +209,32 @@ export function sendToWindowsPrinter(printerName: string, payload: Buffer): Prom
       return reject(new Error(`Failed to write temp print file: ${fsErr.message}`));
     }
 
+    // Try fast pre-compiled C# binary RawPrint.exe (Instant ~30ms execution)
+    const candidatePaths = [
+      path.join(__dirname, 'RawPrint.exe'),
+      path.join(__dirname, '..', 'src', 'RawPrint.exe'),
+      path.join(process.cwd(), 'dist', 'RawPrint.exe'),
+      path.join(process.cwd(), 'src', 'RawPrint.exe'),
+      path.join(process.cwd(), 'RawPrint.exe')
+    ];
+    const exePath = candidatePaths.find(p => fs.existsSync(p));
+
+    if (exePath) {
+      execFile(exePath, [cleanName, tmpFile], (err, stdout, stderr) => {
+        try { fs.unlinkSync(tmpFile); } catch (_) {}
+        if (err || !stdout.includes('SUCCESS')) {
+          let errorMsg = stderr.trim() || stdout.trim() || (err ? err.message : 'Printer not reachable');
+          logger.error(`[Print Bridge] USB Printer '${cleanName}' print failed: ${errorMsg}`);
+          reject(new Error(`USB Printer '${cleanName}' is not connected or printing failed. (${errorMsg})`));
+        } else {
+          logger.info(`[Print Bridge] USB Printer '${cleanName}' print completed INSTANTLY via RawPrint.exe.`);
+          resolve();
+        }
+      });
+      return;
+    }
+
+    // Fallback: PowerShell C# Win32 API
     const safePrinterName = cleanName.replace(/'/g, "''");
     const safeFilePath = tmpFile.replace(/'/g, "''");
 

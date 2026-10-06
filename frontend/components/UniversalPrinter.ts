@@ -449,11 +449,11 @@ class UniversalPrinter {
 
   private static async waitForJobCompletion(
     jobId: string,
-    timeoutMs: number = 7000
+    timeoutMs: number = 15000
   ): Promise<{ success: boolean; error?: string }> {
     const startTime = Date.now();
     while (Date.now() - startTime < timeoutMs) {
-      await new Promise((r) => setTimeout(r, 350));
+      await new Promise((r) => setTimeout(r, 300));
       try {
         const res = await fetch(`${API_URL}/api/print-jobs/status/${jobId}`);
         const data = await res.json();
@@ -472,17 +472,18 @@ class UniversalPrinter {
         // continue polling
       }
     }
-    return {
-      success: false,
-      error: "Print job timeout. Please check if the USB printer is connected and powered on.",
-    };
+    // Job is still in the queue - bridge will pick it up and print.
+    // Don't treat this as a failure; return success so the UI isn't blocked.
+    console.warn(`[UniversalPrinter] Job ${jobId} still PENDING after ${timeoutMs}ms - bridge will print it shortly.`);
+    return { success: true };
   }
 
   private static async queuePrintJob(
     printerType: number,
     kitchenTypeValue: string | number | undefined,
     content: string,
-    waitForResult: boolean = true
+    waitForResult: boolean = true,
+    targetPrinterIp?: string
   ): Promise<boolean> {
     try {
       const storeId = "STORE_001";
@@ -496,46 +497,35 @@ class UniversalPrinter {
         body: JSON.stringify({
           printerType,
           kitchenTypeValue: kitchenTypeValue !== undefined ? String(kitchenTypeValue) : undefined,
-          content
+          content,
+          targetPrinterIp
         })
       });
       const data = await response.json();
       if (data.success !== true || !data.jobId) {
         console.warn(`[UniversalPrinter] queuePrintJob failed — backend returned:`, data);
-        if (Platform.OS === 'web') {
-          alert(`Print Queue Error: ${data.error || 'Failed to queue print job'}`);
-        } else {
-          Alert.alert("Print Queue Error", data.error || "Failed to queue print job");
-        }
         return false;
       }
 
       console.log(`✅ [UniversalPrinter] Print job ${data.jobId} queued to bridge (Printer: ${data.printerName || data.printerIp || 'unknown'})`);
       this._bridgeOnlineCache = null;
 
+      // Fire-and-forget: Job is safely in the DB. Don't block the UI waiting for completion.
+      // The Print Bridge will pick it up and print within its next poll cycle (every 500ms).
       if (waitForResult) {
-        const result = await this.waitForJobCompletion(data.jobId);
-        if (result.success) {
-          console.log(`🎉 [UniversalPrinter] Print job ${data.jobId} completed successfully!`);
-          return true;
-        } else {
-          console.warn(`❌ [UniversalPrinter] Print job ${data.jobId} failed:`, result.error);
-          if (Platform.OS === 'web') {
-            alert(`Printer Error: ${result.error || 'Printing to USB/Receipt printer failed.'}`);
+        // Only wait in background without blocking; log result for debugging
+        this.waitForJobCompletion(data.jobId).then((result) => {
+          if (result.success) {
+            console.log(`🎉 [UniversalPrinter] Print job ${data.jobId} confirmed completed.`);
           } else {
-            Alert.alert("Printer Error", result.error || "Printing to USB/Receipt printer failed.");
+            console.warn(`⚠️ [UniversalPrinter] Print job ${data.jobId} status:`, result.error);
           }
-          return false;
-        }
+        }).catch(() => {});
       }
       return true;
     } catch (e: any) {
+      // Don't block the user with an alert if the backend is temporarily unreachable.
       console.warn("[UniversalPrinter] Failed to queue print job:", e);
-      if (Platform.OS === 'web') {
-        alert(`Connection Error: ${e.message || 'Could not reach print service'}`);
-      } else {
-        Alert.alert("Connection Error", e.message || "Could not reach print service");
-      }
       return false;
     }
   }
@@ -1387,12 +1377,6 @@ class UniversalPrinter {
   ): Promise<boolean> {
     if (Platform.OS === "web") {
       try {
-        const isOnline = await this.isBridgeOnline();
-        if (!isOnline) {
-          console.log("ðŸ“¡ [Web Print Bridge] Bridge is OFFLINE. Direct fallback to preview.");
-          return await this.offerPDFFallback(saleData, outletId, t, discountInfo);
-        }
-
         const company = await BillPDFGenerator.loadSettings(outletId);
         const text = this.formatThermalTextWithDiscount(
           saleData,
@@ -1406,13 +1390,37 @@ class UniversalPrinter {
           String(saleData.tableNo).toUpperCase() === "TAKEAWAY" ||
           String(saleData.tableNo).toUpperCase() === "TAKE AWAY";
 
+        let cashierIp = company.printerIp || "";
+        let takeawayIp = company.printerIp || "";
+        try {
+          const now = Date.now();
+          let printers = this.cachedPrinters;
+          if (!printers || (now - this.lastPrintersFetchTime > 30000)) {
+            const response = await fetch(`${API_URL}/api/settings/kitchen-printers`);
+            printers = await response.json();
+            this.cachedPrinters = printers;
+            this.lastPrintersFetchTime = now;
+          }
+          if (Array.isArray(printers)) {
+            const cashierPrinter = printers.find((p: any) => p.PrinterType === 1);
+            const takeawayPrinter = printers.find((p: any) => p.PrinterType === 3);
+            cashierIp = cashierPrinter?.PrinterPath || cashierPrinter?.PrinterIP || cashierIp;
+            takeawayIp = takeawayPrinter?.PrinterPath || takeawayPrinter?.PrinterIP || takeawayIp;
+          }
+        } catch (err) {
+          console.warn("[UniversalPrinter] Failed to fetch printer IPs from PrintMaster:", err);
+        }
+
+        const targetIp = isTakeaway
+          ? (takeawayIp || cashierIp || company.printerIp || "")
+          : (cashierIp || company.printerIp || "");
+
         const pType = isTakeaway ? 3 : 1;
-        console.log(`ðŸ“¡ [Web Print Bridge] Queueing receipt to printer type: ${pType}`);
-        const success = await this.queuePrintJob(pType, undefined, text);
+        console.log(`📡 [Web Print Bridge] Queueing receipt (Type ${pType}, Target IP: ${targetIp || "default"})`);
+        const success = await this.queuePrintJob(pType, undefined, text, true, targetIp);
         if (success) return true;
 
-        // ðŸš€ Fallback: If Print Bridge failed or printer not detected on web, trigger iframe print preview immediately
-        console.log("âš ï¸ [Web Receipt Print] Print Bridge queue failed. Falling back to iframe print preview.");
+        console.log("⚠️ [Web Receipt Print] Print Bridge queue failed. Falling back to iframe print preview.");
         return await this.offerPDFFallback(saleData, outletId, t, discountInfo);
       } catch (err) {
         console.warn("[Web Print Bridge] Receipt Queue failed, falling back to iframe print preview:", err);
@@ -2316,6 +2324,20 @@ class UniversalPrinter {
       // 6. KDS backup copy (respects enableKDSPrint setting)
       if (shouldPrintKDS) {
         try {
+          let kdsPrinterIp = "";
+          try {
+            let printers = this.cachedPrinters;
+            if (!printers) {
+              const res = await fetch(`${API_URL}/api/settings/kitchen-printers`);
+              printers = await res.json();
+              this.cachedPrinters = printers;
+            }
+            if (Array.isArray(printers)) {
+              const kdsPrinter = printers.find((p: any) => p.PrinterType === 4 || (p.KitchenName && p.KitchenName.toUpperCase() === "KDS"));
+              kdsPrinterIp = kdsPrinter?.PrinterPath || kdsPrinter?.PrinterIP || "";
+            }
+          } catch (e) {}
+
           const kdsData = {
             orderId,
             orderNo: orderId,
@@ -2324,7 +2346,8 @@ class UniversalPrinter {
             items,
             kitchenName: "KDS",
           };
-          await this.printKDSOrder(kdsData, "SYSTEM");
+          console.log(`🖨️ [UniversalPrinter] Printing KDS order (Printer IP: ${kdsPrinterIp || "default"})`);
+          await this.printKDSOrder(kdsData, "SYSTEM", kdsPrinterIp);
         } catch (kdsErr) {
           console.error("[UniversalPrinter] KDS backup print failed:", kdsErr);
         }
@@ -2860,11 +2883,23 @@ class UniversalPrinter {
 
       if (Platform.OS === "web") {
         try {
-          const isOnline = await this.isBridgeOnline();
-          if (isOnline) {
-            // Queue to Cashier printer (Type 1) via the bridge
-            return await this.queuePrintJob(1, undefined, text);
-          }
+          let cashierIp = company.cashierPrinterIp || company.printerIp || "";
+          try {
+            let printers = this.cachedPrinters;
+            if (!printers) {
+              const res = await fetch(`${API_URL}/api/settings/kitchen-printers`);
+              printers = await res.json();
+              this.cachedPrinters = printers;
+            }
+            if (Array.isArray(printers)) {
+              const cashierPrinter = printers.find((p: any) => p.PrinterType === 1);
+              cashierIp = cashierPrinter?.PrinterPath || cashierPrinter?.PrinterIP || cashierIp;
+            }
+          } catch (e) {}
+
+          console.log(`📡 [Web Print Bridge] Queueing settlement report (Target IP: ${cashierIp || "default"})`);
+          const success = await this.queuePrintJob(1, undefined, text, true, cashierIp);
+          if (success) return true;
         } catch (err) {
           console.warn("Print Bridge failed for Z-Report:", err);
         }

@@ -1104,14 +1104,14 @@ export default function SummaryScreen() {
           memberRewardBalance: String(rewardMember?.RewardCredit || 0),
         };
 
-        await UniversalPrinter.printCheckoutBill(
+        UniversalPrinter.printCheckoutBill(
           saleData,
           user?.userId || "SYSTEM",
           discountInfo ? {
             ...discountInfo,
             amount: partDiscountAmount,
           } : undefined,
-        );
+        ).catch((e) => console.error(`Split part ${i} print error:`, e));
       }
 
       showToast({
