@@ -1072,7 +1072,7 @@ export default function CustomerMenuScreen() {
                   <View>
                     <Text style={{ fontSize: 11, color: "#94A3B8", fontWeight: "700", textTransform: "uppercase" }}>Session Started</Text>
                     <Text style={{ fontSize: 14, fontWeight: "700", color: "#334155" }}>
-                      Today, {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      Today, {formatToSingaporeTime(new Date())}
                     </Text>
                   </View>
                 </View>

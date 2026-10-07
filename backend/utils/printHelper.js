@@ -26,9 +26,9 @@ function formatKOTThermalText(data, type = 'NEW') {
   const kitchenName = data.kitchenName || '';
 
   // ── Timestamp ───────────────────────────────────────────────────────
-  const now = new Date();
-  const dateStr = new Intl.DateTimeFormat('en-GB', { day:'2-digit', month:'2-digit', year:'2-digit' }).format(now);
-  const timeStr = now.toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit', hour12:false });
+  const now = data.date ? new Date(data.date) : (data.createdAt ? new Date(data.createdAt) : new Date());
+  const dateStr = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Singapore', day:'2-digit', month:'2-digit', year:'2-digit' }).format(now);
+  const timeStr = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Singapore', hour:'2-digit', minute:'2-digit', hour12:false }).format(now);
 
   const DIV = '[L]------------------------------------------------\n';
 
