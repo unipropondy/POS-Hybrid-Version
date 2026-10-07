@@ -39,34 +39,34 @@ router.post("/day-start", async (req, res) => {
     // Clear previous active records
     await pool.request().query("DELETE FROM DateEntry");
     
-    // Insert new business day record
+    // Insert new business day record (using Singapore time UTC+8)
     await pool.request()
       .input("username", sql.VarChar(30), username || "admin")
       .input("startDate", sql.Date, startDate)
       .input("createdBy", sql.VarChar(30), username || "admin")
       .query(`
         INSERT INTO DateEntry (username, StartDate, CreatedBy, CreatedDate)
-        VALUES (@username, @startDate, @createdBy, GETDATE())
+        VALUES (@username, @startDate, @createdBy, DATEADD(MINUTE, 480, GETUTCDATE()))
       `);
 
-    // Log Day Start in BusinessDayLog
+    // Log Day Start in BusinessDayLog (using Singapore time UTC+8)
     await pool.request()
       .input("username", sql.VarChar(30), username || "admin")
       .input("startDate", sql.Date, startDate)
       .query(`
         IF EXISTS(SELECT 1 FROM BusinessDayLog WHERE BusinessDate = @startDate)
-          UPDATE BusinessDayLog SET StartedAt = GETDATE(), StartedBy = @username, EndedAt = NULL, EndedBy = NULL WHERE BusinessDate = @startDate
+          UPDATE BusinessDayLog SET StartedAt = DATEADD(MINUTE, 480, GETUTCDATE()), StartedBy = @username, EndedAt = NULL, EndedBy = NULL WHERE BusinessDate = @startDate
         ELSE
-          INSERT INTO BusinessDayLog (BusinessDate, StartedAt, StartedBy) VALUES (@startDate, GETDATE(), @username)
+          INSERT INTO BusinessDayLog (BusinessDate, StartedAt, StartedBy) VALUES (@startDate, DATEADD(MINUTE, 480, GETUTCDATE()), @username)
       `);
 
-    // Record append-only audit trail
+    // Record append-only audit trail (using Singapore time UTC+8)
     await pool.request()
       .input("username", sql.VarChar(30), username || "admin")
       .input("startDate", sql.Date, startDate)
       .query(`
         INSERT INTO BusinessDayAuditLog (BusinessDate, EventType, EventTime, ActionBy)
-        VALUES (@startDate, 'DAY_START', GETDATE(), @username)
+        VALUES (@startDate, 'DAY_START', DATEADD(MINUTE, 480, GETUTCDATE()), @username)
       `);
       
     const io = req.app.get('io');
@@ -91,7 +91,7 @@ router.post("/day-end", async (req, res) => {
 
     const actionUser = req.body?.username || 'admin';
 
-    // Log Day End in BusinessDayLog
+    // Log Day End in BusinessDayLog (using Singapore time UTC+8)
     if (activeStartDate) {
       await pool.request()
         .input("startDate", sql.Date, activeStartDate)
@@ -99,20 +99,20 @@ router.post("/day-end", async (req, res) => {
         .query(`
           IF EXISTS (SELECT 1 FROM BusinessDayLog WHERE BusinessDate = @startDate)
             UPDATE BusinessDayLog 
-            SET EndedAt = GETDATE(), EndedBy = @username 
+            SET EndedAt = DATEADD(MINUTE, 480, GETUTCDATE()), EndedBy = @username 
             WHERE BusinessDate = @startDate
           ELSE
             INSERT INTO BusinessDayLog (BusinessDate, StartedAt, StartedBy, EndedAt, EndedBy)
-            VALUES (@startDate, GETDATE(), @username, GETDATE(), @username)
+            VALUES (@startDate, DATEADD(MINUTE, 480, GETUTCDATE()), @username, DATEADD(MINUTE, 480, GETUTCDATE()), @username)
         `);
 
-      // Record append-only audit trail
+      // Record append-only audit trail (using Singapore time UTC+8)
       await pool.request()
         .input("startDate", sql.Date, activeStartDate)
         .input("username", sql.VarChar(30), actionUser)
         .query(`
           INSERT INTO BusinessDayAuditLog (BusinessDate, EventType, EventTime, ActionBy)
-          VALUES (@startDate, 'DAY_END', GETDATE(), @username)
+          VALUES (@startDate, 'DAY_END', DATEADD(MINUTE, 480, GETUTCDATE()), @username)
         `);
     }
 
@@ -331,7 +331,7 @@ router.get("/day-log", async (req, res) => {
     const pool = getPool();
     const result = await pool.request()
       .input("date", sql.Date, date)
-      .query("SELECT StartedAt, StartedBy, EndedAt, EndedBy FROM BusinessDayLog WHERE BusinessDate = @date");
+      .query("SELECT CONVERT(VARCHAR(19), StartedAt, 120) AS StartedAt, StartedBy, CONVERT(VARCHAR(19), EndedAt, 120) AS EndedAt, EndedBy FROM BusinessDayLog WHERE BusinessDate = @date");
     
     if (result.recordset.length > 0) {
       res.json({ success: true, data: result.recordset[0] });
@@ -339,7 +339,7 @@ router.get("/day-log", async (req, res) => {
       // Check if DateEntry has a started day for this date (Self-Healing)
       const dateEntryRes = await pool.request()
         .input("date", sql.Date, date)
-        .query("SELECT username, CreatedDate FROM DateEntry WHERE StartDate = @date");
+        .query("SELECT username, CONVERT(VARCHAR(19), CreatedDate, 120) AS CreatedDate FROM DateEntry WHERE StartDate = @date");
       
       if (dateEntryRes.recordset.length > 0) {
         const entry = dateEntryRes.recordset[0];
@@ -347,7 +347,7 @@ router.get("/day-log", async (req, res) => {
         await pool.request()
           .input("date", sql.Date, date)
           .input("username", sql.VarChar(30), entry.username || "admin")
-          .input("createdDate", sql.DateTime, entry.CreatedDate || new Date())
+          .input("createdDate", sql.VarChar(19), entry.CreatedDate)
           .query(`
             INSERT INTO BusinessDayLog (BusinessDate, StartedAt, StartedBy)
             VALUES (@date, @createdDate, @username)
@@ -356,7 +356,7 @@ router.get("/day-log", async (req, res) => {
         res.json({
           success: true,
           data: {
-            StartedAt: entry.CreatedDate || new Date(),
+            StartedAt: entry.CreatedDate,
             StartedBy: entry.username || "admin",
             EndedAt: null,
             EndedBy: null
@@ -380,7 +380,7 @@ router.get("/day-history", async (req, res) => {
     const request = pool.request();
 
     let query = `
-      SELECT AuditId, BusinessDate, EventType, EventTime, ActionBy, Remarks
+      SELECT AuditId, BusinessDate, EventType, CONVERT(VARCHAR(19), EventTime, 120) AS EventTime, ActionBy, Remarks
       FROM BusinessDayAuditLog
     `;
 
