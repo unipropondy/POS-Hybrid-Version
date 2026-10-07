@@ -643,11 +643,13 @@ export default function CustomerMenuScreen() {
   }, [totalItems]);
 
   // Load first kitchen by default
+  // Load first kitchen by default
   useEffect(() => {
     const isUnpublished = (val: any) => val === 0 || val === false || String(val) === '0';
     const published = kitchens.filter(k => !isUnpublished(k.IsPublished));
-    if (published.length > 0 && !selectedKitchenId) {
-      setSelectedKitchenId(published[0].CategoryId);
+    const targetKitchens = published.length > 0 ? published : kitchens;
+    if (targetKitchens.length > 0 && !selectedKitchenId) {
+      setSelectedKitchenId(targetKitchens[0].CategoryId);
     }
   }, [kitchens]);
 
@@ -657,9 +659,10 @@ export default function CustomerMenuScreen() {
       fetchGroups(selectedKitchenId).then((groups) => {
         const isUnpublished = (val: any) => val === 0 || val === false || String(val) === '0';
         const publishedGroups = groups.filter(g => !isUnpublished(g.IsPublished));
-        setDishGroups(publishedGroups);
-        if (publishedGroups && publishedGroups.length > 0) {
-          setSelectedGroupId(publishedGroups[0].DishGroupId);
+        const targetGroups = publishedGroups.length > 0 ? publishedGroups : groups;
+        setDishGroups(targetGroups);
+        if (targetGroups && targetGroups.length > 0) {
+          setSelectedGroupId(targetGroups[0].DishGroupId);
         } else {
           setSelectedGroupId(null);
         }
@@ -717,10 +720,19 @@ export default function CustomerMenuScreen() {
     const catPub = dish.CategoryPublished !== undefined ? dish.CategoryPublished : dish.categoryPublished;
     const grpPub = dish.GroupPublished !== undefined ? dish.GroupPublished : dish.groupPublished;
 
-    // Show if published on Dish, Category, and Group level for QR menu (IsPublished === 1 or true or '1' or undefined)
+    // Show if published on Dish, Category, and Group level for QR menu
+    // If all published flags in DB are 0/false/NULL, don't block display
     const isUnpublished = (val: any) => val === 0 || val === false || String(val) === '0';
-    if (isUnpublished(isPub) || isUnpublished(catPub) || isUnpublished(grpPub)) {
-      return false;
+    const isExplicitlyUnpublished = (
+      (isPub !== undefined && isUnpublished(isPub) && isPub !== 1 && isPub !== true && String(isPub) !== '1') &&
+      (catPub !== undefined && isUnpublished(catPub) && catPub !== 1 && catPub !== true && String(catPub) !== '1')
+    );
+    if (isExplicitlyUnpublished && (isPub === false || String(isPub) === '0') && (catPub === false || String(catPub) === '0') && (grpPub === false || String(grpPub) === '0')) {
+      // Check if any item in allDishes has IsPublished === 1/true. If none have 1/true, don't filter out!
+      const hasAnyPublishedConfig = allDishes.some((d: any) => d.IsPublished === 1 || d.IsPublished === true || String(d.IsPublished) === '1');
+      if (hasAnyPublishedConfig) {
+        return false;
+      }
     }
 
     // Hide if outside AvailableTimeFrom and AvailableTimeTo range
