@@ -240,27 +240,7 @@ export default function CustomerCartScreen() {
     const handleCartUpdated = (data: { tableId: string; source?: string }) => {
       const incomingId = String(data.tableId || "").replace(/^\{|\}$/g, "").trim().toLowerCase();
       if (incomingId === tableId) {
-        if (data.source === "order_sent") {
-          // 🔴 Another user placed an order: wipe local NEW drafts so Place Order button disappears
-          const ctxId = useCartStore.getState().currentContextId;
-          if (ctxId) {
-            useCartStore.setState((state) => {
-              const existing = state.carts[ctxId] || [];
-              const clearedCart = existing.filter((item: any) => item.status && item.status !== "NEW");
-              const newQtyMap: Record<string, number> = {};
-              clearedCart.forEach((item: any) => { newQtyMap[item.id] = (newQtyMap[item.id] || 0) + item.qty; });
-              return {
-                carts: { ...state.carts, [ctxId]: clearedCart },
-                cartQtyMap: { ...state.cartQtyMap, [ctxId]: newQtyMap },
-                lastLocalUpdate: { ...state.lastLocalUpdate, [ctxId]: 0 },
-              };
-            });
-          }
-          useCartStore.getState().fetchCartFromDB(orderContext.tableId!, true);
-        } else {
-          // 🟡 Normal cart update (item added/edited): gentle fetch, keep local NEW items safe
-          useCartStore.getState().fetchCartFromDB(orderContext.tableId!);
-        }
+        useCartStore.getState().fetchCartFromDB(orderContext.tableId!, true);
       }
     };
 
@@ -452,16 +432,20 @@ export default function CustomerCartScreen() {
         // 🛑 CANCEL any pending debounced syncCartWithDB FIRST
         cancelPendingSync();
 
-        // ✅ IMMEDIATE CLEAR: Wipe all local "NEW" draft items right away
+        // ✅ MARK SENT: Update local "NEW" draft items to "SENT" status immediately
         const ctxId = currentContextId;
         if (ctxId) {
           useCartStore.setState((state) => {
             const existing = state.carts[ctxId] || [];
-            const clearedCart = existing.filter(item => item.status && item.status !== "NEW");
+            const updatedCart = existing.map(item => ({
+              ...item,
+              status: (item.status === "NEW" || !item.status) ? ("SENT" as const) : item.status,
+              sent: 1
+            }));
             const newQtyMap: Record<string, number> = {};
-            clearedCart.forEach(item => { newQtyMap[item.id] = (newQtyMap[item.id] || 0) + item.qty; });
+            updatedCart.forEach(item => { newQtyMap[item.id] = (newQtyMap[item.id] || 0) + item.qty; });
             return {
-              carts: { ...state.carts, [ctxId]: clearedCart },
+              carts: { ...state.carts, [ctxId]: updatedCart },
               cartQtyMap: { ...state.cartQtyMap, [ctxId]: newQtyMap },
               lastLocalUpdate: { ...state.lastLocalUpdate, [ctxId]: 0 },
             };

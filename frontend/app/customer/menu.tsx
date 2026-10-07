@@ -584,32 +584,7 @@ export default function CustomerMenuScreen() {
     const handleCartUpdated = (data: { tableId: string; source?: string }) => {
       const incomingId = String(data.tableId || "").replace(/^\{|\}$/g, "").trim().toLowerCase();
       if (incomingId === tableId) {
-        if (data.source === "order_sent") {
-          // 🔴 ANOTHER USER PLACED AN ORDER: Aggressively wipe local NEW drafts so the
-          // merge logic in fetchCartFromDB won't re-add them (stops Place Order button staying visible).
-          const ctxId = useCartStore.getState().currentContextId;
-          if (ctxId) {
-            useCartStore.setState((state) => {
-              const existing = state.carts[ctxId] || [];
-              // Keep only server-confirmed items (SENT/READY/SERVED/HOLD/VOIDED)
-              const clearedCart = existing.filter((item: any) => item.status && item.status !== "NEW");
-              const newQtyMap: Record<string, number> = {};
-              clearedCart.forEach((item: any) => { newQtyMap[item.id] = (newQtyMap[item.id] || 0) + item.qty; });
-              return {
-                carts: { ...state.carts, [ctxId]: clearedCart },
-                cartQtyMap: { ...state.cartQtyMap, [ctxId]: newQtyMap },
-                // Reset lastLocalUpdate so the merge logic treats local items as stale
-                lastLocalUpdate: { ...state.lastLocalUpdate, [ctxId]: 0 },
-              };
-            });
-          }
-          // Force-fetch bypasses Latency Shield; stale local items won't re-appear
-          useCartStore.getState().fetchCartFromDB(orderContext.tableId!, true);
-        } else {
-          // 🟡 NORMAL CART UPDATE (item added/edited by same or other user):
-          // Gentle fetch — respects local edits, no wipe. Latency Shield is active.
-          useCartStore.getState().fetchCartFromDB(orderContext.tableId!);
-        }
+        useCartStore.getState().fetchCartFromDB(orderContext.tableId!, true);
       }
     };
 
@@ -642,14 +617,21 @@ export default function CustomerMenuScreen() {
     }
   }, [totalItems]);
 
-  // Load first kitchen by default
-  // Load first kitchen by default
+  // Helper for Customer QR Menu IsPublished filtering:
+  // IsPublished = 0 (or false/null) -> SHOW (Published)
+  // IsPublished = 1 (or true/'1') -> EXCLUDE (Unpublished)
+  const isPublishedForQR = (val: any) => {
+    if (val === 1 || val === true || String(val) === '1') {
+      return false; // Exclude from QR menu
+    }
+    return true; // Show in QR menu
+  };
+
+  // Load first published kitchen by default
   useEffect(() => {
-    const isUnpublished = (val: any) => val === 0 || val === false || String(val) === '0';
-    const published = kitchens.filter(k => !isUnpublished(k.IsPublished));
-    const targetKitchens = published.length > 0 ? published : kitchens;
-    if (targetKitchens.length > 0 && !selectedKitchenId) {
-      setSelectedKitchenId(targetKitchens[0].CategoryId);
+    const published = kitchens.filter(k => isPublishedForQR(k.IsPublished));
+    if (published.length > 0 && !selectedKitchenId) {
+      setSelectedKitchenId(published[0].CategoryId);
     }
   }, [kitchens]);
 
@@ -657,12 +639,10 @@ export default function CustomerMenuScreen() {
   useEffect(() => {
     if (selectedKitchenId) {
       fetchGroups(selectedKitchenId).then((groups) => {
-        const isUnpublished = (val: any) => val === 0 || val === false || String(val) === '0';
-        const publishedGroups = groups.filter(g => !isUnpublished(g.IsPublished));
-        const targetGroups = publishedGroups.length > 0 ? publishedGroups : groups;
-        setDishGroups(targetGroups);
-        if (targetGroups && targetGroups.length > 0) {
-          setSelectedGroupId(targetGroups[0].DishGroupId);
+        const publishedGroups = groups.filter(g => isPublishedForQR(g.IsPublished));
+        setDishGroups(publishedGroups);
+        if (publishedGroups && publishedGroups.length > 0) {
+          setSelectedGroupId(publishedGroups[0].DishGroupId);
         } else {
           setSelectedGroupId(null);
         }
@@ -720,19 +700,9 @@ export default function CustomerMenuScreen() {
     const catPub = dish.CategoryPublished !== undefined ? dish.CategoryPublished : dish.categoryPublished;
     const grpPub = dish.GroupPublished !== undefined ? dish.GroupPublished : dish.groupPublished;
 
-    // Show if published on Dish, Category, and Group level for QR menu
-    // If all published flags in DB are 0/false/NULL, don't block display
-    const isUnpublished = (val: any) => val === 0 || val === false || String(val) === '0';
-    const isExplicitlyUnpublished = (
-      (isPub !== undefined && isUnpublished(isPub) && isPub !== 1 && isPub !== true && String(isPub) !== '1') &&
-      (catPub !== undefined && isUnpublished(catPub) && catPub !== 1 && catPub !== true && String(catPub) !== '1')
-    );
-    if (isExplicitlyUnpublished && (isPub === false || String(isPub) === '0') && (catPub === false || String(catPub) === '0') && (grpPub === false || String(grpPub) === '0')) {
-      // Check if any item in allDishes has IsPublished === 1/true. If none have 1/true, don't filter out!
-      const hasAnyPublishedConfig = allDishes.some((d: any) => d.IsPublished === 1 || d.IsPublished === true || String(d.IsPublished) === '1');
-      if (hasAnyPublishedConfig) {
-        return false;
-      }
+    // Exclude if IsPublished = 1 on Dish, Category, or Group level
+    if (!isPublishedForQR(isPub) || !isPublishedForQR(catPub) || !isPublishedForQR(grpPub)) {
+      return false;
     }
 
     // Hide if outside AvailableTimeFrom and AvailableTimeTo range
@@ -749,12 +719,23 @@ export default function CustomerMenuScreen() {
       return nameMatch || descMatch;
     }
     
-    // Check if the dish's group belongs to the currently selected category
-    const belongsToCategory = dishGroups.some(g => g.DishGroupId === dish.DishGroupId);
+    // Check if dish matches group (either primary DishGroupId or via DishGroupMapping)
+    const matchesDishGroupId = (groupId: string) => {
+      if (!groupId) return false;
+      if (dish.DishGroupId === groupId) return true;
+      if (dish.MappedGroupIds) {
+        const mappedArr = String(dish.MappedGroupIds).split(',').map(s => s.trim()).filter(Boolean);
+        return mappedArr.includes(groupId);
+      }
+      return false;
+    };
+
+    // Check if the dish belongs to any group in the currently selected category
+    const belongsToCategory = dishGroups.some(g => matchesDishGroupId(g.DishGroupId));
     
     // If a group is selected, match it; otherwise ensure it belongs to the selected category
     const matchesGroup = selectedGroupId
-      ? dish.DishGroupId === selectedGroupId
+      ? matchesDishGroupId(selectedGroupId)
       : belongsToCategory;
       
     return matchesGroup;
@@ -843,10 +824,7 @@ export default function CustomerMenuScreen() {
         <FlatList
           horizontal
           showsHorizontalScrollIndicator={false}
-          data={kitchens.filter(k => {
-            const isUnpublished = (val: any) => val === 0 || val === false || String(val) === '0';
-            return !isUnpublished(k.IsPublished);
-          })}
+          data={kitchens.filter(k => isPublishedForQR(k.IsPublished))}
           keyExtractor={(item) => item.CategoryId}
           renderItem={({ item }) => {
             const isSelected = selectedKitchenId === item.CategoryId;
