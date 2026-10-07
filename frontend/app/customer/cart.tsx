@@ -201,6 +201,7 @@ export default function CustomerCartScreen() {
   
   const [notes, setNotes] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const isSendingRef = useRef(false);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [userInfo, setUserInfo] = useState<any>(null);
   const [applyPromo, setApplyPromo] = useState(false);
@@ -364,16 +365,20 @@ export default function CustomerCartScreen() {
   };
 
   const handlePlaceOrder = async () => {
+    if (isSendingRef.current || submitting || isAnimating) return;
+    isSendingRef.current = true;
+
     if (currentCart.length === 0) {
       Alert.alert("Cart Empty", "Please add items to your cart first.");
+      isSendingRef.current = false;
       return;
     }
     if (!orderContext?.tableId) {
       Alert.alert("Error", "Table session not found. Please restart.");
+      isSendingRef.current = false;
       return;
     }
 
-    if (submitting || isAnimating) return;
     setIsAnimating(true);
     setSubmitting(true);
 
@@ -470,12 +475,14 @@ export default function CustomerCartScreen() {
         Alert.alert("Order Failed", "Failed to send items to the kitchen. Please contact staff.");
         setIsAnimating(false);
         setSubmitting(false);
+        isSendingRef.current = false;
       }
     } catch (err) {
       console.error("Error placing order:", err);
       Alert.alert("Network Error", "Failed to contact order server. Please try again.");
       setIsAnimating(false);
       setSubmitting(false);
+      isSendingRef.current = false;
     }
   };
 

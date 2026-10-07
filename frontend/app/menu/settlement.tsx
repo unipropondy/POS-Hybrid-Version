@@ -2217,7 +2217,7 @@ export default function SettlementScreen() {
         text += "[C]<B>CASHIER SALES BREAKDOWN</B>\n";
         text += "[C]========================================\n";
         loginWiseSales.forEach(u => {
-          text += formatTwoCols48(`${u.CashierName.toUpperCase()} (${u.TotalBills || 0} bills)`, formatCurrency(u.TotalSales || 0));
+          text += formatTwoCols48(`${u.CashierName.toUpperCase()}`, formatCurrency(u.TotalSales || 0));
         });
         text += "[C]----------------------------------------\n\n";
       }
@@ -7286,7 +7286,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.4)",
   },
   modalDismiss: {
-    ...StyleSheet.absoluteFill,
+    ...StyleSheet.absoluteFillObject,
   },
   modalContent: {
     width: "90%",

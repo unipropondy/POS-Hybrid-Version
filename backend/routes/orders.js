@@ -1207,11 +1207,70 @@ router.post("/save-cart", async (req, res) => {
   }
 });
 
+// 🛡️ DUP-GUARD & LOCKING: In-memory lock & deduplication cache for /api/orders/send
+const activeSendLocks = new Map(); // tableKey -> Promise
+const recentSendCache = new Map(); // tableKey -> { timestamp, orderId, signature }
+
+function generateItemsSignature(items) {
+  if (!items || !Array.isArray(items) || items.length === 0) return "";
+  return items
+    .map((item) => {
+      const id = item.id || item.DishId || item.lineItemId || "";
+      const qty = item.qty || item.Quantity || 1;
+      const mods = Array.isArray(item.modifiers) ? item.modifiers.map(m => m.ModifierId || m.name || m.modifierName || '').sort().join(',') : '';
+      return `${id}:${qty}:${mods}`;
+    })
+    .sort()
+    .join("|");
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, val] of recentSendCache.entries()) {
+    if (now - val.timestamp > 10000) {
+      recentSendCache.delete(key);
+    }
+  }
+}, 30000);
+
 router.post("/send", async (req, res) => {
+  let tableKey = "";
+  let resolveLock, rejectLock;
   try {
     const { tableId, orderId, items, userId, discountAmount, discountRemarks, mobileNo, customerName } = req.body;
     const pool = await poolPromise;
     const cleanId = await getCleanTableId(pool, tableId);
+    tableKey = String(cleanId).toLowerCase().trim();
+    const signature = generateItemsSignature(items);
+
+    // 🛡️ DEDUP CHECK 1: If exact same items were sent for this table within 5 seconds, block duplicate execution
+    const now = Date.now();
+    const recent = recentSendCache.get(tableKey);
+    if (recent && (now - recent.timestamp < 5000) && signature && recent.signature === signature) {
+      console.warn(`🛡️ [Send Guard] Blocked duplicate /send request for table "${cleanId}" (${now - recent.timestamp}ms ago). Returning OrderId: ${recent.orderId}`);
+      return res.json({ success: true, orderId: recent.orderId, duplicateBlocked: true });
+    }
+
+    // 🛡️ CONCURRENCY LOCK 2: If another /send is currently in progress for this table, wait for it
+    if (activeSendLocks.has(tableKey)) {
+      console.warn(`🛡️ [Send Guard] Concurrent /send request for table "${cleanId}" detected. Waiting for in-flight send...`);
+      try {
+        await activeSendLocks.get(tableKey);
+        const postLockRecent = recentSendCache.get(tableKey);
+        if (postLockRecent && signature && postLockRecent.signature === signature) {
+          console.warn(`🛡️ [Send Guard] Post-lock duplicate request resolved for table "${cleanId}". Returning OrderId: ${postLockRecent.orderId}`);
+          return res.json({ success: true, orderId: postLockRecent.orderId, duplicateBlocked: true });
+        }
+      } catch (waitErr) {
+        // In-flight send failed, allow current send to proceed
+      }
+    }
+
+    const lockPromise = new Promise((resolve, reject) => {
+      resolveLock = resolve;
+      rejectLock = reject;
+    });
+    activeSendLocks.set(tableKey, lockPromise);
 
     const transaction = new sql.Transaction(pool);
     await transaction.begin();
@@ -1443,6 +1502,14 @@ router.post("/send", async (req, res) => {
         }
       }
 
+      // Record successful send in cache
+      recentSendCache.set(tableKey, {
+        timestamp: Date.now(),
+        orderId: finalOrderId,
+        signature: signature,
+      });
+
+      if (resolveLock) resolveLock(finalOrderId);
       res.json({ success: true, orderId: finalOrderId });
 
       // 🔥 REAL-TIME BROADCAST: Notify KDS screen, POS APK, and all waiter devices.
@@ -1502,11 +1569,16 @@ router.post("/send", async (req, res) => {
       // 5. Refresh totals and notify instantly
       syncTableStatus(req, cleanId).catch(() => { });
     } catch (e) {
+      if (rejectLock) rejectLock(e);
       await transaction.rollback();
       console.error("❌ SendOrder SQL Error:", e.message);
       res.status(500).json({ error: "SEND_ERROR: " + e.message });
+    } finally {
+      if (tableKey) activeSendLocks.delete(tableKey);
     }
   } catch (err) {
+    if (rejectLock) rejectLock(err);
+    if (tableKey) activeSendLocks.delete(tableKey);
     res.status(500).json({ error: err.message });
   }
 });

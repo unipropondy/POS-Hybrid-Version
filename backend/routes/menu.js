@@ -582,7 +582,7 @@ router.get("/barcode/:code", async (req, res) => {
   }
 });
 
-router.clearMenuCache = () => {
+router.clearMenuCache = (io) => {
   cache.clear();
   console.log("⚡ [MenuCache] Cache INVALIDATION: All menu cache cleared dynamically");
   if (typeof imageCache !== 'undefined') {
@@ -596,10 +596,51 @@ router.clearMenuCache = () => {
   } catch (err) {
     console.error("Failed to clear combo cache:", err.message);
   }
+  if (io) {
+    console.log("📡 [MenuCache] Emitting menu_updated socket event...");
+    io.emit("menu_updated", { timestamp: Date.now() });
+  }
 };
 
+/* ================= PUBLISH STATUS TOGGLE ================= */
+router.post("/publish-status", async (req, res) => {
+  try {
+    const { dishId, categoryId, dishGroupId, isPublished } = req.body;
+    const pool = await poolPromise;
+    const pubVal = (isPublished === 1 || isPublished === true || String(isPublished) === "1") ? 1 : 0;
+    
+    if (dishId) {
+      await pool.request()
+        .input("DishId", dishId)
+        .input("IsPublished", pubVal)
+        .query(`UPDATE DishMaster SET IsPublished = @IsPublished WHERE DishId = @DishId`);
+    } else if (categoryId) {
+      await pool.request()
+        .input("CategoryId", categoryId)
+        .input("IsPublished", pubVal)
+        .query(`UPDATE CategoryMaster SET IsPublished = @IsPublished WHERE CategoryId = @CategoryId`);
+    } else if (dishGroupId) {
+      await pool.request()
+        .input("DishGroupId", dishGroupId)
+        .input("IsPublished", pubVal)
+        .query(`UPDATE DishGroupMaster SET IsPublished = @IsPublished WHERE DishGroupId = @DishGroupId`);
+    } else {
+      return res.status(400).json({ error: "dishId, categoryId, or dishGroupId required" });
+    }
+
+    const io = req.app.get("io");
+    router.clearMenuCache(io);
+
+    res.json({ success: true, isPublished: pubVal, dishId, categoryId, dishGroupId });
+  } catch (err) {
+    console.error("Error updating publish status:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post("/clear-cache", (req, res) => {
-  router.clearMenuCache();
+  const io = req.app.get("io");
+  router.clearMenuCache(io);
   res.json({ success: true, message: "Menu and image cache cleared successfully" });
 });
 

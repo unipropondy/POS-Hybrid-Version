@@ -650,6 +650,32 @@ export default function CustomerMenuScreen() {
     }
   }, [selectedKitchenId]);
 
+  // 🔌 Real-time Socket Listener for Menu Updates (e.g. IsPublished toggle = 1 or 0)
+  useEffect(() => {
+    const { socket: sharedSocket } = require("../../constants/socket");
+
+    const handleMenuUpdated = (data: any) => {
+      console.log("⚡ [QR Menu] Socket event received: menu_updated", data);
+      forceRefreshMenu().then(() => {
+        if (selectedKitchenId) {
+          fetchGroups(selectedKitchenId).then((groups) => {
+            const publishedGroups = groups.filter(g => isPublishedForQR(g.IsPublished));
+            setDishGroups(publishedGroups);
+            if (publishedGroups && publishedGroups.length > 0 && (!selectedGroupId || !publishedGroups.some(g => g.DishGroupId === selectedGroupId))) {
+              setSelectedGroupId(publishedGroups[0].DishGroupId);
+            }
+          });
+        }
+      });
+    };
+
+    sharedSocket.on("menu_updated", handleMenuUpdated);
+
+    return () => {
+      sharedSocket.off("menu_updated", handleMenuUpdated);
+    };
+  }, [selectedKitchenId, selectedGroupId]);
+
   if (isSessionClosed) {
     // Check if it's a mobile browser (can't close tabs programmatically)
     const isMobileBrowser =
