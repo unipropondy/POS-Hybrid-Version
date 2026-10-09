@@ -1363,8 +1363,8 @@ async function syncKitchensToPrintMaster(pool) {
       await pool.request()
         .input("ip", sql.NVarChar, defaultIP)
         .query(`
-          INSERT INTO PrintMaster (PrinterId, PrinterName, PrinterPath, PrinterIP, PrinterType, PrintSection, KitchenTypeName, KitchenTypeValue, IsActive, PrintCopy)
-          VALUES (NEWID(), 'Receipt Printer', @ip, @ip, 1, 1, 'Receipt Print', 0, 1, 1)
+          INSERT INTO PrintMaster (PrinterId, PrinterName, PrinterPath, PrinterIP, PrinterType, PrintSection, KitchenTypeName, KitchenTypeValue, IsActive, IsEnabled, PrintCopy)
+          VALUES (NEWID(), 'Receipt Printer', @ip, @ip, 1, 1, 'Receipt Print', 0, 1, 1, 1)
         `);
       console.log("🛠️ [KitchenSync] Auto-created default Cashier Printer in PrintMaster.");
     }
@@ -1379,8 +1379,8 @@ async function syncKitchensToPrintMaster(pool) {
       await pool.request()
         .input("code", sql.Int, taCode)
         .query(`
-          INSERT INTO PrintMaster (PrinterId, PrinterName, PrinterPath, PrinterIP, PrinterType, PrintSection, KitchenTypeName, KitchenTypeValue, IsActive, PrintCopy)
-          VALUES (NEWID(), 'TakeAway', '192.168.0.20', '192.168.0.20', 3, 1, 'TakeAway', @code, 1, 1)
+          INSERT INTO PrintMaster (PrinterId, PrinterName, PrinterPath, PrinterIP, PrinterType, PrintSection, KitchenTypeName, KitchenTypeValue, IsActive, IsEnabled, PrintCopy)
+          VALUES (NEWID(), 'TakeAway', '192.168.0.20', '192.168.0.20', 3, 1, 'TakeAway', @code, 1, 1, 1)
         `);
       console.log("🛠️ [KitchenSync] Auto-created default TakeAway Printer in PrintMaster.");
     }
@@ -1477,11 +1477,11 @@ async function syncKitchensToPrintMaster(pool) {
             INSERT INTO PrintMaster (
               PrinterId, PrinterName, PrinterPath, PrinterIP,
               PrinterType, PrintSection, KitchenTypeName,
-              KitchenTypeValue, IsActive, PrintCopy
+              KitchenTypeValue, IsActive, IsEnabled, PrintCopy
             ) VALUES (
               NEWID(), @name, '', '',
               2, 1, @name,
-              @code, 1, 1
+              @code, 1, 1, 1
             )
           `);
         inserted++;

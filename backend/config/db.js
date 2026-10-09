@@ -4,22 +4,33 @@ require("dotenv").config({ path: path.resolve(__dirname, "../.env") });
 const sql = require("mssql"); 
 
 // --- Local Database Config (Primary for fast offline & online operations) ---
+let rawLocalServer = process.env.LOCAL_DB_SERVER || "127.0.0.1";
+let localServerHost = rawLocalServer;
+let localInstanceName = undefined;
+
+if (rawLocalServer.includes("\\")) {
+  const parts = rawLocalServer.split("\\");
+  localServerHost = parts[0] || "127.0.0.1";
+  localInstanceName = parts[1];
+}
+
 const localDbConfig = {
   user: process.env.LOCAL_DB_USER || process.env.DB_USER,
   password: process.env.LOCAL_DB_PASSWORD || process.env.DB_PASSWORD,
-  server: process.env.LOCAL_DB_SERVER || "127.0.0.1",
-  port: parseInt(process.env.LOCAL_DB_PORT || process.env.DB_PORT || "1433"),
+  server: localServerHost,
+  ...(localInstanceName ? {} : { port: parseInt(process.env.LOCAL_DB_PORT || process.env.DB_PORT || "1433") }),
   database: process.env.LOCAL_DB_NAME || process.env.DB_NAME,
   options: {
     encrypt: false,
     trustServerCertificate: true,
     enableArithAbort: true,
-    connectTimeout: 10000, 
+    connectTimeout: 3000, 
     requestTimeout: 30000,
     appName: "POS_System_Local",
-    keepAlive: true
+    keepAlive: true,
+    ...(localInstanceName ? { instanceName: localInstanceName } : {})
   },
-  connectionTimeout: 10000,
+  connectionTimeout: 3000,
   requestTimeout: 30000,
   pool: {
     max: 100,
@@ -40,22 +51,23 @@ const remoteDbConfig = remoteDbServer ? {
     encrypt: false,
     trustServerCertificate: true,
     enableArithAbort: true,
-    connectTimeout: 8000, 
+    connectTimeout: 30000, 
     requestTimeout: 30000,
     appName: "POS_System_RemoteSync",
     keepAlive: true
   },
-  connectionTimeout: 8000,
+  connectionTimeout: 30000,
   requestTimeout: 30000,
   pool: {
-    max: 20,
+    max: 50,
     min: 0,
-    idleTimeoutMillis: 15000
+    idleTimeoutMillis: 30000
   }
 } : null;
 
+const displayLocalPort = localDbConfig.port || (localInstanceName ? `\\${localInstanceName}` : "1433");
 console.log("📋 [Hybrid DB Architecture Configuration]:");
-console.log(`   Local DB  : ${localDbConfig.server}:${localDbConfig.port} (${localDbConfig.database})`);
+console.log(`   Local DB  : ${localDbConfig.server}:${displayLocalPort} (${localDbConfig.database})`);
 if (remoteDbConfig) {
   console.log(`   Remote DB : ${remoteDbConfig.server}:${remoteDbConfig.port} (${remoteDbConfig.database})`);
 } else {
@@ -66,10 +78,10 @@ let localPoolInstance = null;
 let remotePoolInstance = null;
 let isRemoteConnected = false;
 
-async function connectLocalWithRetry(retries = 5, delay = 3000) {
+async function connectLocalWithRetry(retries = 2, delay = 2000) {
   for (let i = 0; i < retries; i++) {
     try {
-      console.log(`🔌 [Local DB] Connecting to ${localDbConfig.server}:${localDbConfig.port}... (Attempt ${i + 1}/${retries})`);
+      console.log(`🔌 [Local DB] Connecting to ${localDbConfig.server}:${displayLocalPort}... (Attempt ${i + 1}/${retries})`);
       const pool = await new sql.ConnectionPool(localDbConfig).connect();
       console.log("✅ [Local DB] Connected Successfully");
       pool.on("error", (err) => {
@@ -93,6 +105,7 @@ async function connectLocalWithRetry(retries = 5, delay = 3000) {
 
 async function connectRemote() {
   if (!remoteDbConfig) return null;
+  if (remotePoolInstance && remotePoolInstance.connected) return remotePoolInstance;
   try {
     console.log(`🌐 [Remote Cloud DB] Attempting connection to ${remoteDbConfig.server}:${remoteDbConfig.port}...`);
     const pool = await new sql.ConnectionPool(remoteDbConfig).connect();
@@ -112,6 +125,9 @@ async function connectRemote() {
   }
 }
 
+// Ensure remote pool promise is created FIRST before fallback check
+const remotePoolPromise = connectRemote();
+
 const poolPromise = (async () => {
   const localPool = await connectLocalWithRetry(2, 2000); // Try local DB fast
   if (localPool && localPool.connected) {
@@ -122,8 +138,6 @@ const poolPromise = (async () => {
   return remotePool;
 })();
 
-const remotePoolPromise = connectRemote();
-
 module.exports = { 
     sql, 
     poolPromise, 
@@ -131,7 +145,7 @@ module.exports = {
     dbConfig: localDbConfig,
     remoteDbConfig,
     getPool: () => (localPoolInstance && localPoolInstance.connected) ? localPoolInstance : remotePoolInstance,
-    getRemotePool: () => remotePoolInstance,
+    getRemotePool: () => (remotePoolInstance && remotePoolInstance.connected) ? remotePoolInstance : null,
     connectRemote,
     isRemoteOnline: () => isRemoteConnected && remotePoolInstance && remotePoolInstance.connected
 };

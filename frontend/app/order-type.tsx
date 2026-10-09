@@ -23,6 +23,7 @@ import { useOrderContextStore } from "@/stores/orderContextStore";
 import { useToast } from "@/components/Toast";
 import { API_URL } from "@/constants/Config";
 import { useGeneralSettingsStore } from "@/stores/generalSettingsStore";
+import { SyncStatusBadge } from "@/components/SyncStatusBadge";
 
 // High-resolution photography
 const DINE_IN_IMG = "https://images.unsplash.com/photo-1550966871-3ed3cdb5ed0c?q=80&w=1000&auto=format&fit=crop";
@@ -156,8 +157,9 @@ export default function OrderTypeSelectionScreen() {
           </View>
         </View>
 
-        {/* Center: Date & Time Display */}
+        {/* Center: Date & Time Display & Hybrid Sync Badge */}
         <View style={styles.headerCenter}>
+          <SyncStatusBadge />
           <View style={styles.dateTimeBadge}>
             <View style={styles.badgeItem}>
               <Ionicons name="calendar-outline" size={14} color="#FF9500" />

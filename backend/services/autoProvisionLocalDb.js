@@ -21,7 +21,15 @@ const MASTER_DATA_TABLES = [
 
 // Step 1: Ensure Local Database exists (creates DB on local SQL Server if missing)
 async function ensureLocalDatabaseExists() {
-  const server = process.env.LOCAL_DB_SERVER || "127.0.0.1";
+  const rawServer = process.env.LOCAL_DB_SERVER || "127.0.0.1";
+  let serverHost = rawServer;
+  let instanceName = undefined;
+  if (rawServer.includes("\\")) {
+    const parts = rawServer.split("\\");
+    serverHost = parts[0] || "127.0.0.1";
+    instanceName = parts[1];
+  }
+
   const port = parseInt(process.env.LOCAL_DB_PORT || process.env.DB_PORT || "1433");
   const user = process.env.LOCAL_DB_USER || process.env.DB_USER;
   const password = process.env.LOCAL_DB_PASSWORD || process.env.DB_PASSWORD;
@@ -30,20 +38,21 @@ async function ensureLocalDatabaseExists() {
   const masterConfig = {
     user,
     password,
-    server,
-    port,
+    server: serverHost,
+    ...(instanceName ? {} : { port }),
     database: "master",
     options: {
       encrypt: false,
       trustServerCertificate: true,
       enableArithAbort: true,
-      connectTimeout: 3000
+      connectTimeout: 3000,
+      ...(instanceName ? { instanceName } : {})
     }
   };
 
   let masterPool = null;
   try {
-    console.log(`🔍 [Auto-Provision] Checking if database '${targetDbName}' exists on Local SQL Server (${server}:${port})...`);
+    console.log(`🔍 [Auto-Provision] Checking if database '${targetDbName}' exists on Local SQL Server (${serverHost}:${port})...`);
     masterPool = await new sql.ConnectionPool(masterConfig).connect();
     
     const checkDbResult = await masterPool.request()

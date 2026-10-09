@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import API_BASE_URL from "../api";
+import { API_URL } from "../constants/Config";
 
 export interface SyncStatusData {
   isOnline: boolean;
@@ -17,7 +17,7 @@ export function SyncStatusBadge() {
 
   const fetchSyncStatus = async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/sync/status`);
+      const response = await fetch(`${API_URL}/api/sync/status`);
       const data = await response.json();
       if (data.success) {
         setStatus(data.data);
@@ -37,7 +37,7 @@ export function SyncStatusBadge() {
   const handleManualSync = async () => {
     setLoading(true);
     try {
-      const response = await fetch(`${API_BASE_URL}/api/sync/trigger`, { method: "POST" });
+      const response = await fetch(`${API_URL}/api/sync/trigger`, { method: "POST" });
       const data = await response.json();
       if (data.success) {
         setStatus(data.data);

@@ -597,8 +597,8 @@ httpServer.listen(PORT, async () => {
       // 2. Auto-clone and sync all missing tables and master data from Remote Cloud DB
       await syncSchemaFromRemoteToLocal();
     }
-    // Start Hybrid Offline & Online Database Sync Worker (syncs every 20s)
-    startSyncWorker(20000);
+    // Start Hybrid Offline & Online Database Sync Worker (syncs every 5s)
+    startSyncWorker(5000);
   } catch (err) {
     console.error("⚠️ Initial DB setup failed:", err.message);
   }

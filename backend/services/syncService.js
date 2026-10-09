@@ -207,7 +207,7 @@ async function syncSingleItemToRemote(remotePool, entityName, action, data) {
 }
 
 // Start periodic heartbeat & sync worker
-function startSyncWorker(intervalMs = 20000) {
+function startSyncWorker(intervalMs = 5000) {
   initSyncQueue();
   if (syncIntervalObj) clearInterval(syncIntervalObj);
   
