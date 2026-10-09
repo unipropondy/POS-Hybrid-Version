@@ -3,64 +3,87 @@ const path = require("path");
 require("dotenv").config({ path: path.resolve(__dirname, "../.env") });
 const sql = require("mssql"); 
 
-const dbConfig = {
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  server: process.env.DB_SERVER,
-  port: parseInt(process.env.DB_PORT),
-  database: process.env.DB_NAME,
+// --- Local Database Config (Primary for fast offline & online operations) ---
+const localDbConfig = {
+  user: process.env.LOCAL_DB_USER || process.env.DB_USER,
+  password: process.env.LOCAL_DB_PASSWORD || process.env.DB_PASSWORD,
+  server: process.env.LOCAL_DB_SERVER || "127.0.0.1",
+  port: parseInt(process.env.LOCAL_DB_PORT || process.env.DB_PORT || "1433"),
+  database: process.env.LOCAL_DB_NAME || process.env.DB_NAME,
   options: {
     encrypt: false,
     trustServerCertificate: true,
     enableArithAbort: true,
-    connectTimeout: 30000, 
+    connectTimeout: 10000, 
     requestTimeout: 30000,
-    appName: "POS_System",
-    keepAlive: true // Enable TCP keepAlive
+    appName: "POS_System_Local",
+    keepAlive: true
   },
-  connectionTimeout: 30000,
+  connectionTimeout: 10000,
   requestTimeout: 30000,
   pool: {
     max: 100,
     min: 0,
-    idleTimeoutMillis: 15000 // Lowered to 15s to recycle idle connections faster
+    idleTimeoutMillis: 15000
   }
 };
 
-// Log configuration for debugging (mask password)
-console.log("📋 Database Configuration:");
-console.log(`   Server: ${dbConfig.server || "NOT SET"}`);
-console.log(`   Port: ${dbConfig.port || "NOT SET"}`);
-console.log(`   Database: ${dbConfig.database || "NOT SET"}`);
-console.log(`   User: ${dbConfig.user || "NOT SET"}`);
-console.log(`   Connection Timeout: ${dbConfig.connectionTimeout}ms`);
+// --- Remote Database Config (Cloud / Central Server for sync) ---
+const remoteDbServer = process.env.REMOTE_DB_SERVER || (process.env.LOCAL_DB_SERVER ? process.env.DB_SERVER : null);
+const remoteDbConfig = remoteDbServer ? {
+  user: process.env.REMOTE_DB_USER || process.env.DB_USER,
+  password: process.env.REMOTE_DB_PASSWORD || process.env.DB_PASSWORD,
+  server: remoteDbServer,
+  port: parseInt(process.env.REMOTE_DB_PORT || process.env.DB_PORT || "1433"),
+  database: process.env.REMOTE_DB_NAME || process.env.DB_NAME,
+  options: {
+    encrypt: false,
+    trustServerCertificate: true,
+    enableArithAbort: true,
+    connectTimeout: 8000, 
+    requestTimeout: 30000,
+    appName: "POS_System_RemoteSync",
+    keepAlive: true
+  },
+  connectionTimeout: 8000,
+  requestTimeout: 30000,
+  pool: {
+    max: 20,
+    min: 0,
+    idleTimeoutMillis: 15000
+  }
+} : null;
 
-let poolInstance = null;
+console.log("📋 [Hybrid DB Architecture Configuration]:");
+console.log(`   Local DB  : ${localDbConfig.server}:${localDbConfig.port} (${localDbConfig.database})`);
+if (remoteDbConfig) {
+  console.log(`   Remote DB : ${remoteDbConfig.server}:${remoteDbConfig.port} (${remoteDbConfig.database})`);
+} else {
+  console.log(`   Remote DB : Not configured (Operating in Local standalone mode)`);
+}
 
-async function connectWithRetry(retries = 5, delay = 3000) {
+let localPoolInstance = null;
+let remotePoolInstance = null;
+let isRemoteConnected = false;
+
+async function connectLocalWithRetry(retries = 5, delay = 3000) {
   for (let i = 0; i < retries; i++) {
     try {
-      console.log(`🔌 [Database] Connecting to ${dbConfig.server}:${dbConfig.port}... (Attempt ${i + 1}/${retries})`);
-      const pool = await new sql.ConnectionPool(dbConfig).connect();
-      console.log("✅ Connected to MSSQL Successfully");
+      console.log(`🔌 [Local DB] Connecting to ${localDbConfig.server}:${localDbConfig.port}... (Attempt ${i + 1}/${retries})`);
+      const pool = await new sql.ConnectionPool(localDbConfig).connect();
+      console.log("✅ [Local DB] Connected Successfully");
       pool.on("error", (err) => {
-        console.error("⚠️ [Database Pool Error] General pool connection error:", err.message);
+        console.error("⚠️ [Local DB Pool Error]:", err.message);
       });
-      poolInstance = pool;
+      localPoolInstance = pool;
       return pool;
     } catch (err) {
-      console.error(`❌ [Database Connection Attempt ${i + 1} Failed]:`, err.message);
+      console.error(`❌ [Local DB Connection Attempt ${i + 1} Failed]:`, err.message);
       if (i < retries - 1) {
-        console.log(`⏳ Retrying database connection in ${delay / 1000}s...`);
+        console.log(`⏳ Retrying local database connection in ${delay / 1000}s...`);
         await new Promise((resolve) => setTimeout(resolve, delay));
       } else {
-        console.error("❌ All database connection attempts failed.");
-        console.error("   Please verify your .env file contains:");
-        console.error("   - DB_SERVER: " + dbConfig.server);
-        console.error("   - DB_PORT: " + dbConfig.port);
-        console.error("   - DB_NAME: " + dbConfig.database);
-        console.error("   - DB_USER: " + dbConfig.user);
-        console.error("   - DB_PASSWORD: (hidden)");
+        console.error("❌ All local database connection attempts failed.");
         return null;
       }
     }
@@ -68,11 +91,48 @@ async function connectWithRetry(retries = 5, delay = 3000) {
   return null;
 }
 
-const poolPromise = connectWithRetry(5, 3000);
+async function connectRemote() {
+  if (!remoteDbConfig) return null;
+  try {
+    console.log(`🌐 [Remote Cloud DB] Attempting connection to ${remoteDbConfig.server}:${remoteDbConfig.port}...`);
+    const pool = await new sql.ConnectionPool(remoteDbConfig).connect();
+    console.log("✅ [Remote Cloud DB] Connected Successfully");
+    pool.on("error", (err) => {
+      console.error("⚠️ [Remote Cloud DB Pool Error]:", err.message);
+      isRemoteConnected = false;
+    });
+    remotePoolInstance = pool;
+    isRemoteConnected = true;
+    return pool;
+  } catch (err) {
+    console.warn(`🟡 [Remote Cloud DB Offline]: ${err.message} - Backend operating smoothly in Offline Local Mode.`);
+    isRemoteConnected = false;
+    remotePoolInstance = null;
+    return null;
+  }
+}
+
+const poolPromise = (async () => {
+  const localPool = await connectLocalWithRetry(2, 2000); // Try local DB fast
+  if (localPool && localPool.connected) {
+    return localPool;
+  }
+  console.log("🌐 [Fallback] Local DB unavailable. Falling back seamlessly to Remote Cloud DB...");
+  const remotePool = await remotePoolPromise || await connectRemote();
+  return remotePool;
+})();
+
+const remotePoolPromise = connectRemote();
 
 module.exports = { 
     sql, 
     poolPromise, 
-    dbConfig,
-    getPool: () => poolInstance 
+    remotePoolPromise,
+    dbConfig: localDbConfig,
+    remoteDbConfig,
+    getPool: () => (localPoolInstance && localPoolInstance.connected) ? localPoolInstance : remotePoolInstance,
+    getRemotePool: () => remotePoolInstance,
+    connectRemote,
+    isRemoteOnline: () => isRemoteConnected && remotePoolInstance && remotePoolInstance.connected
 };
+

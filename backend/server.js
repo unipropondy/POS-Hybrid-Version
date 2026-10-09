@@ -62,6 +62,9 @@ const loyaltyRoutes = require("./routes/loyalty");
 const loyaltyConfigRoutes = require("./routes/loyaltyConfig");
 const comboRoutes = require("./routes/combo");
 const rewardRoutes = require("./routes/rewardRoutes");
+const syncRoutes = require("./routes/sync");
+const { startSyncWorker } = require("./services/syncService");
+const { ensureLocalDatabaseExists, syncSchemaFromRemoteToLocal } = require("./services/autoProvisionLocalDb");
 const http = require("http");
 const { Server } = require("socket.io");
 
@@ -378,6 +381,7 @@ const printJobsRouter = require("./routes/printJobs");
 app.use("/api/print-jobs", printJobsRouter);
 const terminalRoutes = require("./routes/terminal");
 app.use("/api/terminal", terminalRoutes);
+app.use("/api/sync", syncRoutes);
 // AI Chat Integration
 const aiRouter = require("./ai-service-src/routes/ai.routes");
 const rateLimit = require("express-rate-limit");
@@ -580,13 +584,21 @@ httpServer.listen(PORT, async () => {
   console.log(`🚀 Modular Server running on port ${PORT}`);
 
   try {
+    // 1. Auto-create local database if it doesn't exist on Local SQL Server
+    await ensureLocalDatabaseExists();
+
     const pool = await poolPromise;
     if (pool) {
       await initDB(pool);
       // ✅ One-time migration: Fix any active tables with NULL StartTime
       await pool.request().query("UPDATE TableMaster SET StartTime = GETDATE() WHERE StartTime IS NULL AND Status IN (1, 2, 3, 4)");
-      console.log("✅ Database initialized and ready.");
+      console.log("✅ Local Database initialized and ready.");
+      
+      // 2. Auto-clone and sync all missing tables and master data from Remote Cloud DB
+      await syncSchemaFromRemoteToLocal();
     }
+    // Start Hybrid Offline & Online Database Sync Worker (syncs every 20s)
+    startSyncWorker(20000);
   } catch (err) {
     console.error("⚠️ Initial DB setup failed:", err.message);
   }
