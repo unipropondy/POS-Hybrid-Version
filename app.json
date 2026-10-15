@@ -5,11 +5,10 @@
     "version": "3.0.0",
     "orientation": "default",
     "android": {
-      "package": "com.unipro.pos",
+      "package": "com.smart.pos",
       "versionCode": 3
     },
-    "extra": {
-    },
+    "extra": {},
     "owner": "unipro"
   }
 }

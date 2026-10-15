@@ -30,7 +30,13 @@ router.get("/kitchens", async (req, res) => {
 
     const pool = await poolPromise;
     const result = await pool.request().query(`
-      SELECT cm.CategoryId, cm.CategoryName AS KitchenTypeName, ckt.KitchenTypeCode, cm.SortCode, ISNULL(cm.IsPublished, 0) AS IsPublished
+      SELECT 
+        cm.CategoryId, 
+        ISNULL(UPPER(LEFT(cm.CategoryName, 1)) + LOWER(SUBSTRING(cm.CategoryName, 2, LEN(cm.CategoryName))), cm.CategoryName) AS [KitchenTypeName],
+        ISNULL(UPPER(LEFT(cm.CategoryName, 1)) + LOWER(SUBSTRING(cm.CategoryName, 2, LEN(cm.CategoryName))), cm.CategoryName) AS [CategoryName],
+        ckt.KitchenTypeCode, 
+        cm.SortCode, 
+        ISNULL(cm.IsPublished, 0) AS IsPublished
       FROM CategoryMaster cm WITH (NOLOCK)
       LEFT JOIN CategoryKitchenType ckt WITH (NOLOCK) ON cm.CategoryId = ckt.CategoryId
       WHERE cm.IsActive = 1
@@ -54,7 +60,7 @@ router.get("/dishgroups/all", async (req, res) => {
     const result = await pool.request().query(`
       SELECT 
         DishGroupId,
-        DishGroupName,
+        ISNULL(UPPER(LEFT(DishGroupName, 1)) + LOWER(SUBSTRING(DishGroupName, 2, LEN(DishGroupName))), DishGroupName) AS [DishGroupName],
         ISNULL(IsPublished, 0) AS IsPublished
       FROM DishGroupMaster WITH (NOLOCK)
       WHERE IsActive = 1
@@ -80,7 +86,7 @@ router.get("/dishgroups/:CategoryId", async (req, res) => {
       .input("CategoryId", categoryId).query(`
         SELECT DISTINCT
               a.DishGroupId,
-              a.DishGroupName,
+              ISNULL(UPPER(LEFT(a.DishGroupName, 1)) + LOWER(SUBSTRING(a.DishGroupName, 2, LEN(a.DishGroupName))), a.DishGroupName) AS [DishGroupName],
               a.SortCode,
               ISNULL(a.IsPublished, 0) AS IsPublished
           FROM DishGroupMaster a WITH (NOLOCK)
@@ -93,7 +99,7 @@ router.get("/dishgroups/:CategoryId", async (req, res) => {
                 a.CategoryId = @CategoryId
                 OR dkt.KitchenTypeName = cm.CategoryName
           )
-          ORDER BY a.SortCode ASC, a.DishGroupName ASC
+          ORDER BY a.SortCode ASC, [DishGroupName] ASC
       `);
     setCache(cacheKey, result.recordset);
     res.json(result.recordset);
@@ -112,7 +118,7 @@ router.get("/dishes/all", async (req, res) => {
     const pool = await poolPromise;
     const result = await pool.request().query(`
       SELECT 
-        d.DishId, d.Name, d.DishGroupId, d.currentcost AS Price,
+        d.DishId, ISNULL(UPPER(LEFT(d.Name, 1)) + LOWER(SUBSTRING(d.Name, 2, LEN(d.Name))), d.Name) AS [Name], d.DishGroupId, d.currentcost AS Price,
         d.DishCode, d.Description, d.AvailableTimeFrom, d.AvailableTimeTo,
         d.Imageid AS Image, CASE WHEN d.Imageid IS NOT NULL THEN 1 ELSE 0 END AS HasImage,
         ISNULL(d.IsOpenItem, 0) AS IsOpenItem,
@@ -159,7 +165,7 @@ router.get("/dishes/favourites", async (req, res) => {
     const pool = await poolPromise;
     const result = await pool.request().query(`
       SELECT 
-        d.DishId, d.Name, d.DishGroupId, d.currentcost AS Price,
+        d.DishId, ISNULL(UPPER(LEFT(d.Name, 1)) + LOWER(SUBSTRING(d.Name, 2, LEN(d.Name))), d.Name) AS [Name], d.DishGroupId, d.currentcost AS Price,
         d.DishCode, d.Description, d.AvailableTimeFrom, d.AvailableTimeTo,
         d.Imageid AS Image, CASE WHEN d.Imageid IS NOT NULL THEN 1 ELSE 0 END AS HasImage,
         ISNULL(d.IsOpenItem, 0) AS IsOpenItem,
@@ -232,7 +238,7 @@ router.get("/dishes/group/:DishGroupId", async (req, res) => {
       .input("DishGroupId", dishGroupId).query(`
       SELECT DISTINCT
               d.DishId,
-              d.Name,
+              ISNULL(UPPER(LEFT(d.Name, 1)) + LOWER(SUBSTRING(d.Name, 2, LEN(d.Name))), d.Name) AS [Name],
               d.DishGroupId,
               d.currentcost AS Price,
               d.DishCode,
@@ -479,7 +485,7 @@ router.get("/modifiers/:dishId", async (req, res) => {
           dm.isOpenModifier,
           dm.SortCode,
           dg.DishGroupId AS ModifierGroupId,
-          dg.DishGroupName AS ModifierGroupName,
+          ISNULL(UPPER(LEFT(dg.DishGroupName, 1)) + LOWER(SUBSTRING(dg.DishGroupName, 2, LEN(dg.DishGroupName))), dg.DishGroupName) AS [ModifierGroupName],
           ISNULL(dmg.MinSelectionCount, 0) AS MinSelectionCount,
           ISNULL(dmg.MaxSelectionCount, 0) AS MaxSelectionCount,
           ISNULL(dmg.MultiselectAllow, 0) AS MultiselectAllow
@@ -529,7 +535,7 @@ router.get("/modifiers/group/:DishGroupId", async (req, res) => {
           dm.isOpenModifier,
           dm.SortCode,
           dg.DishGroupId AS ModifierGroupId,
-          dg.DishGroupName AS ModifierGroupName,
+          ISNULL(UPPER(LEFT(dg.DishGroupName, 1)) + LOWER(SUBSTRING(dg.DishGroupName, 2, LEN(dg.DishGroupName))), dg.DishGroupName) AS [ModifierGroupName],
           ISNULL(dmg.MinSelectionCount, 0) AS MinSelectionCount,
           ISNULL(dmg.MaxSelectionCount, 0) AS MaxSelectionCount,
           ISNULL(dmg.MultiselectAllow, 0) AS MultiselectAllow
@@ -613,7 +619,7 @@ router.get("/barcode/:code", async (req, res) => {
       .query(`
         SELECT TOP 1
           d.DishId,
-          d.Name,
+          ISNULL(UPPER(LEFT(d.Name, 1)) + LOWER(SUBSTRING(d.Name, 2, LEN(d.Name))), d.Name) AS [Name],
           d.DishGroupId,
           d.currentcost                              AS Price,
           d.DishCode,

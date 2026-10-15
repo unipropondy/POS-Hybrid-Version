@@ -786,14 +786,13 @@ export default function PaymentScreen() {
   useEffect(() => {
     const init = async () => {
       const store = usePaymentSettingsStore.getState();
-      const settingsPromise = store.hasLoadedMethods
-        ? Promise.resolve()
-        : Promise.all([
-            store.fetchSettings(),
-            store.fetchPaymentMethods()
-          ]).catch((err) => {
-            if (__DEV__) console.error("Failed to fetch settings/methods on payment screen mount:", err);
-          });
+      // Always fetch fresh settings and payment methods from DB so new paymodes show immediately
+      const settingsPromise = Promise.all([
+        store.fetchSettings(),
+        store.fetchPaymentMethods()
+      ]).catch((err) => {
+        if (__DEV__) console.error("Failed to fetch settings/methods on payment screen mount:", err);
+      });
 
       // PERFORMANCE: Run table/order ID fetch in parallel with payment settings fetch
       const tablePromise = context?.tableId
@@ -824,15 +823,22 @@ export default function PaymentScreen() {
     init();
   }, []);
 
+  // 🔄 REVALIDATE: Refresh payment methods every time checkout screen gains focus
+  useEffect(() => {
+    if (isFocused) {
+      usePaymentSettingsStore.getState().fetchPaymentMethods();
+    }
+  }, [isFocused]);
+
   // 🔄 AUTO-SYNC: Update the local paymentMethods list as soon as the cache finishes loading
   const hasLoadedMethods = usePaymentSettingsStore((s: any) => s.hasLoadedMethods);
   const cachedMethods = usePaymentSettingsStore((s: any) => s.paymentMethods);
 
   useEffect(() => {
-    if (hasLoadedMethods && cachedMethods.length > 0) {
+    if (cachedMethods && cachedMethods.length > 0) {
       applyPaymentMethodsFromCache();
     }
-  }, [hasLoadedMethods, cachedMethods]);
+  }, [cachedMethods]);
 
   // 💵 QUICK CASH REAL-TIME SYNC — updates instantly when any terminal changes amounts
   useEffect(() => {

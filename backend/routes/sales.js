@@ -2954,11 +2954,11 @@ router.post("/save", async (req, res) => {
             await transaction.request()
               .input("tid", sql.UniqueIdentifier, validTableGuid)
               .input("tno", sql.NVarChar(50), String(targetTableNo))
-              .query("UPDATE [dbo].[TableMaster] SET Status = 0, entry_status = NULL, TotalAmount = 0, StartTime = NULL, CurrentOrderId = NULL, CustomerName = NULL, Pax = NULL WHERE TableId = @tid OR TableNumber = @tno");
+              .query("UPDATE [dbo].[TableMaster] SET Status = 0, entry_status = NULL, TotalAmount = 0, StartTime = NULL, CurrentOrderId = NULL, CustomerName = NULL, Pax = NULL, ModifiedOn = GETDATE() WHERE TableId = @tid OR TableNumber = @tno");
           } else {
             await transaction.request()
               .input("tno", sql.NVarChar(50), String(targetTableNo))
-              .query("UPDATE [dbo].[TableMaster] SET Status = 0, entry_status = NULL, TotalAmount = 0, StartTime = NULL, CurrentOrderId = NULL, CustomerName = NULL, Pax = NULL WHERE TableNumber = @tno OR TableId = @tno");
+              .query("UPDATE [dbo].[TableMaster] SET Status = 0, entry_status = NULL, TotalAmount = 0, StartTime = NULL, CurrentOrderId = NULL, CustomerName = NULL, Pax = NULL, ModifiedOn = GETDATE() WHERE TableNumber = @tno OR TableId = @tno");
           }
 
           const io = req.app.get("io");
@@ -3007,11 +3007,11 @@ router.post("/save", async (req, res) => {
                   await transaction.request()
                     .input("tid", sql.UniqueIdentifier, validChildGuid)
                     .input("tno", sql.NVarChar(50), String(childTableNo))
-                    .query("UPDATE [dbo].[TableMaster] SET Status = 0, entry_status = NULL, TotalAmount = 0, StartTime = NULL, CurrentOrderId = NULL, CustomerName = NULL, Pax = NULL WHERE TableId = @tid OR TableNumber = @tno");
+                    .query("UPDATE [dbo].[TableMaster] SET Status = 0, entry_status = NULL, TotalAmount = 0, StartTime = NULL, CurrentOrderId = NULL, CustomerName = NULL, Pax = NULL, ModifiedOn = GETDATE() WHERE TableId = @tid OR TableNumber = @tno");
                 } else {
                   await transaction.request()
                     .input("tno", sql.NVarChar(50), String(childTableNo))
-                    .query("UPDATE [dbo].[TableMaster] SET Status = 0, entry_status = NULL, TotalAmount = 0, StartTime = NULL, CurrentOrderId = NULL, CustomerName = NULL, Pax = NULL WHERE TableNumber = @tno OR TableId = @tno");
+                    .query("UPDATE [dbo].[TableMaster] SET Status = 0, entry_status = NULL, TotalAmount = 0, StartTime = NULL, CurrentOrderId = NULL, CustomerName = NULL, Pax = NULL, ModifiedOn = GETDATE() WHERE TableNumber = @tno OR TableId = @tno");
                 }
 
                 if (io) {

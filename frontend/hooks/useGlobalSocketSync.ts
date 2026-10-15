@@ -9,6 +9,7 @@ import { API_URL } from "../constants/Config";
 import UniversalPrinter from "../components/UniversalPrinter";
 import { useNotificationStore } from "../stores/notificationStore";
 import { useTerminalPaymentStore } from "../stores/terminalPaymentStore";
+import { usePaymentSettingsStore } from "../stores/paymentSettingsStore";
 
 /**
  * useGlobalSocketSync
@@ -39,6 +40,8 @@ export function useGlobalSocketSync() {
       }
       // Re-fetch all active kitchen orders on reconnect to recover any missed socket events
       useActiveOrdersStore.getState().fetchActiveKitchenOrders();
+      // Re-fetch latest payment methods from local database
+      usePaymentSettingsStore.getState().fetchPaymentMethods();
       
       // Immediately check for any print jobs on reconnect
       const isCustomer =

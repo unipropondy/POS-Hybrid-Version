@@ -927,8 +927,34 @@ async function syncOperationalStateFromRemote(remotePool, localPool) {
 
     const localTableMap = new Map(localTables.recordset.map(t => [t.TableNumber, t]));
 
+    // Pre-fetch all closed/settled order numbers locally so we never allow stale remote tables to resurrect them
+    const closedOrdersCheckRes = await localPool.request().query(`
+      SELECT OrderNumber FROM RestaurantOrderCur WITH (NOLOCK) WHERE isOrderClosed = 1
+      UNION
+      SELECT OrderNumber FROM RestaurantOrder WITH (NOLOCK)
+      UNION
+      SELECT BillNo AS OrderNumber FROM SettlementHeader WITH (NOLOCK)
+    `).catch(() => ({ recordset: [] }));
+    const localSettledOrClosedOrderNos = new Set(closedOrdersCheckRes.recordset.map(o => String(o.OrderNumber || '').trim().toLowerCase()).filter(Boolean));
+
     for (const rTbl of remoteTables.recordset) {
       const lTbl = localTableMap.get(rTbl.TableNumber);
+
+      // 🛡️ SHIELD: If Remote thinks table is occupied with an order that is already settled or closed locally,
+      // Remote DB is stale! Clear Remote DB table to Status = 0 so it never overwrites local.
+      if (rTbl.Status > 0 && rTbl.CurrentOrderId) {
+        const orderNoStr = String(rTbl.CurrentOrderId).trim().toLowerCase();
+        if (localSettledOrClosedOrderNos.has(orderNoStr) || (lTbl && lTbl.Status === 0)) {
+          await remotePool.request()
+            .input("tblNo", rTbl.TableNumber)
+            .query(`
+              UPDATE TableMaster
+              SET Status = 0, entry_status = NULL, TotalAmount = 0, StartTime = NULL, CurrentOrderId = NULL, CustomerName = NULL, Pax = NULL, ModifiedOn = GETDATE()
+              WHERE TableNumber = @tblNo
+            `).catch(() => {});
+          continue;
+        }
+      }
 
       const rTime = rTbl.ModifiedOn ? new Date(rTbl.ModifiedOn).getTime() : 0;
       const lTime = lTbl && lTbl.ModifiedOn ? new Date(lTbl.ModifiedOn).getTime() : 0;
@@ -1008,6 +1034,17 @@ async function syncOperationalStateFromRemote(remotePool, localPool) {
     }
 
     // 4. 2-Way Sync Active Open Orders & Line Items (RestaurantOrderCur & RestaurantOrderDetailCur)
+    // Pre-fetch all closed/settled orders on Local DB
+    const localClosedOrdersCheck = await localPool.request().query(`
+      SELECT OrderId, OrderNumber FROM RestaurantOrderCur WITH (NOLOCK) WHERE isOrderClosed = 1
+      UNION
+      SELECT OrderId, OrderNumber FROM RestaurantOrder WITH (NOLOCK)
+      UNION
+      SELECT CAST(OrderId AS UNIQUEIDENTIFIER) AS OrderId, BillNo AS OrderNumber FROM SettlementHeader WITH (NOLOCK)
+    `).catch(() => ({ recordset: [] }));
+    const localClosedOrderIds = new Set(localClosedOrdersCheck.recordset.map(o => String(o.OrderId || '').toLowerCase()).filter(Boolean));
+    const localClosedOrderNos = new Set(localClosedOrdersCheck.recordset.map(o => String(o.OrderNumber || '').trim().toLowerCase()).filter(Boolean));
+
     // A. Sync from Remote DB -> Local DB (only pull new orders that do not exist locally)
     const remoteOrders = await remotePool.request().query(`
       SELECT TOP 100 * FROM RestaurantOrderCur WITH (NOLOCK) WHERE (isOrderClosed = 0 OR isOrderClosed IS NULL)
@@ -1019,6 +1056,20 @@ async function syncOperationalStateFromRemote(remotePool, localPool) {
     const localModifiedMap = new Map(localOrdersMapRes.recordset.map(o => [o.OrderId, o.ModifiedOn ? new Date(o.ModifiedOn).getTime() : 0]));
 
     for (const ro of remoteOrders.recordset) {
+      const roIdStr = String(ro.OrderId || '').toLowerCase();
+      const roNoStr = String(ro.OrderNumber || '').trim().toLowerCase();
+
+      // 🛡️ CRITICAL LOCK: If this order has already been closed or settled on Local DB,
+      // Remote DB is holding a stale open order! DO NOT re-open it on Local DB!
+      // Instead, close it on Remote DB to keep both sides clean.
+      if (localClosedOrderIds.has(roIdStr) || localClosedOrderNos.has(roNoStr)) {
+        await remotePool.request()
+          .input("oid", ro.OrderId)
+          .query(`UPDATE RestaurantOrderCur SET isOrderClosed = 1, StatusCode = 3, ModifiedOn = GETDATE() WHERE OrderId = @oid AND (isOrderClosed = 0 OR isOrderClosed IS NULL)`)
+          .catch(() => {});
+        continue;
+      }
+
       // 🛡️ LOCK SHIELD: If this order already exists on Local DB, Local POS is the active master!
       // Do not overwrite or delete local line items from remote.
       if (localModifiedMap.has(ro.OrderId)) continue;
@@ -1101,6 +1152,20 @@ async function syncOperationalStateFromRemote(remotePool, localPool) {
       if (rco.OrderId) {
         await localPool.request().query(`
           UPDATE RestaurantOrderCur SET isOrderClosed = 1, ModifiedOn = GETDATE() WHERE OrderId = '${rco.OrderId}' AND (isOrderClosed = 0 OR isOrderClosed IS NULL)
+        `).catch(() => {});
+      }
+    }
+
+    // B2. Sync Closed Status from Local DB -> Remote DB (close Remote orders if closed on Local)
+    const localClosedOrders = await localPool.request().query(`
+      SELECT OrderId FROM RestaurantOrderCur WHERE isOrderClosed = 1 AND ModifiedOn >= DATEADD(DAY, -1, GETDATE())
+      UNION
+      SELECT OrderId FROM RestaurantOrder WHERE ModifiedOn >= DATEADD(DAY, -1, GETDATE())
+    `).catch(() => ({ recordset: [] }));
+    for (const lco of localClosedOrders.recordset) {
+      if (lco.OrderId) {
+        await remotePool.request().query(`
+          UPDATE RestaurantOrderCur SET isOrderClosed = 1, StatusCode = 3, ModifiedOn = GETDATE() WHERE OrderId = '${lco.OrderId}' AND (isOrderClosed = 0 OR isOrderClosed IS NULL)
         `).catch(() => {});
       }
     }

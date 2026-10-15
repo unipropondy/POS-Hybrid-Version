@@ -23,22 +23,22 @@ router.post("/day-start", async (req, res) => {
       return res.status(400).json({ error: "StartDate is required" });
     }
     const pool = getPool();
-    
+
     // Check if there is already an active business day
     const activeDayRes = await pool.request().query("SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC");
     if (activeDayRes.recordset.length > 0) {
       const activeDate = activeDayRes.recordset[0].StartDate;
-      const formattedDate = activeDate instanceof Date 
-        ? activeDate.toISOString().split("T")[0] 
+      const formattedDate = activeDate instanceof Date
+        ? activeDate.toISOString().split("T")[0]
         : activeDate;
-      return res.status(400).json({ 
-        error: `Cannot start a new day. The previous business day (${formattedDate}) is still active. Please perform Day End first.` 
+      return res.status(400).json({
+        error: `Cannot start a new day. The previous business day (${formattedDate}) is still active. Please perform Day End first.`
       });
     }
 
     // Clear previous active records
     await pool.request().query("DELETE FROM DateEntry");
-    
+
     // Insert new business day record (using Singapore time UTC+8)
     await pool.request()
       .input("username", sql.VarChar(30), username || "admin")
@@ -68,7 +68,7 @@ router.post("/day-start", async (req, res) => {
         INSERT INTO BusinessDayAuditLog (BusinessDate, EventType, EventTime, ActionBy)
         VALUES (@startDate, 'DAY_START', DATEADD(MINUTE, 480, GETUTCDATE()), @username)
       `);
-      
+
     const io = req.app.get('io');
     if (io) io.emit('settlement_updated', { action: 'day_started' });
 
@@ -76,7 +76,7 @@ router.post("/day-start", async (req, res) => {
     try {
       const { triggerSyncProcess } = require("../services/syncService");
       triggerSyncProcess();
-    } catch (_) {}
+    } catch (_) { }
 
     res.json({ success: true, message: "Day started successfully" });
   } catch (err) {
@@ -165,7 +165,7 @@ router.post("/day-end", async (req, res) => {
     try {
       const { triggerSyncProcess } = require("../services/syncService");
       triggerSyncProcess();
-    } catch (_) {}
+    } catch (_) { }
 
     res.json({
       success: true,
@@ -365,7 +365,7 @@ router.get("/day-log", async (req, res) => {
     const result = await pool.request()
       .input("date", sql.Date, date)
       .query("SELECT CONVERT(VARCHAR(19), StartedAt, 120) AS StartedAt, StartedBy, CONVERT(VARCHAR(19), EndedAt, 120) AS EndedAt, EndedBy FROM BusinessDayLog WHERE BusinessDate = @date");
-    
+
     if (result.recordset.length > 0) {
       res.json({ success: true, data: result.recordset[0] });
     } else {
@@ -373,7 +373,7 @@ router.get("/day-log", async (req, res) => {
       const dateEntryRes = await pool.request()
         .input("date", sql.Date, date)
         .query("SELECT username, CONVERT(VARCHAR(19), CreatedDate, 120) AS CreatedDate FROM DateEntry WHERE StartDate = @date");
-      
+
       if (dateEntryRes.recordset.length > 0) {
         const entry = dateEntryRes.recordset[0];
         // Insert missing BusinessDayLog entry
@@ -385,7 +385,7 @@ router.get("/day-log", async (req, res) => {
             INSERT INTO BusinessDayLog (BusinessDate, StartedAt, StartedBy)
             VALUES (@date, @createdDate, @username)
           `);
-        
+
         res.json({
           success: true,
           data: {
@@ -1417,7 +1417,7 @@ router.post('/artist-cashbox', authenticateToken, async (req, res) => {
       try {
         const { triggerSyncProcess } = require("../services/syncService");
         triggerSyncProcess();
-      } catch (_) {}
+      } catch (_) { }
 
       res.json({
         success: true,
@@ -1443,28 +1443,28 @@ router.delete('/artist-cashbox/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params; // CashBoxId
     const pool = getPool();
-    
+
     // First, find the SettlementID associated with this CashBoxId
     const findRes = await pool.request()
       .input('CashBoxId', sql.UniqueIdentifier, id)
       .query('SELECT SettlementID FROM ArtistCashBox WHERE CashBoxId = @CashBoxId');
-      
+
     if (findRes.recordset.length === 0) {
       return res.status(404).json({ error: 'Cash box entry not found' });
     }
-    
+
     const settlementId = findRes.recordset[0].SettlementID;
-    
+
     const transaction = new sql.Transaction(pool);
     await transaction.begin();
     try {
       const request = new sql.Request(transaction);
       request.input('CashBoxId', sql.UniqueIdentifier, id);
       request.input('SettlementID', sql.UniqueIdentifier, settlementId);
-      
+
       // Delete from ArtistCashBox
       await request.query('DELETE FROM ArtistCashBox WHERE CashBoxId = @CashBoxId');
-      
+
       // Delete associated settlement records
       await request.query('DELETE FROM SettlementHeader WHERE SettlementID = @SettlementID');
       await request.query('DELETE FROM SettlementItemDetail WHERE SettlementID = @SettlementID');
@@ -1473,7 +1473,7 @@ router.delete('/artist-cashbox/:id', authenticateToken, async (req, res) => {
       await request.query('DELETE FROM SettlementTranDetail WHERE SettlementID = @SettlementID');
       await request.query('DELETE FROM PaymentDetailCur WHERE RestaurantBillId = @SettlementID');
       await request.query('DELETE FROM PaymentDetail WHERE RestaurantBillId = @SettlementID');
-      
+
       await transaction.commit();
 
       const io = req.app.get('io');
@@ -1482,11 +1482,11 @@ router.delete('/artist-cashbox/:id', authenticateToken, async (req, res) => {
       try {
         const { triggerSyncProcess } = require("../services/syncService");
         triggerSyncProcess();
-      } catch (_) {}
+      } catch (_) { }
 
       res.json({ success: true, message: 'Cash box entry and associated settlement deleted successfully' });
     } catch (innerErr) {
-      try { await transaction.rollback(); } catch (e) {}
+      try { await transaction.rollback(); } catch (e) { }
       throw innerErr;
     }
   } catch (err) {
@@ -1529,10 +1529,10 @@ router.get('/artist-sales', authenticateToken, async (req, res) => {
     const { fromDate, toDate } = req.query;
     const pool = getPool();
     const request = pool.request();
-    
+
     // Set fallback date parameters if none provided
     const parsedFrom = fromDate ? new Date(fromDate) : new Date();
-    if (!fromDate) parsedFrom.setHours(0,0,0,0);
+    if (!fromDate) parsedFrom.setHours(0, 0, 0, 0);
     const parsedTo = toDate ? new Date(toDate) : new Date();
 
     request.input("fromDate", sql.Date, parsedFrom);
@@ -1707,7 +1707,7 @@ router.post('/artist-target', authenticateToken, async (req, res) => {
     const pool = getPool();
     const parsedFrom = new Date(fromDate);
     const parsedTo = new Date(toDate);
-    
+
     // Check if target already exists for this dishId and exact date range
     const checkResult = await pool.request()
       .input('dishId', sql.UniqueIdentifier, dishId)
