@@ -26,10 +26,12 @@ const getLocalBackendIP = (): string => {
 const isDev: boolean = typeof __DEV__ !== 'undefined' ? __DEV__ : false;
 
 export let API_URL: string =
-  (globalThis as any).process?.env?.EXPO_PUBLIC_API_URL ??
-  (isDev
-    ? `http://${getLocalBackendIP()}:3000`
-    : 'https://pos-v-20-production.up.railway.app');
+  (Platform.OS === 'web' && typeof window !== 'undefined')
+    ? `${window.location.protocol}//${window.location.hostname}:3000`
+    : ((globalThis as any).process?.env?.EXPO_PUBLIC_API_URL ??
+       (isDev
+         ? `http://${getLocalBackendIP()}:3000`
+         : 'https://pos-v-20-production.up.railway.app'));
 
 export const setApiUrl = (url: string) => {
   API_URL = url;

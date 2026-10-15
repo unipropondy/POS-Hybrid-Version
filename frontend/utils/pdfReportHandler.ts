@@ -147,7 +147,7 @@ export const getPeriodString = (filter = "daily", date = null) => {
   const todayStr = today.toLocaleDateString("en-GB", {
     day: "2-digit",
     month: "2-digit",
-    year: "numeric",
+    year: "2-digit",
   });
 
   switch (filter) {
@@ -157,7 +157,7 @@ export const getPeriodString = (filter = "daily", date = null) => {
       const weekStartStr = weekStart.toLocaleDateString("en-GB", {
         day: "2-digit",
         month: "2-digit",
-        year: "numeric",
+        year: "2-digit",
       });
       return `${weekStartStr} to ${todayStr}`;
     }
@@ -166,7 +166,7 @@ export const getPeriodString = (filter = "daily", date = null) => {
       const monthStartStr = monthStart.toLocaleDateString("en-GB", {
         day: "2-digit",
         month: "2-digit",
-        year: "numeric",
+        year: "2-digit",
       });
       return `${monthStartStr} to ${todayStr}`;
     }
@@ -175,7 +175,7 @@ export const getPeriodString = (filter = "daily", date = null) => {
       const yearStartStr = yearStart.toLocaleDateString("en-GB", {
         day: "2-digit",
         month: "2-digit",
-        year: "numeric",
+        year: "2-digit",
       });
       return `${yearStartStr} to ${todayStr}`;
     }

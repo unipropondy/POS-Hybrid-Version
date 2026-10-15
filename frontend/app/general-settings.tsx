@@ -392,7 +392,11 @@ export default function GeneralSettingsScreen() {
 
     if (success) {
       showToast({ type: "success", message: "Settings saved successfully." });
-      router.back();
+      if (router.canGoBack()) {
+        router.back();
+      } else {
+        router.replace("/(tabs)/category" as any);
+      }
     } else {
       showToast({
         type: "error",

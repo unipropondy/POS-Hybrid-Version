@@ -1,7 +1,7 @@
 // components/SunmiPrinterService.ts - AUTOMATIC 58MM/80MM DETECTOR AND FORMATTER
 import { Platform, NativeModules } from "react-native";
 import { API_URL } from "../constants/Config";
-import { formatToSingaporeDate, formatToSingaporeTime, parseDatabaseDate } from "../utils/timezoneHelper";
+import { formatToSingaporeDate, formatToSingaporeTime, formatToPrinterDate, parseDatabaseDate } from "../utils/timezoneHelper";
 import { useCompanySettingsStore } from "../stores/companySettingsStore";
 
 const { SunmiPrinterDetector } = NativeModules;
@@ -388,7 +388,7 @@ class SunmiPrinterService {
       const saleDate = saleData.originalDate ? parseDatabaseDate(saleData.originalDate) : 
                        saleData.date ? parseDatabaseDate(saleData.date) : 
                        new Date();
-      const dateStr = formatToSingaporeDate(saleDate, { day: '2-digit', month: '2-digit', year: 'numeric' });
+      const dateStr = formatToPrinterDate(saleDate);
       const timeStr = formatToSingaporeTime(saleDate);
 
       if (saleData.tableNo) {
@@ -817,7 +817,7 @@ class SunmiPrinterService {
       const orderNo = data.orderNo || data.orderId || "N/A";
       const waiter = data.waiterName || "Staff";
       const now = new Date();
-      const dateStr = formatToSingaporeDate(now, { day: '2-digit', month: '2-digit' });
+      const dateStr = formatToPrinterDate(now);
       const timeStr = formatToSingaporeTime(now, { hour: '2-digit', minute: '2-digit', hour12: false });
       const timestamp = `${dateStr} ${timeStr}`;
 

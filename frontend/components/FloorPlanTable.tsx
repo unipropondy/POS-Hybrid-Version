@@ -39,6 +39,7 @@ export interface FloorPlanTableProps {
   numberFont: number;
   itemSize: number;
   overlayBadges?: React.ReactNode;
+  showChairs?: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -157,6 +158,7 @@ export const FloorPlanTable = React.memo(({
   numberFont,
   itemSize,
   overlayBadges,
+  showChairs = true,
 }: FloorPlanTableProps) => {
 
   const isAvailable = status === 0;
@@ -175,7 +177,7 @@ export const FloorPlanTable = React.memo(({
   return (
     <>
       {/* Chairs */}
-      {chairPositions.map((pos, idx) => (
+      {showChairs && chairPositions.map((pos, idx) => (
         <View
           key={`chair-${idx}`}
           style={{ position: "absolute", left: pos.x, top: pos.y }}

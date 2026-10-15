@@ -11,15 +11,16 @@
     "preview": {
       "distribution": "internal",
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://pos-v-20-production.up.railway.app"
-
+        "EXPO_PUBLIC_API_URL": "http://192.168.0.229:3000"
+      },
+      "android": {
+        "buildType": "apk"
       }
     },
     "production": {
       "autoIncrement": true,
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://pos-v-20-production.up.railway.app"
-
+        "EXPO_PUBLIC_API_URL": "http://192.168.0.229:3000"
       },
       "android": {
         "buildType": "apk"

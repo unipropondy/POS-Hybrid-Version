@@ -1,6 +1,9 @@
 import "../shims/displayMock";
 import "react-native-get-random-values";
 import "react-native-reanimated";
+import { initClientLogger } from "../utils/clientLogger";
+
+initClientLogger();
 
 // Theme components are integrated directly into Expo Router 
 
@@ -230,11 +233,14 @@ SystemUI.setBackgroundColorAsync(Theme.bgMain);
 SplashScreen.preventAutoHideAsync();
 
 import { useGlobalSocketSync } from "@/hooks/useGlobalSocketSync";
-import { API_URL } from "@/constants/Config";
+import { API_URL, initServerConfig, onServerUrlChange } from "@/constants/Config";
 import { setApiUrl } from "@/stores/paymentSettingsStore";
 
-// Propagate API URL to local package stores
+// Propagate API URL to local package stores and sync on router IP change
 setApiUrl(API_URL);
+onServerUrlChange((newUrl) => {
+  setApiUrl(newUrl);
+});
 
 // 🌐 GLOBAL FETCH RETRY & IDEMPOTENCY ENGINE
 const originalFetch = global.fetch;
@@ -361,6 +367,17 @@ global.fetch = async function (input: RequestInfo | URL, init?: RequestInit): Pr
       const controller = new AbortController();
       options.signal = controller.signal;
 
+      const callerSignal = init?.signal;
+      let onCallerAbort: (() => void) | undefined;
+      if (callerSignal) {
+        if (callerSignal.aborted) {
+          controller.abort(callerSignal.reason);
+        } else {
+          onCallerAbort = () => controller.abort(callerSignal.reason);
+          callerSignal.addEventListener('abort', onCallerAbort, { once: true });
+        }
+      }
+
       const timeoutId = setTimeout(() => {
         controller.abort();
       }, policy.timeout);
@@ -382,9 +399,18 @@ global.fetch = async function (input: RequestInfo | URL, init?: RequestInit): Pr
         }
       } catch (err: any) {
         clearTimeout(timeoutId);
+        if (callerSignal && onCallerAbort) {
+          callerSignal.removeEventListener('abort', onCallerAbort);
+        }
         lastError = err;
 
-        const isTimeout = err.name === 'AbortError';
+        // If the caller intentionally cancelled the request (e.g., debounce abort or unmount), do NOT retry
+        const isCallerCancelled = init?.signal?.aborted;
+        if (isCallerCancelled) {
+          throw err;
+        }
+
+        const isTimeout = err.name === 'AbortError' && controller.signal.aborted;
         const isNetwork = err instanceof TypeError || err.message?.includes('Network request failed');
 
         if (!isTimeout && !isNetwork) {
@@ -497,6 +523,13 @@ export default function RootLayout() {
 
   // 🖥️ CUSTOMER DISPLAY: Gate resolves once fonts + settings + socket are ready
   const isPOSReady = usePOSReadyGate(fontsLoaded || !!fontError);
+
+  // 🌐 Initialize saved Server Router IP on startup
+  useEffect(() => {
+    initServerConfig().then((cfg) => {
+      setApiUrl(cfg.fullUrl);
+    });
+  }, []);
 
   // ✅ AUTH GUARD: Redirect based on auth state and role
   useEffect(() => {

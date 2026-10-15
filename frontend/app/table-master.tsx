@@ -393,6 +393,7 @@ const DraggableTable = ({
   canvasHeight = 650,
   layoutScale = 1,
   backgroundTheme = "wood",
+  showChairs = true,
 }: {
   table: TableItem;
   initialX: number;
@@ -404,6 +405,7 @@ const DraggableTable = ({
   canvasHeight?: number;
   layoutScale?: number;
   backgroundTheme?: string;
+  showChairs?: boolean;
 }) => {
   const [posX, setPosX] = useState(initialX);
   const [posY, setPosY] = useState(initialY);
@@ -635,6 +637,7 @@ const DraggableTable = ({
         smallFont={8}
         numberFont={13}
         itemSize={Math.max(tableW, tableH)}
+        showChairs={showChairs}
       />
     </View>
   );
@@ -705,25 +708,71 @@ export default function TableMasterScreen() {
   };
 
   const [backgroundTheme, setBackgroundTheme] = useState("champagne_fizz");
+  const [showChairs, setShowChairs] = useState(true);
 
-  const loadBackgroundTheme = async () => {
+  const loadSectionSettings = async (sectionKey: string) => {
     try {
-      const saved = await AsyncStorage.getItem(`layout_background_theme_${activeSection}`);
-      if (saved === "champagne" || saved === "champagne_fizz" || saved === "citrine" || saved === "champagne_glass" || saved === "cloud_nine") {
-        setBackgroundTheme(saved);
-      } else {
-        setBackgroundTheme("champagne_fizz");
+      // 1. Check local storage first for instant render
+      const localTheme = await AsyncStorage.getItem(`layout_background_theme_${sectionKey}`);
+      if (localTheme) setBackgroundTheme(localTheme);
+      const localChairs = await AsyncStorage.getItem(`layout_show_chairs_${sectionKey}`);
+      if (localChairs !== null) setShowChairs(localChairs === "true");
+
+      // 2. Fetch ground-truth from central backend server DB
+      const res = await fetch(`${API_URL}/api/tables/section-layout?section=${sectionKey}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.backgroundTheme) {
+          setBackgroundTheme(data.backgroundTheme);
+          await AsyncStorage.setItem(`layout_background_theme_${sectionKey}`, data.backgroundTheme);
+        }
+        if (data.showChairs !== undefined) {
+          const chairsBool = Boolean(data.showChairs);
+          setShowChairs(chairsBool);
+          await AsyncStorage.setItem(`layout_show_chairs_${sectionKey}`, String(chairsBool));
+        }
+      }
+    } catch (e) {
+      console.warn("⚠️ [TableMaster] Could not load section settings from backend:", e);
+    }
+  };
+
+  const updateBackgroundTheme = async (themeName: string) => {
+    try {
+      setBackgroundTheme(themeName);
+      await AsyncStorage.setItem(`layout_background_theme_${activeSection}`, themeName);
+      
+      // Save to central server DB so all LAN devices receive it
+      await fetch(`${API_URL}/api/tables/section-layout`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ section: activeSection, backgroundTheme: themeName, showChairs }),
+      }).catch((e) => console.warn(e));
+
+      if (socket) {
+        socket.emit("section_layout_updated", { section: activeSection, backgroundTheme: themeName, showChairs });
+        socket.emit("table_config_updated", {});
       }
     } catch (e) {
       console.error(e);
     }
   };
 
-  const updateBackgroundTheme = async (themeName: string) => {
+  const toggleShowChairs = async () => {
     try {
-      await AsyncStorage.setItem(`layout_background_theme_${activeSection}`, themeName);
-      setBackgroundTheme(themeName);
+      const nextVal = !showChairs;
+      setShowChairs(nextVal);
+      await AsyncStorage.setItem(`layout_show_chairs_${activeSection}`, String(nextVal));
+
+      // Save to central server DB so all LAN devices receive it
+      await fetch(`${API_URL}/api/tables/section-layout`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ section: activeSection, backgroundTheme, showChairs: nextVal }),
+      }).catch((e) => console.warn(e));
+
       if (socket) {
+        socket.emit("section_layout_updated", { section: activeSection, backgroundTheme, showChairs: nextVal });
         socket.emit("table_config_updated", {});
       }
     } catch (e) {
@@ -732,7 +781,22 @@ export default function TableMasterScreen() {
   };
 
   useEffect(() => {
-    loadBackgroundTheme();
+    loadSectionSettings(activeSection);
+  }, [activeSection]);
+
+  // Listen for live updates broadcast from any other device or manager
+  useEffect(() => {
+    if (!socket) return;
+    const handleSectionLayoutUpdated = (data: any) => {
+      if (data && String(data.section) === String(activeSection)) {
+        if (data.backgroundTheme) setBackgroundTheme(data.backgroundTheme);
+        if (data.showChairs !== undefined) setShowChairs(Boolean(data.showChairs));
+      }
+    };
+    socket.on("section_layout_updated", handleSectionLayoutUpdated);
+    return () => {
+      socket.off("section_layout_updated", handleSectionLayoutUpdated);
+    };
   }, [activeSection]);
 
   // Load tables
@@ -1169,6 +1233,48 @@ export default function TableMasterScreen() {
                         );
                       })}
                     </View>
+
+                    {/* Section Overall Chair ON / OFF Toggle */}
+                    <TouchableOpacity
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        backgroundColor: showChairs ? "#FFF7ED" : "#F1F5F9",
+                        paddingHorizontal: 10,
+                        paddingVertical: 5,
+                        borderRadius: 8,
+                        borderWidth: 1.5,
+                        borderColor: showChairs ? "#F97316" : "#CBD5E1",
+                        gap: 6,
+                      }}
+                      onPress={toggleShowChairs}
+                      activeOpacity={0.75}
+                    >
+                      <Ionicons
+                        name={showChairs ? "eye" : "eye-off"}
+                        size={14}
+                        color={showChairs ? "#EA580C" : "#64748B"}
+                      />
+                      <Text
+                        style={{
+                          fontFamily: Fonts.bold,
+                          fontSize: 11,
+                          color: showChairs ? "#EA580C" : "#64748B",
+                          letterSpacing: 0.3,
+                        }}
+                      >
+                        Chairs: {showChairs ? "ON" : "OFF"}
+                      </Text>
+                      <View
+                        style={{
+                          width: 8,
+                          height: 8,
+                          borderRadius: 4,
+                          backgroundColor: showChairs ? "#22C55E" : "#94A3B8",
+                        }}
+                      />
+                    </TouchableOpacity>
+
                     {/* Reset Button */}
                     <TouchableOpacity
                       style={{
@@ -1269,6 +1375,7 @@ export default function TableMasterScreen() {
                               canvasHeight={canvasHeight}
                               layoutScale={layoutScale}
                               backgroundTheme={backgroundTheme}
+                              showChairs={showChairs}
                             />
                           );
                         });

@@ -1,29 +1,29 @@
-import React, { useState, useEffect } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  Image,
-  ScrollView,
-  StatusBar,
-  useWindowDimensions,
-  Pressable,
-  Platform,
-  ActivityIndicator,
-  Modal,
-} from "react-native";
-import { LinearGradient } from "expo-linear-gradient";
-import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
-import { Fonts } from "@/constants/Fonts";
-import { useAuthStore } from "@/stores/authStore";
-import { useOrderContextStore } from "@/stores/orderContextStore";
+import { SyncStatusBadge } from "@/components/SyncStatusBadge";
+import { ServerConnectionModal } from "@/components/ServerConnectionModal";
 import { useToast } from "@/components/Toast";
 import { API_URL } from "@/constants/Config";
+import { Fonts } from "@/constants/Fonts";
+import { useAuthStore } from "@/stores/authStore";
 import { useGeneralSettingsStore } from "@/stores/generalSettingsStore";
-import { SyncStatusBadge } from "@/components/SyncStatusBadge";
+import { useOrderContextStore } from "@/stores/orderContextStore";
+import { Ionicons } from "@expo/vector-icons";
+import { LinearGradient } from "expo-linear-gradient";
+import { useRouter } from "expo-router";
+import { useEffect, useState } from "react";
+import {
+  ActivityIndicator,
+  Image,
+  Modal,
+  Platform,
+  Pressable,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  useWindowDimensions,
+  View
+} from "react-native";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
 // High-resolution photography
 const DINE_IN_IMG = "https://images.unsplash.com/photo-1550966871-3ed3cdb5ed0c?q=80&w=1000&auto=format&fit=crop";
@@ -42,6 +42,7 @@ export default function OrderTypeSelectionScreen() {
   const { settings, fetchSettings } = useGeneralSettingsStore();
 
   const [showQuickServeModal, setShowQuickServeModal] = useState(false);
+  const [showServerModal, setShowServerModal] = useState(false);
   const [currentTime, setCurrentTime] = useState<string>("");
   const [currentDate, setCurrentDate] = useState<string>("");
   const [hoveredCard, setHoveredCard] = useState<number | null>(null);
@@ -137,7 +138,11 @@ export default function OrderTypeSelectionScreen() {
         <View style={styles.headerLeft}>
           {companyInfo?.CompanyLogoUrl ? (
             <Image
-              source={{ uri: companyInfo.CompanyLogoUrl }}
+              source={{
+                uri: companyInfo.CompanyLogoUrl.startsWith("http") || companyInfo.CompanyLogoUrl.startsWith("data:")
+                  ? companyInfo.CompanyLogoUrl
+                  : `${API_URL}${companyInfo.CompanyLogoUrl.startsWith("/") ? "" : "/"}${companyInfo.CompanyLogoUrl}`
+              }}
               style={styles.headerCompanyLogo}
               resizeMode="contain"
             />
@@ -173,8 +178,18 @@ export default function OrderTypeSelectionScreen() {
           </View>
         </View>
 
-        {/* Right: User Avatar */}
+        {/* Right: User Avatar & Server Setup */}
         <View style={styles.headerRight}>
+          <TouchableOpacity
+            style={styles.headerServerBtn}
+            onPress={() => setShowServerModal(true)}
+            activeOpacity={0.7}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
+            <Ionicons name="server-outline" size={16} color="#7C3AED" />
+            <Text style={styles.headerServerBtnText}>Server</Text>
+          </TouchableOpacity>
+          <SyncStatusBadge />
           <View style={styles.userInfo}>
             <View style={styles.avatarCircle}>
               <Ionicons name="person" size={15} color="#475569" />
@@ -223,7 +238,7 @@ export default function OrderTypeSelectionScreen() {
               onHoverOut={() => setHoveredCard(null)}
             >
               <View style={styles.cardHeaderAccent} />
-              
+
               <View style={styles.cardContentMinimal}>
                 <View style={[styles.minimalIconCircle, { borderColor: "#FF4D5E", backgroundColor: "#FFF1F2" }]}>
                   <Ionicons name="restaurant-outline" size={26} color="#FF4D5E" />
@@ -232,7 +247,7 @@ export default function OrderTypeSelectionScreen() {
                 <Text style={styles.cardTitle}>DINE IN</Text>
                 <View style={[styles.titleUnderline, { backgroundColor: "#FF4D5E" }]} />
                 <Text style={styles.cardSubtitle}>Serve customers at designated tables with real-time status</Text>
-                
+
                 <View style={styles.featureChipsRow}>
                   <View style={styles.chip}>
                     <Ionicons name="checkmark-circle" size={12} color="#FF4D5E" />
@@ -267,7 +282,7 @@ export default function OrderTypeSelectionScreen() {
               onHoverOut={() => setHoveredCard(null)}
             >
               <View style={[styles.cardHeaderAccent, { backgroundColor: "#FF9500" }]} />
-              
+
               <View style={styles.cardContentMinimal}>
                 <View style={[styles.minimalIconCircle, { borderColor: "#FF9500", backgroundColor: "#FFF7ED" }]}>
                   <Ionicons name="bag-handle-outline" size={26} color="#FF9500" />
@@ -276,7 +291,7 @@ export default function OrderTypeSelectionScreen() {
                 <Text style={styles.cardTitle}>TAKE AWAY</Text>
                 <View style={[styles.titleUnderline, { backgroundColor: "#FF9500" }]} />
                 <Text style={styles.cardSubtitle}>Quick order processing for carry-out & pickup orders</Text>
-                
+
                 <View style={styles.featureChipsRow}>
                   <View style={styles.chip}>
                     <Ionicons name="checkmark-circle" size={12} color="#FF9500" />
@@ -312,7 +327,7 @@ export default function OrderTypeSelectionScreen() {
                 onHoverOut={() => setHoveredCard(null)}
               >
                 <View style={[styles.cardHeaderAccent, { backgroundColor: "#22C55E" }]} />
-                
+
                 <View style={styles.cardContentMinimal}>
                   <View style={[styles.minimalIconCircle, { borderColor: "#22C55E", backgroundColor: "#F0FDF4" }]}>
                     <Ionicons name="flash-outline" size={26} color="#22C55E" />
@@ -321,7 +336,7 @@ export default function OrderTypeSelectionScreen() {
                   <Text style={styles.cardTitle}>QUICK SERVE</Text>
                   <View style={[styles.titleUnderline, { backgroundColor: "#22C55E" }]} />
                   <Text style={styles.cardSubtitle}>Rapid billing for high-volume walk-in counters</Text>
-                  
+
                   <View style={styles.featureChipsRow}>
                     <View style={styles.chip}>
                       <Ionicons name="checkmark-circle" size={12} color="#22C55E" />
@@ -431,6 +446,19 @@ export default function OrderTypeSelectionScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* 🌐 Server Connection Setup Modal */}
+      <ServerConnectionModal
+        visible={showServerModal}
+        onClose={() => setShowServerModal(false)}
+        onSaved={() => {
+          toast.showToast({
+            message: "Server connected successfully!",
+            type: "success",
+            duration: 3000,
+          });
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -439,6 +467,23 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: "#F8FAFC",
+  },
+  headerServerBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 14,
+    backgroundColor: "rgba(124, 58, 237, 0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(124, 58, 237, 0.2)",
+    marginRight: 6,
+  },
+  headerServerBtnText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#7C3AED",
   },
   modalOverlay: {
     flex: 1,
@@ -1080,7 +1125,11 @@ const styles = StyleSheet.create({
     resizeMode: "cover",
   },
   imageGradientOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
     backgroundColor: "rgba(15, 23, 42, 0.25)",
   },
   cardHeaderBadgeRow: {

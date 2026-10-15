@@ -338,7 +338,7 @@ function CustomDatePicker({
                       style={[
                         pickerStyles.dayText,
                         (!dObj.isCurrentMonth || isFuture) &&
-                          pickerStyles.dayTextInactive,
+                        pickerStyles.dayTextInactive,
                         isSelected && pickerStyles.dayTextSelected,
                       ]}
                     >
@@ -734,7 +734,7 @@ export default function SettlementScreen() {
     visible: false,
     title: "",
     message: "",
-    onConfirm: () => {},
+    onConfirm: () => { },
   });
 
   // Supervisor Password Verification State
@@ -824,14 +824,14 @@ export default function SettlementScreen() {
   const formatDateTime = (date: Date) => {
     const d = date.getDate().toString().padStart(2, "0");
     const m = (date.getMonth() + 1).toString().padStart(2, "0");
-    const y = date.getFullYear();
+    const y = date.getFullYear().toString().slice(-2);
     let hours = date.getHours();
     const minutes = date.getMinutes().toString().padStart(2, "0");
     const ampm = hours >= 12 ? "PM" : "AM";
     hours = hours % 12;
     hours = hours ? hours : 12;
     const h = hours.toString().padStart(2, "0");
-    return `${d}-${m}-${y} ${h}:${minutes} ${ampm}`;
+    return `${d}/${m}/${y} ${h}:${minutes} ${ampm}`;
   };
 
   // Uses the app-wide Singapore-time helper so timestamps always reflect SGT (UTC+8)
@@ -1490,15 +1490,15 @@ export default function SettlementScreen() {
       const pickerResult =
         mode === "camera"
           ? await ImagePicker.launchCameraAsync({
-              mediaTypes: ImagePicker.MediaTypeOptions.Images,
-              allowsEditing: true,
-              quality: 0.3,
-            })
+            mediaTypes: ImagePicker.MediaTypeOptions.Images,
+            allowsEditing: true,
+            quality: 0.3,
+          })
           : await ImagePicker.launchImageLibraryAsync({
-              mediaTypes: ImagePicker.MediaTypeOptions.Images,
-              allowsEditing: true,
-              quality: 0.3,
-            });
+            mediaTypes: ImagePicker.MediaTypeOptions.Images,
+            allowsEditing: true,
+            quality: 0.3,
+          });
 
       if (
         pickerResult.canceled ||
@@ -1867,12 +1867,12 @@ export default function SettlementScreen() {
       };
 
       const businessDateStr = isRangeMode
-        ? `${selectedDate.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "numeric" })} - ${selectedEndDate.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "numeric" })}`
+        ? `${selectedDate.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "2-digit" })} - ${selectedEndDate.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "2-digit" })}`
         : selectedDate.toLocaleDateString("en-GB", {
-            day: "2-digit",
-            month: "2-digit",
-            year: "numeric",
-          });
+          day: "2-digit",
+          month: "2-digit",
+          year: "2-digit",
+        });
       const cashInTotalSum =
         totalCashInEntries +
         creditSettlementCashFromPayments +
@@ -2047,26 +2047,24 @@ export default function SettlementScreen() {
                   <td>Service Charge</td>
                   <td class="right">${formatCurrency(totalSales.ServiceCharge)}</td>
                 </tr>
-                ${
-                  (parseFloat(totalSales.AdditionalServiceCharge) || 0) !== 0
-                    ? `
+                ${(parseFloat(totalSales.AdditionalServiceCharge) || 0) !== 0
+          ? `
                 <tr>
                   <td>Add. Service Charge</td>
                   <td class="right">${formatCurrency(totalSales.AdditionalServiceCharge)}</td>
                 </tr>
                 `
-                    : ""
-                }
-                ${
-                  (parseFloat(totalSales.TakeawayCharge) || 0) !== 0
-                    ? `
+          : ""
+        }
+                ${(parseFloat(totalSales.TakeawayCharge) || 0) !== 0
+          ? `
                 <tr>
                   <td>Takeaway Charge</td>
                   <td class="right">${formatCurrency(totalSales.TakeawayCharge)}</td>
                 </tr>
                 `
-                    : ""
-                }
+          : ""
+        }
                 <tr>
                   <td>GST Collected</td>
                   <td class="right">${formatCurrency(displayGST)}</td>
@@ -2094,15 +2092,15 @@ export default function SettlementScreen() {
               <div class="divider">========================================</div>
               <table>
                 ${printPayments
-                  .map(
-                    (p) => `
+          .map(
+            (p) => `
                   <tr>
                     <td>${p.PaymodeName}</td>
                     <td class="right">${formatCurrency(p.Amount)}</td>
                   </tr>
                 `,
-                  )
-                  .join("")}
+          )
+          .join("")}
                 <tr>
                   <td colspan="2"><div class="line-divider"></div></td>
                 </tr>
@@ -2158,9 +2156,8 @@ export default function SettlementScreen() {
                   <td>EXPECTED CASH</td>
                   <td class="right">${formatCurrency(totalCashIn - totalCashOutSum)}</td>
                 </tr>
-                ${
-                  totalClosing > 0
-                    ? `
+                ${totalClosing > 0
+          ? `
                 <tr>
                   <td colspan="2"><div class="line-divider"></div></td>
                 </tr>
@@ -2169,17 +2166,16 @@ export default function SettlementScreen() {
                   <td class="right">${formatCurrency(totalClosing)}</td>
                 </tr>
                 <tr>
-                  <td>${
-                    totalClosing - (totalCashIn - totalCashOutSum) === 0
-                      ? "Variance (Balances)"
-                      : totalClosing > totalCashIn - totalCashOutSum
-                        ? "Variance (Surplus)"
-                        : "Variance (Shortage)"
-                  }</td>
+                  <td>${totalClosing - (totalCashIn - totalCashOutSum) === 0
+            ? "Variance (Balances)"
+            : totalClosing > totalCashIn - totalCashOutSum
+              ? "Variance (Surplus)"
+              : "Variance (Shortage)"
+          }</td>
                   <td class="right" style="color: ${totalClosing >= totalCashIn - totalCashOutSum ? "#2e7d32" : "#c62828"}">${totalClosing >= totalCashIn - totalCashOutSum ? "+" : ""}${formatCurrency(totalClosing - (totalCashIn - totalCashOutSum))}</td>
                 </tr>`
-                    : ""
-                }
+          : ""
+        }
               </table>
 
               <div class="divider">========================================</div>
@@ -2232,7 +2228,7 @@ export default function SettlementScreen() {
       text += formatTwoCols48(
         "Discount:",
         ((parseFloat(totalSales.DiscountAmount) || 0) > 0 ? "-" : "") +
-          formatCurrency(totalSales.DiscountAmount),
+        formatCurrency(totalSales.DiscountAmount),
       );
       text += formatTwoCols48(
         "Service Charge:",
@@ -2301,8 +2297,8 @@ export default function SettlementScreen() {
       text += formatTwoCols48(
         "<font size='big'><B>EXPECTED CASH:</B></font>",
         "<font size='big'><B>" +
-          formatCurrency(totalCashIn - totalCashOutSum) +
-          "</B></font>\n",
+        formatCurrency(totalCashIn - totalCashOutSum) +
+        "</B></font>\n",
       );
       if (totalClosing > 0) {
         text += formatTwoCols48(
@@ -2417,7 +2413,7 @@ export default function SettlementScreen() {
             console.log(
               `🔵 [Settlement] Direct Bluetooth print sent to MAC: ${cleanPrinterPath}`,
             );
-            await ThermalPrinterModule.getBluetoothDeviceList().catch(() => {});
+            await ThermalPrinterModule.getBluetoothDeviceList().catch(() => { });
             await ThermalPrinterModule.printBluetooth({
               macAddress: cleanPrinterPath,
               payload: text,
@@ -2491,7 +2487,7 @@ export default function SettlementScreen() {
               formatTwoCols32(
                 "Discount:",
                 ((parseFloat(totalSales.DiscountAmount) || 0) > 0 ? "-" : "") +
-                  formatCurrency(totalSales.DiscountAmount),
+                formatCurrency(totalSales.DiscountAmount),
               ),
             );
             await SunmiModule.printText(
@@ -2755,19 +2751,19 @@ export default function SettlementScreen() {
             style={
               isTablet
                 ? {
-                    marginLeft: "auto",
-                    flexDirection: "row",
-                    gap: 12,
-                    alignItems: "center",
-                    marginRight: 20,
-                  }
+                  marginLeft: "auto",
+                  flexDirection: "row",
+                  gap: 12,
+                  alignItems: "center",
+                  marginRight: 20,
+                }
                 : {
-                    flexDirection: "row",
-                    justifyContent: "center",
-                    gap: 12,
-                    alignItems: "center",
-                    marginVertical: 4,
-                  }
+                  flexDirection: "row",
+                  justifyContent: "center",
+                  gap: 12,
+                  alignItems: "center",
+                  marginVertical: 4,
+                }
             }
           >
             {!isRangeMode && (
@@ -2826,10 +2822,10 @@ export default function SettlementScreen() {
                 {isRangeMode
                   ? `${selectedDate.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "numeric" })} - ${selectedEndDate.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "numeric" })}`
                   : selectedDate.toLocaleDateString("en-GB", {
-                      day: "2-digit",
-                      month: "2-digit",
-                      year: "numeric",
-                    })}
+                    day: "2-digit",
+                    month: "2-digit",
+                    year: "numeric",
+                  })}
               </Text>
               <Ionicons
                 name="calendar-outline"
@@ -3353,9 +3349,9 @@ export default function SettlementScreen() {
                         const isSel = selectedCashierId === op.CashierId;
                         const userNetSales = Number(
                           op.TotalNetSales ??
-                            op.TotalSales ??
-                            op.TotalSubTotal ??
-                            0,
+                          op.TotalSales ??
+                          op.TotalSubTotal ??
+                          0,
                         );
                         return (
                           <TouchableOpacity
@@ -3680,14 +3676,14 @@ export default function SettlementScreen() {
                   {formatCurrency(
                     selectedCashierId === "ALL"
                       ? totalSales.NetTotal ||
-                          loginWiseSales.reduce(
-                            (sum, r) => sum + (parseFloat(r.TotalSales) || 0),
-                            0,
-                          ) ||
-                          netSales
+                      loginWiseSales.reduce(
+                        (sum, r) => sum + (parseFloat(r.TotalSales) || 0),
+                        0,
+                      ) ||
+                      netSales
                       : loginWiseSales.find(
-                          (r) => r.CashierId === selectedCashierId,
-                        )?.TotalSales || 0,
+                        (r) => r.CashierId === selectedCashierId,
+                      )?.TotalSales || 0,
                   )}
                 </Text>
               </View>
@@ -3802,35 +3798,35 @@ export default function SettlementScreen() {
                       selectedCashierId !== "ALL"
                         ? selRecord?.TotalSubTotal || 0
                         : totalSales.SubTotal !== undefined &&
-                            totalSales.SubTotal > 0
+                          totalSales.SubTotal > 0
                           ? totalSales.SubTotal
                           : sumSubTotal;
                     const discT =
                       selectedCashierId !== "ALL"
                         ? selRecord?.TotalDiscount || 0
                         : totalSales.DiscountAmount !== undefined &&
-                            totalSales.DiscountAmount > 0
+                          totalSales.DiscountAmount > 0
                           ? totalSales.DiscountAmount
                           : sumDiscount;
                     const scT =
                       selectedCashierId !== "ALL"
                         ? selRecord?.TotalServiceCharge || 0
                         : totalSales.ServiceCharge !== undefined &&
-                            totalSales.ServiceCharge > 0
+                          totalSales.ServiceCharge > 0
                           ? totalSales.ServiceCharge
                           : sumServiceCharge;
                     const twT =
                       selectedCashierId !== "ALL"
                         ? selRecord?.TotalTakeaway || 0
                         : totalSales.TakeawayCharge !== undefined &&
-                            totalSales.TakeawayCharge > 0
+                          totalSales.TakeawayCharge > 0
                           ? totalSales.TakeawayCharge
                           : sumTakeaway;
                     const gstT =
                       selectedCashierId !== "ALL"
                         ? selRecord?.TotalTax || 0
                         : totalSales.TotalTax !== undefined &&
-                            totalSales.TotalTax > 0
+                          totalSales.TotalTax > 0
                           ? totalSales.TotalTax
                           : sumTax;
 
@@ -3920,15 +3916,15 @@ export default function SettlementScreen() {
                       {formatCurrency(
                         selectedCashierId === "ALL"
                           ? totalSales.NetTotal ||
-                              loginWiseSales.reduce(
-                                (sum, r) =>
-                                  sum + (parseFloat(r.TotalSales) || 0),
-                                0,
-                              ) ||
-                              netSales
+                          loginWiseSales.reduce(
+                            (sum, r) =>
+                              sum + (parseFloat(r.TotalSales) || 0),
+                            0,
+                          ) ||
+                          netSales
                           : loginWiseSales.find(
-                              (r) => r.CashierId === selectedCashierId,
-                            )?.TotalSales || 0,
+                            (r) => r.CashierId === selectedCashierId,
+                          )?.TotalSales || 0,
                       )}
                     </Text>
                   </View>
@@ -3950,32 +3946,32 @@ export default function SettlementScreen() {
                   <Text style={styles.cardHeaderTitle}>SALES</Text>
                   {(cashOutEntries.some((co) => co.AttachmentUrl) ||
                     cashInEntries.some((ci) => ci.AttachmentUrl)) && (
-                    <TouchableOpacity
-                      onPress={() => setShowAllMediaModal(true)}
-                      style={{
-                        flexDirection: "row",
-                        alignItems: "center",
-                        gap: 5,
-                        backgroundColor: Theme.success + "20",
-                        borderWidth: 1,
-                        borderColor: Theme.success + "60",
-                        borderRadius: 8,
-                        paddingHorizontal: 8,
-                        paddingVertical: 4,
-                      }}
-                    >
-                      <Ionicons name="images" size={13} color={Theme.success} />
-                      <Text
+                      <TouchableOpacity
+                        onPress={() => setShowAllMediaModal(true)}
                         style={{
-                          fontFamily: Fonts.bold,
-                          fontSize: 11,
-                          color: Theme.success,
+                          flexDirection: "row",
+                          alignItems: "center",
+                          gap: 5,
+                          backgroundColor: Theme.success + "20",
+                          borderWidth: 1,
+                          borderColor: Theme.success + "60",
+                          borderRadius: 8,
+                          paddingHorizontal: 8,
+                          paddingVertical: 4,
                         }}
                       >
-                        Receipts
-                      </Text>
-                    </TouchableOpacity>
-                  )}
+                        <Ionicons name="images" size={13} color={Theme.success} />
+                        <Text
+                          style={{
+                            fontFamily: Fonts.bold,
+                            fontSize: 11,
+                            color: Theme.success,
+                          }}
+                        >
+                          Receipts
+                        </Text>
+                      </TouchableOpacity>
+                    )}
                 </View>
                 <View style={styles.tableHeader}>
                   <Text style={[styles.tableHeaderText, { flex: 2 }]}>
@@ -6939,13 +6935,13 @@ export default function SettlementScreen() {
                       const isStart = log.EventType === "DAY_START";
                       const logDateStr = log.BusinessDate
                         ? new Date(log.BusinessDate).toLocaleDateString(
-                            "en-GB",
-                            {
-                              day: "2-digit",
-                              month: "2-digit",
-                              year: "numeric",
-                            },
-                          )
+                          "en-GB",
+                          {
+                            day: "2-digit",
+                            month: "2-digit",
+                            year: "numeric",
+                          },
+                        )
                         : "—";
 
                       return (

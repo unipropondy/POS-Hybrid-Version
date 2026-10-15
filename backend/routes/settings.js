@@ -1,156 +1,64 @@
 const express = require("express");
 const router = express.Router();
 const sql = require("mssql");
-const { poolPromise } = require("../config/db");
+const { poolPromise, getRemotePool, isRemoteOnline } = require("../config/db");
 const { getAppSettings, getCompanySettings, invalidateCache } = require("../utils/settingsCache");
 const { logSettingsDiff, initSettingsAuditTable } = require("../utils/auditLogger");
 const { syncKitchensToPrintMaster } = require("../config/init");
 
 
+let appSettingsSchemaVerified = false;
+
+async function ensureAppSettingsColumns(pool) {
+  if (appSettingsSchemaVerified || !pool) return;
+  try {
+    await pool.query(`
+      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'EnableKDSPrint')
+        ALTER TABLE AppSettings ADD EnableKDSPrint BIT DEFAULT 1 WITH VALUES;
+      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'SVCIdentification')
+        ALTER TABLE AppSettings ADD SVCIdentification BIT DEFAULT 1 WITH VALUES;
+      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'EnableCombo')
+        ALTER TABLE AppSettings ADD EnableCombo BIT DEFAULT 1 WITH VALUES;
+      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'EnableQuickServe')
+        ALTER TABLE AppSettings ADD EnableQuickServe BIT DEFAULT 1 WITH VALUES;
+      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'ShowLoyalty')
+        ALTER TABLE AppSettings ADD ShowLoyalty BIT DEFAULT 1 WITH VALUES;
+      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'ShowRewardPoints')
+        ALTER TABLE AppSettings ADD ShowRewardPoints BIT DEFAULT 1 WITH VALUES;
+      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'ShowPromoCode')
+        ALTER TABLE AppSettings ADD ShowPromoCode BIT DEFAULT 1 WITH VALUES;
+      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'EnableOnlinePayment')
+        ALTER TABLE AppSettings ADD EnableOnlinePayment BIT DEFAULT 1 WITH VALUES;
+      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'EnableQROrderAutoPrint')
+        ALTER TABLE AppSettings ADD EnableQROrderAutoPrint BIT DEFAULT 1 WITH VALUES;
+      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'EnableComboPrint')
+        ALTER TABLE AppSettings ADD EnableComboPrint BIT DEFAULT 0 WITH VALUES;
+      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'EnableRequestService')
+        ALTER TABLE AppSettings ADD EnableRequestService BIT DEFAULT 1 WITH VALUES;
+      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'EnableCookingInstructions')
+        ALTER TABLE AppSettings ADD EnableCookingInstructions BIT DEFAULT 1 WITH VALUES;
+      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'EnableDirectPaymentToProcess')
+        ALTER TABLE AppSettings ADD EnableDirectPaymentToProcess BIT DEFAULT 0 WITH VALUES;
+      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'EnableSkipSummaryScreen')
+        ALTER TABLE AppSettings ADD EnableSkipSummaryScreen BIT DEFAULT 0 WITH VALUES;
+      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'EnableReceiptPrint')
+        ALTER TABLE AppSettings ADD EnableReceiptPrint BIT DEFAULT 1 WITH VALUES;
+      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'EnableVoiceSuccess')
+        ALTER TABLE AppSettings ADD EnableVoiceSuccess BIT DEFAULT 1 WITH VALUES;
+      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'EnableNotificationSound')
+        ALTER TABLE AppSettings ADD EnableNotificationSound BIT DEFAULT 1 WITH VALUES;
+    `);
+    appSettingsSchemaVerified = true;
+  } catch (err) {
+    console.warn("Failed self-healing AppSettings columns:", err.message);
+  }
+}
+
 // 🔹 GET Settings
 router.get("/", async (req, res) => {
   try {
     const pool = await poolPromise;
-    // Self-heal AppSettings to add EnableKDSPrint, SVCIdentification, and EnableCombo if missing
-    await pool.query(`
-      IF NOT EXISTS (
-        SELECT * FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'EnableKDSPrint'
-      )
-      BEGIN
-        ALTER TABLE AppSettings ADD EnableKDSPrint BIT DEFAULT 1 WITH VALUES;
-      END
-
-      IF NOT EXISTS (
-        SELECT * FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'SVCIdentification'
-      )
-      BEGIN
-        ALTER TABLE AppSettings ADD SVCIdentification BIT DEFAULT 1 WITH VALUES;
-      END
-
-      IF NOT EXISTS (
-        SELECT * FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'EnableCombo'
-      )
-      BEGIN
-        ALTER TABLE AppSettings ADD EnableCombo BIT DEFAULT 1 WITH VALUES;
-      END
-
-      IF NOT EXISTS (
-        SELECT * FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'EnableQuickServe'
-      )
-      BEGIN
-        ALTER TABLE AppSettings ADD EnableQuickServe BIT DEFAULT 1 WITH VALUES;
-      END
-
-      IF NOT EXISTS (
-        SELECT * FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'ShowLoyalty'
-      )
-      BEGIN
-        ALTER TABLE AppSettings ADD ShowLoyalty BIT DEFAULT 1 WITH VALUES;
-      END
-
-      IF NOT EXISTS (
-        SELECT * FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'ShowRewardPoints'
-      )
-      BEGIN
-        ALTER TABLE AppSettings ADD ShowRewardPoints BIT DEFAULT 1 WITH VALUES;
-      END
-
-      IF NOT EXISTS (
-        SELECT * FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'ShowPromoCode'
-      )
-      BEGIN
-        ALTER TABLE AppSettings ADD ShowPromoCode BIT DEFAULT 1 WITH VALUES;
-      END
-
-      IF NOT EXISTS (
-        SELECT * FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'EnableOnlinePayment'
-      )
-      BEGIN
-        ALTER TABLE AppSettings ADD EnableOnlinePayment BIT DEFAULT 1 WITH VALUES;
-      END
-
-      IF NOT EXISTS (
-        SELECT * FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'EnableQROrderAutoPrint'
-      )
-      BEGIN
-        ALTER TABLE AppSettings ADD EnableQROrderAutoPrint BIT DEFAULT 1 WITH VALUES;
-      END
-
-      IF NOT EXISTS (
-        SELECT * FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'EnableComboPrint'
-      )
-      BEGIN
-        ALTER TABLE AppSettings ADD EnableComboPrint BIT DEFAULT 0 WITH VALUES;
-      END
-
-      IF NOT EXISTS (
-        SELECT * FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'EnableRequestService'
-      )
-      BEGIN
-        ALTER TABLE AppSettings ADD EnableRequestService BIT DEFAULT 1 WITH VALUES;
-      END
-
-      IF NOT EXISTS (
-        SELECT * FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'EnableCookingInstructions'
-      )
-      BEGIN
-        ALTER TABLE AppSettings ADD EnableCookingInstructions BIT DEFAULT 1 WITH VALUES;
-      END
-
-      IF NOT EXISTS (
-        SELECT * FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'EnableDirectPaymentToProcess'
-      )
-      BEGIN
-        ALTER TABLE AppSettings ADD EnableDirectPaymentToProcess BIT DEFAULT 0 WITH VALUES;
-      END
-
-      IF NOT EXISTS (
-        SELECT * FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'EnableSkipSummaryScreen'
-      )
-      BEGIN
-        ALTER TABLE AppSettings ADD EnableSkipSummaryScreen BIT DEFAULT 0 WITH VALUES;
-      END
-
-      IF NOT EXISTS (
-        SELECT * FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'EnableReceiptPrint'
-      )
-      BEGIN
-        ALTER TABLE AppSettings ADD EnableReceiptPrint BIT DEFAULT 1 WITH VALUES;
-      END
-
-      IF NOT EXISTS (
-        SELECT * FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'EnableVoiceSuccess'
-      )
-      BEGIN
-        ALTER TABLE AppSettings ADD EnableVoiceSuccess BIT DEFAULT 1 WITH VALUES;
-      END
-
-      IF NOT EXISTS (
-        SELECT * FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'EnableNotificationSound'
-      )
-      BEGIN
-        ALTER TABLE AppSettings ADD EnableNotificationSound BIT DEFAULT 1 WITH VALUES;
-      END
-    `).catch(err => console.warn("Failed self-healing AppSettings column:", err.message));
-
-    invalidateCache();
+    ensureAppSettingsColumns(pool);
 
     const settings = await getAppSettings();
     res.json({
@@ -255,8 +163,18 @@ router.post("/update", async (req, res) => {
         END
         ELSE
         BEGIN
-          INSERT INTO AppSettings (UPI_ID, ShopName, PayNow_QR_Url, EnableKOT, EnableKDS, EnableCheckoutBill, EnableCheckoutFlow, EnableDirectProcessToPay, CustomerSideDisplay, EnableGuestDetailsPopup, EnableCashDrawer, EnableKDSPrint, SVCIdentification, EnableCombo, EnableQuickServe, ShowLoyalty, ShowRewardPoints, ShowPromoCode, EnableOnlinePayment, EnableQROrderAutoPrint, EnableComboPrint, EnableRequestService, EnableCookingInstructions, EnableDirectPaymentToProcess, EnableSkipSummaryScreen, EnableReceiptPrint, EnableVoiceSuccess, EnableNotificationSound, UpdatedOn)
-          VALUES (@UPI, @Shop, @QR, @EnableKOT, @EnableKDS, @EnableCheckoutBill, @EnableCheckoutFlow, @EnableDirectProcessToPay, @CustomerSideDisplay, @EnableGuestDetailsPopup, @EnableCashDrawer, @EnableKDSPrint, @SVCIdentification, @EnableCombo, @EnableQuickServe, @ShowLoyalty, @ShowRewardPoints, @ShowPromoCode, @EnableOnlinePayment, @EnableQROrderAutoPrint, @EnableComboPrint, @EnableRequestService, @EnableCookingInstructions, @EnableDirectPaymentToProcess, @EnableSkipSummaryScreen, @EnableReceiptPrint, @EnableVoiceSuccess, @EnableNotificationSound, GETDATE())
+          IF EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('AppSettings') AND is_identity = 1)
+          BEGIN
+            SET IDENTITY_INSERT [dbo].[AppSettings] ON;
+            INSERT INTO AppSettings (Id, UPI_ID, ShopName, PayNow_QR_Url, EnableKOT, EnableKDS, EnableCheckoutBill, EnableCheckoutFlow, EnableDirectProcessToPay, CustomerSideDisplay, EnableGuestDetailsPopup, EnableCashDrawer, EnableKDSPrint, SVCIdentification, EnableCombo, EnableQuickServe, ShowLoyalty, ShowRewardPoints, ShowPromoCode, EnableOnlinePayment, EnableQROrderAutoPrint, EnableComboPrint, EnableRequestService, EnableCookingInstructions, EnableDirectPaymentToProcess, EnableSkipSummaryScreen, EnableReceiptPrint, EnableVoiceSuccess, EnableNotificationSound, UpdatedOn)
+            VALUES (1, @UPI, @Shop, @QR, @EnableKOT, @EnableKDS, @EnableCheckoutBill, @EnableCheckoutFlow, @EnableDirectProcessToPay, @CustomerSideDisplay, @EnableGuestDetailsPopup, @EnableCashDrawer, @EnableKDSPrint, @SVCIdentification, @EnableCombo, @EnableQuickServe, @ShowLoyalty, @ShowRewardPoints, @ShowPromoCode, @EnableOnlinePayment, @EnableQROrderAutoPrint, @EnableComboPrint, @EnableRequestService, @EnableCookingInstructions, @EnableDirectPaymentToProcess, @EnableSkipSummaryScreen, @EnableReceiptPrint, @EnableVoiceSuccess, @EnableNotificationSound, GETDATE());
+            SET IDENTITY_INSERT [dbo].[AppSettings] OFF;
+          END
+          ELSE
+          BEGIN
+            INSERT INTO AppSettings (Id, UPI_ID, ShopName, PayNow_QR_Url, EnableKOT, EnableKDS, EnableCheckoutBill, EnableCheckoutFlow, EnableDirectProcessToPay, CustomerSideDisplay, EnableGuestDetailsPopup, EnableCashDrawer, EnableKDSPrint, SVCIdentification, EnableCombo, EnableQuickServe, ShowLoyalty, ShowRewardPoints, ShowPromoCode, EnableOnlinePayment, EnableQROrderAutoPrint, EnableComboPrint, EnableRequestService, EnableCookingInstructions, EnableDirectPaymentToProcess, EnableSkipSummaryScreen, EnableReceiptPrint, EnableVoiceSuccess, EnableNotificationSound, UpdatedOn)
+            VALUES (1, @UPI, @Shop, @QR, @EnableKOT, @EnableKDS, @EnableCheckoutBill, @EnableCheckoutFlow, @EnableDirectProcessToPay, @CustomerSideDisplay, @EnableGuestDetailsPopup, @EnableCashDrawer, @EnableKDSPrint, @SVCIdentification, @EnableCombo, @EnableQuickServe, @ShowLoyalty, @ShowRewardPoints, @ShowPromoCode, @EnableOnlinePayment, @EnableQROrderAutoPrint, @EnableComboPrint, @EnableRequestService, @EnableCookingInstructions, @EnableDirectPaymentToProcess, @EnableSkipSummaryScreen, @EnableReceiptPrint, @EnableVoiceSuccess, @EnableNotificationSound, GETDATE());
+          END
         END
       `);
 
@@ -457,6 +375,7 @@ router.get("/kitchen-printers", async (req, res) => {
           KitchenTypeValue: code,
           KitchenTypeName: cat.KitchenTypeName,
           PrinterPath: match.PrinterPath,
+          PrinterIP: match.PrinterIP || match.PrinterPath || "",
           PrinterType: 2,
           IsActive: match.IsActive === true || match.IsActive === 1 ? 1 : 0,
           IsEnabled: match.IsEnabled === undefined || match.IsEnabled === null || match.IsEnabled === true || match.IsEnabled === 1 ? 1 : 0
@@ -468,6 +387,7 @@ router.get("/kitchen-printers", async (req, res) => {
           KitchenTypeValue: code,
           KitchenTypeName: cat.KitchenTypeName,
           PrinterPath: "",
+          PrinterIP: "",
           PrinterType: 2,
           IsActive: 1,
           IsEnabled: 1
@@ -481,6 +401,59 @@ router.get("/kitchen-printers", async (req, res) => {
   }
 });
 
+async function executePrinterUpdate(targetPool, printer) {
+  if (!targetPool || !targetPool.connected) return;
+  const targetId = printer.printerId || printer.id;
+  const isGuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(targetId));
+  const printerIp = printer.ip || "";
+  const isActiveValue = printer.isActive === 0 || printer.isActive === false ? 0 : 1;
+  const isEnabledValue = printer.isEnabled === 0 || printer.isEnabled === false ? 0 : 1;
+
+  if (printer.type === 2) {
+    // Kitchen printer: update ALL rows matching this KitchenTypeValue OR KitchenTypeName to keep duplicates in sync
+    const codeVal = parseInt(printer.id);
+    await targetPool.request()
+      .input("code", sql.Int, isNaN(codeVal) ? 0 : codeVal)
+      .input("ip", sql.NVarChar, printerIp)
+      .input("name", sql.NVarChar, printer.name || "Kitchen Printer")
+      .input("isActive", sql.Bit, isActiveValue)
+      .input("isEnabled", sql.Bit, isEnabledValue)
+      .query(`
+        UPDATE PrintMaster 
+        SET PrinterPath = @ip, PrinterIP = @ip, KitchenTypeName = @name, PrinterName = @name, IsActive = @isActive, IsEnabled = @isEnabled
+        WHERE (KitchenTypeValue = @code OR KitchenTypeName = @name) AND PrinterType = 2
+      `);
+  } else if (isGuid) {
+    // Existing printer by GUID: update path, name, and active status
+    await targetPool.request()
+      .input("printerId", sql.UniqueIdentifier, targetId)
+      .input("ip", sql.NVarChar, printerIp)
+      .input("name", sql.NVarChar, printer.name || "Printer")
+      .input("isActive", sql.Bit, isActiveValue)
+      .input("isEnabled", sql.Bit, isEnabledValue)
+      .query(`
+        UPDATE PrintMaster 
+        SET PrinterPath = @ip, PrinterIP = @ip, KitchenTypeName = @name, PrinterName = @name, IsActive = @isActive, IsEnabled = @isEnabled
+        WHERE PrinterId = @printerId
+      `);
+  } else {
+    // Cashier or Takeaway fallback by type
+    await targetPool.request()
+      .input("ip", sql.NVarChar, printerIp)
+      .input("type", sql.Int, printer.type)
+      .input("isActive", sql.Bit, isActiveValue)
+      .input("isEnabled", sql.Bit, isEnabledValue)
+      .query("UPDATE PrintMaster SET PrinterPath = @ip, PrinterIP = @ip, IsActive = @isActive, IsEnabled = @isEnabled WHERE PrinterType = @type");
+  }
+
+  // Sync to CompanySettings table if it's the Cashier printer
+  if (printer.type === 1 || parseInt(printer.id) === 0) {
+    await targetPool.request()
+      .input("ip", sql.NVarChar, printerIp)
+      .query("UPDATE CompanySettings SET PrinterIP = @ip");
+  }
+}
+
 // 🔹 UPDATE Kitchen Printers
 router.post("/kitchen-printers/update", async (req, res) => {
   try {
@@ -488,54 +461,16 @@ router.post("/kitchen-printers/update", async (req, res) => {
     const pool = await poolPromise;
 
     for (const printer of printers) {
-      const targetId = printer.printerId || printer.id;
-      const isGuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(targetId));
-      const printerIp = printer.ip || "";
-      const isActiveValue = printer.isActive === 0 || printer.isActive === false ? 0 : 1;
-      const isEnabledValue = printer.isEnabled === 0 || printer.isEnabled === false ? 0 : 1;
-
-      if (printer.type === 2) {
-        // Kitchen printer: update ALL rows matching this KitchenTypeValue OR KitchenTypeName to keep duplicates in sync
-        const codeVal = parseInt(printer.id);
-        await pool.request()
-          .input("code", sql.Int, isNaN(codeVal) ? 0 : codeVal)
-          .input("ip", sql.NVarChar, printerIp)
-          .input("name", sql.NVarChar, printer.name || "Kitchen Printer")
-          .input("isActive", sql.Bit, isActiveValue)
-          .input("isEnabled", sql.Bit, isEnabledValue)
-          .query(`
-            UPDATE PrintMaster 
-            SET PrinterPath = @ip, PrinterIP = @ip, KitchenTypeName = @name, PrinterName = @name, IsActive = @isActive, IsEnabled = @isEnabled
-            WHERE (KitchenTypeValue = @code OR KitchenTypeName = @name) AND PrinterType = 2
-          `);
-      } else if (isGuid) {
-        // Existing printer by GUID: update path, name, and active status
-        await pool.request()
-          .input("printerId", sql.UniqueIdentifier, targetId)
-          .input("ip", sql.NVarChar, printerIp)
-          .input("name", sql.NVarChar, printer.name || "Printer")
-          .input("isActive", sql.Bit, isActiveValue)
-          .input("isEnabled", sql.Bit, isEnabledValue)
-          .query(`
-            UPDATE PrintMaster 
-            SET PrinterPath = @ip, PrinterIP = @ip, KitchenTypeName = @name, PrinterName = @name, IsActive = @isActive, IsEnabled = @isEnabled
-            WHERE PrinterId = @printerId
-          `);
-      } else {
-        // Cashier or Takeaway fallback by type
-        await pool.request()
-          .input("ip", sql.NVarChar, printerIp)
-          .input("type", sql.Int, printer.type)
-          .input("isActive", sql.Bit, isActiveValue)
-          .input("isEnabled", sql.Bit, isEnabledValue)
-          .query("UPDATE PrintMaster SET PrinterPath = @ip, PrinterIP = @ip, IsActive = @isActive, IsEnabled = @isEnabled WHERE PrinterType = @type");
-      }
-
-      // Sync to CompanySettings table if it's the Cashier printer
-      if (printer.type === 1 || parseInt(printer.id) === 0) {
-        await pool.request()
-          .input("ip", sql.NVarChar, printerIp)
-          .query("UPDATE CompanySettings SET PrinterIP = @ip");
+      await executePrinterUpdate(pool, printer);
+      if (isRemoteOnline()) {
+        try {
+          const rPool = getRemotePool();
+          if (rPool && rPool.connected) {
+            await executePrinterUpdate(rPool, printer);
+          }
+        } catch (rErr) {
+          console.warn("[Settings] Remote printer update sync warning:", rErr.message);
+        }
       }
     }
 
@@ -561,22 +496,38 @@ router.post("/kitchen-printers/add", async (req, res) => {
     const { name, ip } = req.body;
     const pool = await poolPromise;
     
+    const addQuery = `
+      DECLARE @nextVal INT = (SELECT ISNULL(MAX(KitchenTypeValue), 0) + 1 FROM PrintMaster);
+      INSERT INTO PrintMaster (
+        PrinterId, PrinterName, PrinterPath, PrinterIP, 
+        PrinterType, PrintSection, KitchenTypeName, 
+        KitchenTypeValue, IsActive, PrintCopy
+      )
+      VALUES (
+        NEWID(), @name, @ip, @ip, 
+        2, 1, @name, 
+        @nextVal, 1, 1
+      )
+    `;
+
     await pool.request()
       .input("name", sql.NVarChar, name)
       .input("ip", sql.NVarChar, ip)
-      .query(`
-        DECLARE @nextVal INT = (SELECT ISNULL(MAX(KitchenTypeValue), 0) + 1 FROM PrintMaster);
-        INSERT INTO PrintMaster (
-          PrinterId, PrinterName, PrinterPath, PrinterIP, 
-          PrinterType, PrintSection, KitchenTypeName, 
-          KitchenTypeValue, IsActive, PrintCopy
-        )
-        VALUES (
-          NEWID(), @name, @ip, @ip, 
-          2, 1, @name, 
-          @nextVal, 1, 1
-        )
-      `);
+      .query(addQuery);
+
+    if (isRemoteOnline()) {
+      try {
+        const rPool = getRemotePool();
+        if (rPool && rPool.connected) {
+          await rPool.request()
+            .input("name", sql.NVarChar, name)
+            .input("ip", sql.NVarChar, ip)
+            .query(addQuery);
+        }
+      } catch (rErr) {
+        console.warn("[Settings] Remote printer add sync warning:", rErr.message);
+      }
+    }
 
     res.json({ success: true, message: "Kitchen printer added successfully" });
   } catch (err) {
@@ -593,6 +544,19 @@ router.post("/kitchen-printers/delete", async (req, res) => {
     await pool.request()
       .input("id", sql.Int, id)
       .query("UPDATE PrintMaster SET IsActive = 0 WHERE KitchenTypeValue = @id");
+
+    if (isRemoteOnline()) {
+      try {
+        const rPool = getRemotePool();
+        if (rPool && rPool.connected) {
+          await rPool.request()
+            .input("id", sql.Int, id)
+            .query("UPDATE PrintMaster SET IsActive = 0 WHERE KitchenTypeValue = @id");
+        }
+      } catch (rErr) {
+        console.warn("[Settings] Remote printer delete sync warning:", rErr.message);
+      }
+    }
 
     res.json({ success: true, message: "Kitchen printer deleted successfully" });
   } catch (err) {

@@ -15,7 +15,7 @@ function getSocket(): Socket {
   if (_socket) return _socket;
 
   _socket = io(API_URL, {
-    transports: ['polling', 'websocket'], // Start with polling, upgrade to websocket
+    transports: ['websocket', 'polling'],
     reconnectionAttempts: 20,
     reconnectionDelay: 1500,
     reconnectionDelayMax: 5000,

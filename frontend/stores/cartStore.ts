@@ -1,12 +1,12 @@
-import * as Crypto from "expo-crypto";
-import { create } from "zustand";
-import { Alert, Platform } from "react-native";
-import { persist, createJSONStorage } from "zustand/middleware";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { API_URL } from "@/constants/Config";
-import { useOrderContextStore } from "./orderContextStore";
-import { useAuthStore } from "./authStore";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as Crypto from "expo-crypto";
+import { Platform } from "react-native";
+import { create } from "zustand";
+import { createJSONStorage, persist } from "zustand/middleware";
 import { socket } from "../constants/socket";
+import { useAuthStore } from "./authStore";
+import { useOrderContextStore } from "./orderContextStore";
 
 
 /* ================= TYPES ================= */
@@ -24,7 +24,7 @@ export type CartItem = {
   songName?: string;
   price?: number;
   qty: number;
- 
+
   splitMembers?: {
     CustomerName: string;
     Amount: number;
@@ -44,7 +44,7 @@ export type CartItem = {
   isTakeaway?: boolean;
   takeawayCharge?: number;
   isVoided?: boolean;
-  categoryName?: string; 
+  categoryName?: string;
   status?: "NEW" | "SENT" | "VOIDED" | "READY" | "SERVED" | "HOLD";
   DateCreated?: string | number;
   KitchenTypeName?: string;
@@ -74,7 +74,7 @@ const getModifierKey = (mods?: any[]) => {
   if (!mods || mods.length === 0) return "";
   // 🚀 OPTIMIZATION: Avoid sorting/joining for single modifiers
   if (mods.length === 1) return String(mods[0].ModifierId || mods[0].ModifierID || "");
-  
+
   return mods
     .map((m) => String(m?.ModifierId || m?.ModifierID || ""))
     .sort()
@@ -216,9 +216,9 @@ const normalizeCartItem = (item: any, fallback: Partial<CartItem> = {}): CartIte
   const isTakeaway = getNormalizedBoolean(item.isTakeaway, item.IsTakeaway, item.isTakeAway, item.IsTakeAway, fallback.isTakeaway);
   const discount = Number(item.discount ?? item.DiscountAmount ?? item.Discount ?? fallback.discount ?? 0);
   let modifiers = getNormalizedModifiers(item).length ? getNormalizedModifiers(item) : (fallback.modifiers || []);
-  
+
   let splitMembers = item.splitMembers || [];
- 
+
   if (splitMembers.length === 0) {
     const normalMods: any[] = [];
     modifiers.forEach(mod => {
@@ -262,7 +262,7 @@ const normalizeCartItem = (item: any, fallback: Partial<CartItem> = {}): CartIte
 
     finalPrice = finalBasePrice + surchargeTotal + modifierTotal;
   }
- 
+
   // 🚀 PERFORMANCE FIX: Construct cleanly instead of using 'delete' loop
   return {
     lineItemId: String(item.lineItemId || item.ItemId || fallback.lineItemId || fastId()),
@@ -288,12 +288,12 @@ const normalizeCartItem = (item: any, fallback: Partial<CartItem> = {}): CartIte
     oil: getNormalizedText(item.oil, item.Oil, fallback.oil),
     sugar: getNormalizedText(item.sugar, item.Sugar, fallback.sugar),
     isVoided: getNormalizedBoolean(item.isVoided, item.IsVoided, fallback.isVoided),
-    status: (item.StatusCode === 0 || item.statusCode === 0) ? "VOIDED" : 
-            (item.StatusCode === 3 || item.statusCode === 3) ? "READY" :
-            (item.StatusCode === 4 || item.statusCode === 4) ? "SERVED" :
-            (item.StatusCode === 5 || item.statusCode === 5) ? "HOLD" :
+    status: (item.StatusCode === 0 || item.statusCode === 0) ? "VOIDED" :
+      (item.StatusCode === 3 || item.statusCode === 3) ? "READY" :
+        (item.StatusCode === 4 || item.statusCode === 4) ? "SERVED" :
+          (item.StatusCode === 5 || item.statusCode === 5) ? "HOLD" :
             (item.StatusCode === 2 || item.statusCode === 2) ? "SENT" :
-            (item.status || item.Status || fallback.status || "NEW"),
+              (item.status || item.Status || fallback.status || "NEW"),
     DateCreated: item.DateCreated || fallback.DateCreated,
     categoryName: item.categoryName || fallback.categoryName,
     KitchenTypeName: item.KitchenTypeName || fallback.KitchenTypeName,
@@ -428,7 +428,10 @@ type CartState = {
   // 🛡️ Implementation Details (Internal use)
   _syncTimeout?: any;
   _fetchTimeout?: any;
+  _fetchTimeouts?: Record<string, any>;
   _syncAbortControllers: Record<string, AbortController>;
+  _isSyncing: Record<string, boolean>;
+  _queuedSync: Record<string, boolean>;
 };
 
 /* ================= STORE ================= */
@@ -449,10 +452,12 @@ export const useCartStore = create<CartState>()(
       deletingItems: new Set(),
       cartQtyMap: {},
       _syncAbortControllers: {},
+      _isSyncing: {},
+      _queuedSync: {},
       activeSplitItems: null,
       splitPartsCount: null,
- 
-      setCurrentContext: (contextId) => set({ 
+
+      setCurrentContext: (contextId) => set({
         currentContextId: contextId,
         activeSplitItems: null,
         splitPartsCount: null
@@ -461,30 +466,21 @@ export const useCartStore = create<CartState>()(
       setSplitPartsCount: (count) => set({ splitPartsCount: count }),
 
       getCart: () => {
-        const { carts, currentContextId } = get();
-        if (!currentContextId) return [];
-        return carts[currentContextId] || [];
+        const { carts } = get();
+        const activeOrder = useOrderContextStore.getState().currentOrder;
+        const effectiveContextId = (activeOrder ? getContextId(activeOrder) : null) || get().currentContextId;
+        if (!effectiveContextId) return [];
+        return carts[effectiveContextId] || [];
       },
 
       /* ================= DISCOUNT ================= */
 
       setCartItemsGlobal: (items: CartItem[]) => {
-        const { currentContextId } = get();
-        if (!currentContextId) return;
-        
-        if (__DEV__) console.log(`[TRACE] [${Date.now()}] [SOCKET_QUANTITY_SYNC] Received ${items.length} items for Context: ${currentContextId}`);
+        const activeOrder = useOrderContextStore.getState().currentOrder;
+        const targetContextId = (activeOrder ? getContextId(activeOrder) : null) || get().currentContextId;
+        if (!targetContextId) return;
 
-        // Update qty map
-        const newQtyMap: Record<string, number> = {};
-        items.forEach(item => {
-          newQtyMap[item.id] = (newQtyMap[item.id] || 0) + item.qty;
-        });
-
-        set((state) => ({
-          carts: { ...state.carts, [currentContextId]: items },
-          cartQtyMap: { ...state.cartQtyMap, [currentContextId]: newQtyMap },
-          lastLocalUpdate: { ...state.lastLocalUpdate, [currentContextId]: Date.now() }
-        }));
+        get().setCartItems(targetContextId, items, true, "GLOBAL");
       },
 
       applyDiscount: (discount: DiscountInfo) => {
@@ -507,9 +503,9 @@ export const useCartStore = create<CartState>()(
         set((state) => {
           const updated = { ...state.discounts };
           delete updated[currentContextId];
-          return { 
-            discounts: updated, 
-            lastLocalUpdate: { ...state.lastLocalUpdate, [currentContextId]: Date.now() } 
+          return {
+            discounts: updated,
+            lastLocalUpdate: { ...state.lastLocalUpdate, [currentContextId]: Date.now() }
           };
         });
       },
@@ -520,22 +516,21 @@ export const useCartStore = create<CartState>()(
         const { fetchCartFromDB, carts } = get();
         const orderContext = useOrderContextStore.getState().currentOrder;
         const tableId = orderContext?.tableId;
-        
+
         if (!tableId) return "";
 
-        let currentContextId = get().currentContextId;
-        if (!currentContextId && orderContext) {
-          currentContextId = getContextId(orderContext);
-          if (currentContextId) {
-            set({ currentContextId });
-          }
+        let currentContextId = orderContext ? getContextId(orderContext) : null;
+        if (!currentContextId) {
+          currentContextId = get().currentContextId;
+        } else if (get().currentContextId !== currentContextId) {
+          set({ currentContextId });
         }
 
         if (!currentContextId) return "";
 
         const isTakeawayDefault = orderContext?.orderType === "TAKEAWAY";
         const targetLineItemId = fastId();
-        
+
         // 🚀 OPTIMIZATION: Normalize ONCE
         const normalizedIncoming = normalizeCartItem(item, {
           lineItemId: targetLineItemId,
@@ -556,18 +551,18 @@ export const useCartStore = create<CartState>()(
           let finalLineItemId = targetLineItemId;
 
           const existingIndex = currentCart.findIndex(p => {
-            if (p.id !== normalizedIncoming.id || 
-                p.songName !== normalizedIncoming.songName ||
-                p.status !== "NEW" || 
-                p.isTakeaway !== normalizedIncoming.isTakeaway || 
-                (p.discountAmount || 0) !== (normalizedIncoming.discountAmount || 0) ||
-                (p.discountType || "") !== (normalizedIncoming.discountType || "") ||
-                (p.note || "") !== (normalizedIncoming.note || "") ||
-                (p.spicy || "") !== (normalizedIncoming.spicy || "") ||
-                (p.salt || "") !== (normalizedIncoming.salt || "") ||
-                (p.oil || "") !== (normalizedIncoming.oil || "") ||
-                (p.sugar || "") !== (normalizedIncoming.sugar || "")) return false;
-            
+            if (p.id !== normalizedIncoming.id ||
+              p.songName !== normalizedIncoming.songName ||
+              p.status !== "NEW" ||
+              p.isTakeaway !== normalizedIncoming.isTakeaway ||
+              (p.discountAmount || 0) !== (normalizedIncoming.discountAmount || 0) ||
+              (p.discountType || "") !== (normalizedIncoming.discountType || "") ||
+              (p.note || "") !== (normalizedIncoming.note || "") ||
+              (p.spicy || "") !== (normalizedIncoming.spicy || "") ||
+              (p.salt || "") !== (normalizedIncoming.salt || "") ||
+              (p.oil || "") !== (normalizedIncoming.oil || "") ||
+              (p.sugar || "") !== (normalizedIncoming.sugar || "")) return false;
+
             const pSplitStr = JSON.stringify(p.splitMembers || []);
             const newSplitStr = JSON.stringify(normalizedIncoming.splitMembers || []);
             if (pSplitStr !== newSplitStr) return false;
@@ -587,8 +582,8 @@ export const useCartStore = create<CartState>()(
           if (existingIndex > -1) {
             updatedCart = [...currentCart];
             const newQty = (updatedCart[existingIndex].qty || 0) + 1;
-            updatedCart[existingIndex] = { 
-              ...updatedCart[existingIndex], 
+            updatedCart[existingIndex] = {
+              ...updatedCart[existingIndex],
               qty: newQty,
               songName:
                 normalizedIncoming.songName ||
@@ -600,10 +595,10 @@ export const useCartStore = create<CartState>()(
               const t = i.DateCreated ? new Date(i.DateCreated).getTime() : 0;
               return t > max ? t : max;
             }, 0);
-            
+
             // 🚀 SOLID ID: Use valid UUID format for SQL compatibility
             const generateUUID = () => {
-              return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+              return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
                 const r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
                 return v.toString(16);
               });
@@ -623,40 +618,40 @@ export const useCartStore = create<CartState>()(
             const newQtyMap = { ...(state.cartQtyMap[currentContextId] || {}) };
             newQtyMap[normalizedIncoming.id] = (newQtyMap[normalizedIncoming.id] || 0) + 1;
 
-            return { 
+            return {
               operationVersion: { ...state.operationVersion, [currentContextId]: newVersion },
-              carts: { 
-                ...state.carts, 
-                [currentContextId]: updatedCart 
-              }, 
+              carts: {
+                ...state.carts,
+                [currentContextId]: updatedCart
+              },
               cartQtyMap: {
                 ...state.cartQtyMap,
                 [currentContextId]: newQtyMap
               },
-              lastLocalUpdate: { ...state.lastLocalUpdate, [currentContextId]: now } 
+              lastLocalUpdate: { ...state.lastLocalUpdate, [currentContextId]: now }
             };
           });
 
           // 🚀 INSTANT SYNC: Tell other tablets immediately (Socket-First)
-          socket.emit("cart_change", { 
-            tableId, 
-            contextId: currentContextId, 
-            items: updatedCart, 
-            lastUpdate: Date.now() 
+          socket.emit("cart_change", {
+            tableId,
+            contextId: currentContextId,
+            items: updatedCart,
+            lastUpdate: Date.now()
           });
 
           // 🚀 DB SYNC: If it's a brand new table, sync faster to get the real Order ID
           const currentOrderId = get().tableOrderIds[tableId];
           const isNewTable = !currentOrderId || currentOrderId === "NEW";
-          
+
           if (isNewTable) {
-             // Non-debounced sync for first item to get ID fast
-             get().syncCartWithDB(currentContextId, true);
+            // Non-debounced sync for first item to get ID fast
+            get().syncCartWithDB(currentContextId, true);
           } else {
-             // Normal 5s debounced sync for subsequent items
-             get().syncCartWithDB(currentContextId);
+            // Normal 5s debounced sync for subsequent items
+            get().syncCartWithDB(currentContextId);
           }
-          
+
           return finalLineItemId;
         }
 
@@ -666,7 +661,7 @@ export const useCartStore = create<CartState>()(
       markAllAsSent: (skipSync?: boolean) => {
         const { currentContextId, carts } = get();
         if (!currentContextId || !carts[currentContextId]) return;
-        
+
         const updatedCart = carts[currentContextId].map(item => ({
           ...item,
           sent: 1,
@@ -679,16 +674,16 @@ export const useCartStore = create<CartState>()(
             newQtyMap[item.id] = (newQtyMap[item.id] || 0) + item.qty;
           });
 
-          return { 
-            carts: { 
-              ...state.carts, 
-              [currentContextId]: updatedCart 
-            }, 
+          return {
+            carts: {
+              ...state.carts,
+              [currentContextId]: updatedCart
+            },
             cartQtyMap: { ...state.cartQtyMap, [currentContextId]: newQtyMap },
-            lastLocalUpdate: { ...state.lastLocalUpdate, [currentContextId]: Date.now() } 
+            lastLocalUpdate: { ...state.lastLocalUpdate, [currentContextId]: Date.now() }
           };
         });
-        
+
         // 🚀 IMMEDIATE SYNC: Don't wait for debounce when sending to kitchen
         if (!skipSync) {
           const tableId = useOrderContextStore.getState().currentOrder?.tableId;
@@ -728,7 +723,7 @@ export const useCartStore = create<CartState>()(
         const { fetchCartFromDB, currentContextId, _syncTimeout, _syncAbortControllers } = get();
         const orderContext = useOrderContextStore.getState().currentOrder;
         const tableId = orderContext?.tableId;
-        
+
         if (!tableId || !currentContextId) return;
         if (get().deletingItems.has(lineItemId)) return; // 🛡️ Double-click protection
 
@@ -756,22 +751,22 @@ export const useCartStore = create<CartState>()(
         const previousCart = get().carts[currentContextId] || [];
         set((state) => {
           const updatedCart = previousCart.filter(p => p.lineItemId !== lineItemId);
-          
+
           const newQtyMap: Record<string, number> = {};
           updatedCart.forEach(item => {
             newQtyMap[item.id] = (newQtyMap[item.id] || 0) + item.qty;
           });
 
-          return { 
+          return {
             carts: { ...state.carts, [currentContextId]: updatedCart },
             cartQtyMap: { ...state.cartQtyMap, [currentContextId]: newQtyMap }
           };
         });
 
         try {
-          socket.emit("cart_change", { 
-            tableId, contextId: currentContextId, 
-            items: (get().carts[currentContextId] || []), 
+          socket.emit("cart_change", {
+            tableId, contextId: currentContextId,
+            items: (get().carts[currentContextId] || []),
             lastUpdate: now,
             version: newVersion
           });
@@ -779,31 +774,31 @@ export const useCartStore = create<CartState>()(
           const token = useAuthStore.getState().token;
           const res = await fetch(`${API_URL}/api/orders/remove-item`, {
             method: "POST",
-            headers: { 
+            headers: {
               "Content-Type": "application/json",
               ...(token ? { "Authorization": `Bearer ${token}` } : {})
             },
-            body: JSON.stringify({ 
-              tableId, 
-              itemId: lineItemId, 
+            body: JSON.stringify({
+              tableId,
+              itemId: lineItemId,
               version: newVersion,
-              userId: useAuthStore.getState().user?.userId 
+              userId: useAuthStore.getState().user?.userId
             })
           });
 
           if (!res.ok) throw new Error("Delete failed on server");
 
           if (__DEV__) console.log(`[TRACE] [${Date.now()}] [${currentContextId}] DELETE_DB_SUCCESS | ID: ${lineItemId}`);
-          
+
           set((state) => {
             const nextDeleting = new Set(state.deletingItems);
             nextDeleting.delete(lineItemId);
             return { deletingItems: nextDeleting };
           });
-          
+
           // Emit socket sync for others
           socket.emit("cart_updated", { tableId: tableId.toLowerCase() });
-          
+
         } catch (err) {
           console.error("❌ [CartStore] DELETE_FAILED:", err);
           // 🔄 ROLLBACK
@@ -814,7 +809,7 @@ export const useCartStore = create<CartState>()(
             previousCart.forEach(item => {
               newQtyMap[item.id] = (newQtyMap[item.id] || 0) + item.qty;
             });
-            return { 
+            return {
               carts: { ...state.carts, [currentContextId]: previousCart },
               cartQtyMap: { ...state.cartQtyMap, [currentContextId]: newQtyMap },
               deletingItems: nextDeleting
@@ -830,7 +825,7 @@ export const useCartStore = create<CartState>()(
         const { fetchCartFromDB, currentContextId, _syncTimeout, _syncAbortControllers } = get();
         const orderContext = useOrderContextStore.getState().currentOrder;
         const tableId = orderContext?.tableId;
-        
+
         if (!tableId || !currentContextId) return;
 
         const newVersion = (get().operationVersion[currentContextId] || 0) + 1;
@@ -865,17 +860,17 @@ export const useCartStore = create<CartState>()(
             newQtyMap[item.id] = (newQtyMap[item.id] || 0) + item.qty;
           });
 
-          return { 
-            carts: { ...state.carts, [currentContextId]: sentItems }, 
+          return {
+            carts: { ...state.carts, [currentContextId]: sentItems },
             cartQtyMap: { ...state.cartQtyMap, [currentContextId]: newQtyMap },
             deletedItemsShield: newShield,
           };
         });
 
         try {
-          socket.emit("cart_change", { 
-            tableId, contextId: currentContextId, 
-            items: sentItems, 
+          socket.emit("cart_change", {
+            tableId, contextId: currentContextId,
+            items: sentItems,
             lastUpdate: now + 10000,
             version: newVersion
           });
@@ -883,7 +878,7 @@ export const useCartStore = create<CartState>()(
           const token = useAuthStore.getState().token;
           const res = await fetchWithRetry(`${API_URL}/api/orders/save-cart`, {
             method: "POST",
-            headers: { 
+            headers: {
               "Content-Type": "application/json",
               ...(token ? { "Authorization": `Bearer ${token}` } : {})
             },
@@ -915,54 +910,76 @@ export const useCartStore = create<CartState>()(
         set({ carts: {}, discounts: {}, tableOrderIds: {}, currentContextId: null, lastLocalUpdate: {}, lastServerSync: {} }),
 
       clearTableSession: (tableId) => {
-        set((state) => {
-          const newCarts = { ...state.carts };
-          const newDiscounts = { ...state.discounts };
-          const newTableOrderIds = { ...state.tableOrderIds };
-          const newLastLocalUpdate = { ...state.lastLocalUpdate };
-          const newLastServerSync = { ...state.lastServerSync };
+        const state = get();
+        const newCarts = { ...state.carts };
+        const newCartQtyMap = { ...state.cartQtyMap };
+        const newDiscounts = { ...state.discounts };
+        const newTableOrderIds = { ...state.tableOrderIds };
+        const newLastLocalUpdate = { ...state.lastLocalUpdate };
+        const newLastServerSync = { ...state.lastServerSync };
+        const newIsClearing = { ...state.isClearing };
+        const newControllers = { ...state._syncAbortControllers };
+        const newSyncing = { ...(state._isSyncing || {}) };
+        const newQueued = { ...(state._queuedSync || {}) };
 
-          // 🚀 Clean up tableOrderIds
-          delete newTableOrderIds[tableId];
+        // 🚀 Clean up tableOrderIds
+        delete newTableOrderIds[tableId];
+        const cleanTargetId = String(tableId || "").replace(/^\{|\}$/g, "").trim().toLowerCase();
+        delete newTableOrderIds[cleanTargetId];
 
-          // 🚀 Find table section & tableNo to also match suffix contextIds (e.g. DINE_IN_SECTION_1_5)
-          const { useTableStatusStore } = require("./tableStatusStore");
-          const tables = useTableStatusStore.getState().tables || [];
-          const cleanTargetId = String(tableId || "").replace(/^\{|\}$/g, "").trim().toLowerCase();
-          const targetTable = tables.find((t: any) => {
-            const tId = String(t.tableId || "").replace(/^\{|\}$/g, "").trim().toLowerCase();
-            return tId === cleanTargetId;
-          });
+        // 🚀 Find table section & tableNo to also match suffix contextIds (e.g. DINE_IN_SECTION_1_5)
+        const { useTableStatusStore } = require("./tableStatusStore");
+        const tables = useTableStatusStore.getState().tables || [];
+        const targetTable = tables.find((t: any) => {
+          const tId = String(t.tableId || "").replace(/^\{|\}$/g, "").trim().toLowerCase();
+          return tId === cleanTargetId;
+        });
 
-          const matchContextSuffixes: string[] = [];
-          if (targetTable) {
-            matchContextSuffixes.push(`_${targetTable.section}_${targetTable.tableNo}`);
-            matchContextSuffixes.push(`_${targetTable.tableNo}`);
+        const matchContextSuffixes: string[] = [];
+        if (targetTable) {
+          matchContextSuffixes.push(`_${targetTable.section}_${targetTable.tableNo}`);
+          matchContextSuffixes.push(`_${targetTable.tableNo}`);
+        }
+
+        const matchKey = (ctx: string) => {
+          const matchesId = ctx.toLowerCase().includes(cleanTargetId);
+          const matchesSuffix = matchContextSuffixes.some(suffix => ctx.toLowerCase().endsWith(suffix.toLowerCase()));
+          return matchesId || matchesSuffix;
+        };
+
+        // 🚀 Comprehensive cleanup for ALL matching contexts
+        Object.keys(newCarts).forEach(ctx => {
+          if (matchKey(ctx)) {
+            newCarts[ctx] = [];
+            delete newCartQtyMap[ctx];
+            delete newDiscounts[ctx];
+            delete newLastLocalUpdate[ctx];
+            delete newLastServerSync[ctx];
+            delete newIsClearing[ctx];
+            if (newControllers[ctx]) {
+              try { newControllers[ctx].abort(); } catch (e) {}
+              delete newControllers[ctx];
+            }
+            delete newSyncing[ctx];
+            delete newQueued[ctx];
           }
+        });
 
-          const matchKey = (ctx: string) => {
-            const matchesId = ctx.includes(tableId);
-            const matchesSuffix = matchContextSuffixes.some(suffix => ctx.endsWith(suffix));
-            return matchesId || matchesSuffix;
-          };
+        if (__DEV__) console.log(`🧹 [CartStore] Table session cleared: ${tableId}`);
 
-          // 🚀 Comprehensive cleanup for ALL matching contexts
-          Object.keys(newCarts).forEach(ctx => { if (matchKey(ctx)) delete newCarts[ctx]; });
-          Object.keys(newDiscounts).forEach(ctx => { if (matchKey(ctx)) delete newDiscounts[ctx]; });
-          Object.keys(newLastLocalUpdate).forEach(ctx => { if (matchKey(ctx)) delete newLastLocalUpdate[ctx]; });
-          Object.keys(newLastServerSync).forEach(ctx => { if (matchKey(ctx)) delete newLastServerSync[ctx]; });
-
-          if (__DEV__) console.log(`🧹 [CartStore] Table session cleared: ${tableId}`);
-
-          return {
-            carts: newCarts,
-            discounts: newDiscounts,
-            tableOrderIds: newTableOrderIds,
-            lastLocalUpdate: newLastLocalUpdate,
-            lastServerSync: newLastServerSync,
-            activeSplitItems: null,
-            splitPartsCount: null,
-          };
+        set({
+          carts: newCarts,
+          cartQtyMap: newCartQtyMap,
+          discounts: newDiscounts,
+          tableOrderIds: newTableOrderIds,
+          lastLocalUpdate: newLastLocalUpdate,
+          lastServerSync: newLastServerSync,
+          isClearing: newIsClearing,
+          _syncAbortControllers: newControllers,
+          _isSyncing: newSyncing,
+          _queuedSync: newQueued,
+          activeSplitItems: null,
+          splitPartsCount: null,
         });
       },
 
@@ -972,7 +989,7 @@ export const useCartStore = create<CartState>()(
         const now = Date.now();
         const state = get();
         const currentVersion = state.operationVersion[contextId] || 0;
-        
+
         // 🛡️ CLEAR LOCK: Reject updates during a manual clear
         if (state.isClearing[contextId]) {
           if (__DEV__) console.log(`🛡️ [TRACE] [${now}] [${contextId}] setCartItems: BLOCKED (Clear Lock active) | SOURCE: ${source}`);
@@ -1002,7 +1019,9 @@ export const useCartStore = create<CartState>()(
           return {
             carts: { ...state.carts, [contextId]: updatedItems },
             cartQtyMap: { ...state.cartQtyMap, [contextId]: newQtyMap },
-            lastLocalUpdate: { ...state.lastLocalUpdate, [contextId]: Date.now() }
+            lastLocalUpdate: source === "SOCKET_CHANGE"
+              ? state.lastLocalUpdate
+              : { ...state.lastLocalUpdate, [contextId]: Date.now() }
           };
         });
 
@@ -1034,8 +1053,8 @@ export const useCartStore = create<CartState>()(
           });
 
           return {
-            carts: { 
-              ...state.carts, 
+            carts: {
+              ...state.carts,
               [currentContextId]: updatedCart
             },
             cartQtyMap: { ...state.cartQtyMap, [currentContextId]: newQtyMap },
@@ -1151,7 +1170,7 @@ export const useCartStore = create<CartState>()(
         set((state) => ({
           carts: {
             ...state.carts,
-            [currentContextId]: updateCartItemInArray(state.carts[currentContextId] || [], lineItemId, { 
+            [currentContextId]: updateCartItemInArray(state.carts[currentContextId] || [], lineItemId, {
               status: "VOIDED",
               isVoided: true
             }),
@@ -1166,21 +1185,21 @@ export const useCartStore = create<CartState>()(
 
         set((state) => {
           const updatedCart = updateCartItemInArray(state.carts[currentContextId] || [], lineItemId, updates);
-          
+
           // 🚀 SURGICAL: Recompute only if qty changed
           const newQtyMap = { ...(state.cartQtyMap[currentContextId] || {}) };
           if (updates.qty !== undefined) {
-             // Reset qty map for this context and recompute
-             // (More robust than partial updates for nested items)
-             const tempMap: Record<string, number> = {};
-             updatedCart.forEach(i => {
-                tempMap[i.id] = (tempMap[i.id] || 0) + (i.qty || 0);
-             });
-             return {
-                carts: { ...state.carts, [currentContextId]: updatedCart },
-                cartQtyMap: { ...state.cartQtyMap, [currentContextId]: tempMap },
-                lastLocalUpdate: { ...state.lastLocalUpdate, [currentContextId]: Date.now() }
-             };
+            // Reset qty map for this context and recompute
+            // (More robust than partial updates for nested items)
+            const tempMap: Record<string, number> = {};
+            updatedCart.forEach(i => {
+              tempMap[i.id] = (tempMap[i.id] || 0) + (i.qty || 0);
+            });
+            return {
+              carts: { ...state.carts, [currentContextId]: updatedCart },
+              cartQtyMap: { ...state.cartQtyMap, [currentContextId]: tempMap },
+              lastLocalUpdate: { ...state.lastLocalUpdate, [currentContextId]: Date.now() }
+            };
           }
 
           return {
@@ -1188,14 +1207,14 @@ export const useCartStore = create<CartState>()(
             lastLocalUpdate: { ...state.lastLocalUpdate, [currentContextId]: Date.now() }
           };
         });
-        
+
         const tableId = useOrderContextStore.getState().currentOrder?.tableId;
         if (tableId) {
-          socket.emit("cart_change", { 
-            tableId, 
-            contextId: currentContextId, 
-            items: get().carts[currentContextId], 
-            lastUpdate: Date.now() 
+          socket.emit("cart_change", {
+            tableId,
+            contextId: currentContextId,
+            items: get().carts[currentContextId],
+            lastUpdate: Date.now()
           });
         }
 
@@ -1229,11 +1248,11 @@ export const useCartStore = create<CartState>()(
 
         const tableId = useOrderContextStore.getState().currentOrder?.tableId;
         if (tableId) {
-          socket.emit("cart_change", { 
-            tableId, 
-            contextId: currentContextId, 
-            items: get().carts[currentContextId], 
-            lastUpdate: Date.now() 
+          socket.emit("cart_change", {
+            tableId,
+            contextId: currentContextId,
+            items: get().carts[currentContextId],
+            lastUpdate: Date.now()
           });
         }
 
@@ -1241,36 +1260,80 @@ export const useCartStore = create<CartState>()(
       },
 
       syncCartWithDB: async (contextId, isImmediate = false) => {
+        // 🚀 SMART TABLE RESOLUTION: Resolve tableId bound to this specific contextId
+        let boundTableId: string | null = null;
         const orderContext = useOrderContextStore.getState().currentOrder;
-        const tableId = orderContext?.tableId;
-        if (!tableId) return;
+        if (orderContext && getContextId(orderContext) === contextId && orderContext.tableId) {
+          boundTableId = orderContext.tableId;
+        }
 
-        const { _syncTimeout, _syncAbortControllers } = get();
+        if (!boundTableId) {
+          try {
+            const { useTableStatusStore } = require("./tableStatusStore");
+            const tableStatusStore = useTableStatusStore.getState();
+            const tables = tableStatusStore.tables || [];
+            if (contextId.startsWith("DINE_IN_")) {
+              const parts = contextId.replace("DINE_IN_", "");
+              const lastUnderscore = parts.lastIndexOf("_");
+              if (lastUnderscore !== -1) {
+                const sec = parts.substring(0, lastUnderscore);
+                const tblNo = parts.substring(lastUnderscore + 1);
+                const found = tables.find((t: any) =>
+                  String(t.section || "").toLowerCase() === sec.toLowerCase() &&
+                  String(t.tableNo || "").toLowerCase() === tblNo.toLowerCase()
+                );
+                if (found?.tableId) boundTableId = found.tableId;
+              }
+            } else if (contextId.startsWith("TAKEAWAY_")) {
+              const twNo = contextId.replace("TAKEAWAY_", "");
+              const found = tables.find((t: any) =>
+                t.section === "TAKEAWAY" && String(t.tableNo || "").toLowerCase() === twNo.toLowerCase()
+              );
+              if (found?.tableId) boundTableId = found.tableId;
+            }
+          } catch (e) {}
+        }
+
+        if (!boundTableId) {
+          if (__DEV__) console.warn(`⚠️ [CartStore] syncCartWithDB: Could not resolve tableId for contextId: ${contextId}`);
+          return;
+        }
+
+        const tableId = boundTableId;
+
+        const { _syncTimeout, _isSyncing } = get();
 
         // 🚀 ATOMIC DEBOUNCE: Clear existing timeout
         if (_syncTimeout) {
           clearTimeout(_syncTimeout);
         }
 
-        // 🛑 ABORT PREVIOUS IN-FLIGHT: If we're already saving for this context, stop it
-        if (_syncAbortControllers[contextId]) {
-          if (__DEV__) console.log(`🛑 [CartStore] ABORTING stale save request for ${contextId}`);
-          _syncAbortControllers[contextId].abort();
+        // If a save is already in-flight for this context, queue the follow-up instead of aborting
+        if (_isSyncing && _isSyncing[contextId]) {
+          set((state) => ({
+            _queuedSync: { ...(state._queuedSync || {}), [contextId]: true }
+          }));
+          return;
         }
-        
+
         const timeout = setTimeout(async () => {
           const currentState = get();
           const lastLocal = currentState.lastLocalUpdate[contextId] || 0;
           const lastSync = currentState.lastServerSync[contextId] || 0;
 
-          if (lastLocal > 0 && lastSync >= lastLocal) {
+          if (lastLocal > 0 && lastSync >= lastLocal && !currentState._queuedSync?.[contextId]) {
             if (__DEV__) console.log(`🛡️ [CartStore] Skipping redundant save-cart sync for ${contextId}. Local: ${lastLocal}, Sync: ${lastSync}`);
             set({ pendingSync: false, _syncTimeout: null });
             return;
           }
 
           const syncStartTime = Date.now();
-          set({ pendingSync: true });
+          set((state) => ({
+            pendingSync: true,
+            _isSyncing: { ...(state._isSyncing || {}), [contextId]: true },
+            _queuedSync: { ...(state._queuedSync || {}), [contextId]: false },
+            _syncTimeout: null
+          }));
 
           // 🆕 Create new controller for this request
           const controller = new AbortController();
@@ -1283,11 +1346,11 @@ export const useCartStore = create<CartState>()(
           try {
             const items = currentState.carts[contextId] || [];
             const orderId = currentState.tableOrderIds[tableId] || null;
-            
+
             const token = useAuthStore.getState().token;
             const res = await fetch(`${API_URL}/api/orders/save-cart`, {
               method: "POST",
-              headers: { 
+              headers: {
                 "Content-Type": "application/json",
                 ...(token ? { "Authorization": `Bearer ${token}` } : {})
               },
@@ -1320,74 +1383,122 @@ export const useCartStore = create<CartState>()(
                 })
               })
             });
-            
-            if (res.ok) {
-                const data = await res.json();
-                if (__DEV__) console.log(`✅ [CartStore] SYNC SUCCESS for ${contextId}`);
-                
-                set(state => {
-                  // Only remove the controller if it's still THIS one
-                  const newControllers = { ...state._syncAbortControllers };
-                  if (newControllers[contextId] === controller) {
-                    delete newControllers[contextId];
-                  }
 
-                  return {
-                    lastServerSync: { ...state.lastServerSync, [contextId]: syncStartTime },
-                    tableOrderIds: data.orderId !== orderId 
-                      ? { ...state.tableOrderIds, [tableId]: data.orderId }
-                      : state.tableOrderIds,
-                    pendingSync: false,
-                    _syncTimeout: null,
-                    _syncAbortControllers: newControllers
-                  };
-                });
+            if (res.ok) {
+              const data = await res.json();
+              if (__DEV__) console.log(`✅ [CartStore] SYNC SUCCESS for ${contextId}`);
+
+              set(state => {
+                // Only remove the controller if it's still THIS one
+                const newControllers = { ...state._syncAbortControllers };
+                if (newControllers[contextId] === controller) {
+                  delete newControllers[contextId];
+                }
+                const nextSyncing = { ...(state._isSyncing || {}) };
+                delete nextSyncing[contextId];
+
+                return {
+                  lastServerSync: { ...state.lastServerSync, [contextId]: syncStartTime },
+                  tableOrderIds: data.orderId !== orderId
+                    ? { ...state.tableOrderIds, [tableId]: data.orderId }
+                    : state.tableOrderIds,
+                  pendingSync: false,
+                  _isSyncing: nextSyncing,
+                  _syncTimeout: null,
+                  _syncAbortControllers: newControllers
+                };
+              });
+
+              // Check if new taps occurred while syncing was in flight
+              const freshState = get();
+              const freshLocal = freshState.lastLocalUpdate[contextId] || 0;
+              const hasQueued = freshState._queuedSync?.[contextId];
+              if (freshLocal > syncStartTime || hasQueued) {
+                freshState.syncCartWithDB(contextId, false);
+              }
+            } else {
+              set((state) => {
+                const nextSyncing = { ...(state._isSyncing || {}) };
+                delete nextSyncing[contextId];
+                return { pendingSync: false, _isSyncing: nextSyncing, _syncTimeout: null };
+              });
+              // 🔁 Auto-retry sync in 1s so the database never misses items
+              setTimeout(() => {
+                const fresh = get();
+                if (fresh.currentContextId === contextId || (fresh.carts[contextId] && fresh.carts[contextId].length > 0)) {
+                  fresh.syncCartWithDB(contextId, false);
+                }
+              }, 1000);
             }
           } catch (err) {
-            if ((err as any).name === 'AbortError') {
+            set((state) => {
+              const nextSyncing = { ...(state._isSyncing || {}) };
+              delete nextSyncing[contextId];
+              return { pendingSync: false, _isSyncing: nextSyncing, _syncTimeout: null };
+            });
+            if ((err as any)?.name === 'AbortError') {
               if (__DEV__) console.log(`ℹ️ [CartStore] SYNC ABORTED for ${contextId}`);
             } else {
               console.error("❌ [CartStore] Sync Exception:", err);
+              // 🔁 Auto-retry sync in 1.5s on network/transient error
+              setTimeout(() => {
+                const fresh = get();
+                if (fresh.currentContextId === contextId || (fresh.carts[contextId] && fresh.carts[contextId].length > 0)) {
+                  fresh.syncCartWithDB(contextId, false);
+                }
+              }, 1500);
             }
-            set({ pendingSync: false, _syncTimeout: null });
           }
-        }, isImmediate ? 0 : 400); // 🚀 FASTER SYNC: Reduced to 400ms for blazingly fast responsiveness
-        
+        }, isImmediate ? 0 : 350);
+
         set({ _syncTimeout: timeout } as any);
       },
 
       fetchCartFromDB: async (tableId, force) => {
-        // 🚀 SMART DEBOUNCE: Prevent multiple fetches in rapid succession
-        if ((get() as any)._fetchTimeout) clearTimeout((get() as any)._fetchTimeout);
+        const cleanTableId = String(tableId || "").replace(/^\{|\}$/g, "").trim().toLowerCase();
+        if (!cleanTableId) return;
+
+        // 🚀 SMART PER-TABLE DEBOUNCE: Prevent multiple fetches for the same table
+        const currentFetchTimeouts = (get() as any)._fetchTimeouts || {};
+        if (currentFetchTimeouts[cleanTableId]) clearTimeout(currentFetchTimeouts[cleanTableId]);
         const fetchStartTime = Date.now();
-        
+
         const doFetch = async () => {
           try {
             const now = Date.now();
             const state = get();
             // 🚀 SMART CONTEXT MATCHING: Find context associated with table first
-            const cleanTableId = String(tableId || "").replace(/^\{|\}$/g, "").trim().toLowerCase();
-            let currentContext = state.currentContextId;
+            let currentContext: string | null = null;
+            let isActiveTable = false;
             const activeOrderObj = useOrderContextStore.getState().currentOrder;
 
             if (activeOrderObj) {
               const cleanActiveTableId = String(activeOrderObj.tableId || "").replace(/^\{|\}$/g, "").trim().toLowerCase();
-              if (cleanActiveTableId === cleanTableId || (activeOrderObj.section && activeOrderObj.tableNo)) {
-                currentContext = getContextId(activeOrderObj) || currentContext;
+              if (cleanActiveTableId === cleanTableId) {
+                currentContext = getContextId(activeOrderObj);
+                isActiveTable = true;
               }
             }
 
             if (!currentContext && cleanTableId) {
               const { useTableStatusStore } = require("./tableStatusStore");
-              const tableStatus = useTableStatusStore.getState().tableMap[cleanTableId];
+              const tableStatusStore = useTableStatusStore.getState();
+              const tableStatus = tableStatusStore.tableMap?.[cleanTableId];
               if (tableStatus?.section && tableStatus?.tableNo) {
-                currentContext = getContextId({ orderType: "DINE_IN", section: tableStatus.section, tableNo: tableStatus.tableNo }) || currentContext;
+                currentContext = getContextId({ orderType: "DINE_IN", section: tableStatus.section, tableNo: tableStatus.tableNo });
+              } else if (Array.isArray(tableStatusStore.tables)) {
+                const found = tableStatusStore.tables.find((t: any) =>
+                  String(t.tableId || "").replace(/^\{|\}$/g, "").trim().toLowerCase() === cleanTableId
+                );
+                if (found?.section && found?.tableNo) {
+                  currentContext = getContextId({ orderType: "DINE_IN", section: found.section, tableNo: found.tableNo });
+                }
               }
             }
 
             if (!currentContext) {
               const allContexts = Object.keys(state.carts);
-              currentContext = allContexts.find(ctx => ctx.includes(tableId)) || null;
+              currentContext = allContexts.find(ctx => ctx.toLowerCase().includes(cleanTableId)) || null;
             }
 
             if (!currentContext) {
@@ -1408,8 +1519,8 @@ export const useCartStore = create<CartState>()(
 
             // 🛡️ DYNAMIC SHIELD: Latency protection (bypassed if force is true)
             if (!force && (timeSinceLastEdit < 600 || lastEdit > fetchStartTime)) {
-               if (__DEV__) console.log(`🛡️ [TRACE] [${now}] [${currentContext}] fetchCartFromDB: ABORTED (Latency Shield)`);
-               return;
+              if (__DEV__) console.log(`🛡️ [TRACE] [${now}] [${currentContext}] fetchCartFromDB: ABORTED (Latency Shield)`);
+              return;
             }
 
             const token = useAuthStore.getState().token;
@@ -1432,23 +1543,14 @@ export const useCartStore = create<CartState>()(
 
             const dbItems = rawItems.map((item: any) => normalizeCartItem(item));
 
-            // 🚀 SMART CONTEXT MATCHING: Find the context associated with this table
-            let resolvedContextId: string | null = currentContext;
-
-            if (!resolvedContextId && cleanTableId) {
-              const { useTableStatusStore } = require("./tableStatusStore");
-              const tableStatus = useTableStatusStore.getState().tableMap[cleanTableId];
-              if (tableStatus?.section && tableStatus?.tableNo) {
-                resolvedContextId = getContextId({ orderType: "DINE_IN", section: tableStatus.section, tableNo: tableStatus.tableNo });
-              }
-            }
-
-            if (resolvedContextId && (!state.currentContextId || state.currentContextId !== resolvedContextId)) {
-              set({ currentContextId: resolvedContextId });
-            }
+            const resolvedContextId: string | null = currentContext;
 
             if (!resolvedContextId) {
               return;
+            }
+
+            if (isActiveTable && (!state.currentContextId || state.currentContextId !== resolvedContextId)) {
+              set({ currentContextId: resolvedContextId });
             }
 
             // 🔥 QR PROMO SYNC: If the server tells us there's an active order-level discount
@@ -1479,32 +1581,32 @@ export const useCartStore = create<CartState>()(
             // Also, strictly filter out items that are currently in the Deletion Shield.
             const currentLocalCart = state.carts[resolvedContextId] || [];
             const localPendingItems = currentLocalCart.filter(item => {
-               const isPending = item.status === "NEW" || !item.status;
-               return isPending;
+              const isPending = item.status === "NEW" || !item.status;
+              return isPending;
             });
-            
+
             const { deletedItemsShield } = state;
 
             // 🛡️ DELETION SHIELD FILTER: Remove items that were explicitly deleted locally
             const filteredDbItems = dbItems.filter((dbItem: CartItem) => {
-               const shieldExpiry = deletedItemsShield[dbItem.lineItemId];
-               if (shieldExpiry && now < shieldExpiry) {
-                  if (__DEV__) console.log(`🛡️ [CartStore] DELETION SHIELD: Ignored stale DB item ${dbItem.name} (${dbItem.lineItemId})`);
-                  return false;
-               }
-               return true;
+              const shieldExpiry = deletedItemsShield[dbItem.lineItemId];
+              if (shieldExpiry && now < shieldExpiry) {
+                if (__DEV__) console.log(`🛡️ [CartStore] DELETION SHIELD: Ignored stale DB item ${dbItem.name} (${dbItem.lineItemId})`);
+                return false;
+              }
+              return true;
             });
 
             // 🚀 SMART MERGE: Favor local edits (Note, TW, Qty) over stale server data
             const mergedItems = filteredDbItems.map((dbItem: CartItem) => {
-              const localMatch = localPendingItems.find(li => 
+              const localMatch = localPendingItems.find(li =>
                 li.lineItemId === dbItem.lineItemId ||
                 (li.id === dbItem.id &&
-                 getModifierKey(li.modifiers) === getModifierKey(dbItem.modifiers) &&
-                 getComboKey(li.comboSelections) === getComboKey(dbItem.comboSelections) &&
-                 (!isOpenPriceItem(dbItem) || dbItem.price === li.price))
+                  getModifierKey(li.modifiers) === getModifierKey(dbItem.modifiers) &&
+                  getComboKey(li.comboSelections) === getComboKey(dbItem.comboSelections) &&
+                  (!isOpenPriceItem(dbItem) || dbItem.price === li.price))
               );
-              
+
               // 🛡️ SYNC SHIELD: If we have a local version that was modified recently,
               // we MUST preserve the local Qty/Note/TW even for SENT items.
               const timeSinceLastEdit = now - (state.lastLocalUpdate[resolvedContextId!] || 0);
@@ -1513,7 +1615,7 @@ export const useCartStore = create<CartState>()(
               if (localMatch && (localMatch.status === 'NEW' || !localMatch.status || isRecentlyEdited)) {
                 // Determine the most "advanced" status (SENT is more advanced than NEW)
                 const isSent = localMatch.status === 'SENT' || dbItem.status === 'SENT' || !!localMatch.sent;
-                
+
                 const finalStatus = (dbItem.status === 'READY' || dbItem.status === 'SERVED' || dbItem.status === 'VOIDED' || dbItem.status === 'HOLD')
                   ? dbItem.status
                   : (isSent ? 'SENT' : (localMatch.status || dbItem.status));
@@ -1522,20 +1624,20 @@ export const useCartStore = create<CartState>()(
                 return {
                   ...dbItem,
                   qty: localMatch.qty,
-                  note: isRecentlyEdited 
-                    ? (localMatch.note ?? dbItem.note) 
+                  note: isRecentlyEdited
+                    ? (localMatch.note ?? dbItem.note)
                     : (dbItem.note ?? localMatch.note ?? ""),
-                  isTakeaway: isRecentlyEdited 
-                    ? (localMatch.isTakeaway ?? dbItem.isTakeaway) 
+                  isTakeaway: isRecentlyEdited
+                    ? (localMatch.isTakeaway ?? dbItem.isTakeaway)
                     : (dbItem.isTakeaway ?? localMatch.isTakeaway ?? false),
-                  discount: isRecentlyEdited 
-                    ? (localMatch.discount ?? dbItem.discount) 
+                  discount: isRecentlyEdited
+                    ? (localMatch.discount ?? dbItem.discount)
                     : (dbItem.discount ?? localMatch.discount ?? 0),
-                  discountAmount: isRecentlyEdited 
-                    ? (localMatch.discountAmount ?? dbItem.discountAmount ?? localMatch.discount) 
+                  discountAmount: isRecentlyEdited
+                    ? (localMatch.discountAmount ?? dbItem.discountAmount ?? localMatch.discount)
                     : (dbItem.discountAmount ?? localMatch.discountAmount ?? dbItem.discount ?? 0),
-                  discountType: isRecentlyEdited 
-                    ? (localMatch.discountType ?? dbItem.discountType) 
+                  discountType: isRecentlyEdited
+                    ? (localMatch.discountType ?? dbItem.discountType)
                     : (dbItem.discountType ?? localMatch.discountType ?? "percentage"),
                   modifiers: localMatch.modifiers,
                   status: finalStatus,
@@ -1561,11 +1663,11 @@ export const useCartStore = create<CartState>()(
                 }
                 return false;
               });
-              
+
               if (!existsOnServer) {
                 const shieldExpiry = deletedItemsShield[localItem.lineItemId];
                 if (!shieldExpiry || now >= shieldExpiry) {
-                   mergedItems.push(localItem);
+                  mergedItems.push(localItem);
                 }
               }
             });
@@ -1594,7 +1696,9 @@ export const useCartStore = create<CartState>()(
           await doFetch();
         } else {
           const timeout = setTimeout(doFetch, 100); // 🚀 FASTER FETCH: Reduced from 300ms
-          set({ _fetchTimeout: timeout } as any);
+          set((s: any) => ({
+            _fetchTimeouts: { ...(s._fetchTimeouts || {}), [cleanTableId]: timeout }
+          }));
         }
       },
       setTableOrderId: (tableId, orderId) => {
@@ -1610,17 +1714,19 @@ export const useCartStore = create<CartState>()(
       checkoutOrder: async (tableId) => {
         try {
           if (__DEV__) console.log(`🚀 [CartStore] Initiating Checkout for Table: ${tableId}`);
-          if ((get() as any)._fetchTimeout) clearTimeout((get() as any)._fetchTimeout);
+          const cleanTableId = String(tableId || "").replace(/^\{|\}$/g, "").trim().toLowerCase();
+          const fetchTimeouts = (get() as any)._fetchTimeouts || {};
+          if (fetchTimeouts[cleanTableId]) clearTimeout(fetchTimeouts[cleanTableId]);
           const token = useAuthStore.getState().token;
           const response = await fetchWithRetry(`${API_URL}/api/orders/checkout`, {
             method: "POST",
-            headers: { 
+            headers: {
               "Content-Type": "application/json",
               ...(token ? { "Authorization": `Bearer ${token}` } : {})
             },
             body: JSON.stringify({ tableId }),
           });
-          
+
           if (!response.ok) {
             const errorText = await response.text();
             if (__DEV__) console.error(`❌ [CartStore] Checkout API Error (${response.status}):`, errorText);
@@ -1642,7 +1748,7 @@ export const useCartStore = create<CartState>()(
           const token = useAuthStore.getState().token;
           const response = await fetchWithRetry(`${API_URL}/api/orders/complete`, {
             method: "POST",
-            headers: { 
+            headers: {
               "Content-Type": "application/json",
               ...(token ? { "Authorization": `Bearer ${token}` } : {})
             },
@@ -1661,7 +1767,7 @@ export const useCartStore = create<CartState>()(
           if (data.success) {
             // 🚀 INSTANT LOCAL RESET: Wipe everything related to this table immediately
             get().clearTableSession(tableId);
-            
+
             // Clean up the order ID mapping
             set((state) => {
               const updatedIds = { ...state.tableOrderIds };
@@ -1680,14 +1786,16 @@ export const useCartStore = create<CartState>()(
         }
       },
       cancelPendingSync: () => {
-        const { _syncTimeout, currentContextId, _syncAbortControllers } = get();
+        const { _syncTimeout, _syncAbortControllers } = get();
         if (_syncTimeout) {
           clearTimeout(_syncTimeout);
-          set({ _syncTimeout: null });
+          set({ _syncTimeout: null, pendingSync: false });
         }
-        if (currentContextId && _syncAbortControllers[currentContextId]) {
-          if (__DEV__) console.log(`🛑 [CartStore] cancelPendingSync: Aborting sync for ${currentContextId}`);
-          _syncAbortControllers[currentContextId].abort();
+        if (_syncAbortControllers) {
+          Object.values(_syncAbortControllers).forEach(ctrl => {
+            try { ctrl.abort(); } catch (e) {}
+          });
+          set({ _syncAbortControllers: {}, _isSyncing: {}, _queuedSync: {} });
         }
       },
     }),
@@ -1744,8 +1852,8 @@ export const isItemSent = (item: any) => {
   // 🚀 PERSISTENT ITEMS: Anything that isn't brand new
   // Includes: SENT, READY, SERVED, HOLD, and VOIDED
   return (
-    item.sent === 1 || 
-    !!item.sentDate || 
+    item.sent === 1 ||
+    !!item.sentDate ||
     (status !== undefined && status !== "NEW" && status !== null) ||
     (code !== undefined && code !== 1 && code !== null)
   );

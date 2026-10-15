@@ -10,8 +10,8 @@ let localInstanceName = undefined;
 
 if (rawLocalServer.includes("\\")) {
   const parts = rawLocalServer.split("\\");
-  localServerHost = parts[0] || "127.0.0.1";
-  localInstanceName = parts[1];
+  localServerHost = (parts[0] || "127.0.0.1").replace(/:$/, "").trim();
+  localInstanceName = (parts[1] || "").trim();
 }
 
 const localDbConfig = {
@@ -78,7 +78,51 @@ let localPoolInstance = null;
 let remotePoolInstance = null;
 let isRemoteConnected = false;
 
-async function connectLocalWithRetry(retries = 2, delay = 2000) {
+// Step 0: Ensure target database exists on Local SQL Server before connecting
+async function ensureLocalDatabaseExists() {
+  const masterConfig = {
+    user: localDbConfig.user,
+    password: localDbConfig.password,
+    server: localServerHost,
+    ...(localInstanceName ? {} : { port: localDbConfig.port || 1433 }),
+    database: "master",
+    options: {
+      encrypt: false,
+      trustServerCertificate: true,
+      enableArithAbort: true,
+      connectTimeout: 5000,
+      ...(localInstanceName ? { instanceName: localInstanceName } : {})
+    }
+  };
+
+  const targetDbName = localDbConfig.database || "UCSPONDY_HYBRID";
+  let masterPool = null;
+  try {
+    masterPool = await new sql.ConnectionPool(masterConfig).connect();
+    const checkDbResult = await masterPool.request()
+      .input("DbName", sql.NVarChar, targetDbName)
+      .query(`SELECT database_id FROM sys.databases WHERE name = @DbName`);
+
+    if (checkDbResult.recordset.length === 0) {
+      console.log(`✨ [Auto-Provision] Database '${targetDbName}' NOT found on Local SQL Server! Creating database automatically...`);
+      await masterPool.request().query(`CREATE DATABASE [${targetDbName}]`);
+      console.log(`✅ [Auto-Provision] Local database '${targetDbName}' created successfully!`);
+    } else {
+      console.log(`✅ [Auto-Provision] Local database '${targetDbName}' already exists.`);
+    }
+  } catch (err) {
+    console.warn(`⚠️ [Auto-Provision] Local database existence check on master:`, err.message);
+  } finally {
+    if (masterPool) {
+      try { await masterPool.close(); } catch (_) {}
+    }
+  }
+}
+
+async function connectLocalWithRetry(retries = 3, delay = 2000) {
+  // Ensure local database exists before attempting login
+  await ensureLocalDatabaseExists().catch(() => {});
+
   for (let i = 0; i < retries; i++) {
     try {
       console.log(`🔌 [Local DB] Connecting to ${localDbConfig.server}:${displayLocalPort}... (Attempt ${i + 1}/${retries})`);
@@ -88,6 +132,10 @@ async function connectLocalWithRetry(retries = 2, delay = 2000) {
         console.error("⚠️ [Local DB Pool Error]:", err.message);
       });
       localPoolInstance = pool;
+      try {
+        const { ensureEssentialLocalViews } = require("../services/autoProvisionLocalDb");
+        ensureEssentialLocalViews(pool);
+      } catch (_) {}
       return pool;
     } catch (err) {
       console.error(`❌ [Local DB Connection Attempt ${i + 1} Failed]:`, err.message);
@@ -144,6 +192,7 @@ module.exports = {
     remotePoolPromise,
     dbConfig: localDbConfig,
     remoteDbConfig,
+    ensureLocalDatabaseExists,
     getPool: () => (localPoolInstance && localPoolInstance.connected) ? localPoolInstance : remotePoolInstance,
     getRemotePool: () => (remotePoolInstance && remotePoolInstance.connected) ? remotePoolInstance : null,
     connectRemote,

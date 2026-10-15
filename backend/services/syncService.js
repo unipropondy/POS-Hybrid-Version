@@ -87,6 +87,22 @@ async function triggerSyncProcess() {
       return;
     }
 
+    // 0. Push all Sales, Settlements, Day End, Reports, Members & Credit to Remote DB
+    try {
+      const { pushAllSalesAndOperationalToRemote } = require("./salesPushService");
+      await pushAllSalesAndOperationalToRemote(localPool, remotePool);
+    } catch (pushErr) {
+      console.warn("⚠️ [Sync Engine] Sales push warning:", pushErr.message);
+    }
+
+    // 0B. Perform 2-Way Operational & Cart Sync (Local DB <-> Remote DB)
+    try {
+      const { syncOperationalStateFromRemote } = require("./autoProvisionLocalDb");
+      await syncOperationalStateFromRemote(remotePool, localPool);
+    } catch (opErr) {
+      console.warn("⚠️ [Sync Engine] Operational state 2-way sync warning:", opErr.message);
+    }
+
     // 1. Fetch PENDING items from Local POS_SyncQueue
     const pendingItemsResult = await localPool.request().query(`
       SELECT TOP 50 SyncID, EntityName, EntityID, Action, Payload, Retries
@@ -197,6 +213,88 @@ async function syncSingleItemToRemote(remotePool, entityName, action, data) {
     return true;
   }
 
+  if (entityName === 'TableState' || entityName === 'TableMasterUpdate') {
+    const req = remotePool.request();
+    req.input("tblNo", data.TableNumber);
+    req.input("status", data.Status !== undefined ? data.Status : 0);
+    req.input("startTime", data.StartTime ? new Date(data.StartTime) : null);
+    req.input("totalAmt", data.TotalAmount || 0);
+    req.input("currOrder", data.CurrentOrderId || null);
+    req.input("custName", data.CustomerName || null);
+    req.input("pax", data.Pax || null);
+    req.input("lockedBy", data.LockedByName || null);
+    req.input("entryStatus", data.entry_status || null);
+
+    await req.query(`
+      UPDATE TableMaster
+      SET Status = @status,
+          StartTime = @startTime,
+          TotalAmount = @totalAmt,
+          CurrentOrderId = @currOrder,
+          CustomerName = @custName,
+          Pax = @pax,
+          LockedByName = @lockedBy,
+          entry_status = @entryStatus,
+          ModifiedOn = GETDATE()
+      WHERE TableNumber = @tblNo
+    `).catch(() => {});
+    return true;
+  }
+
+  if (entityName === 'CartSync' || entityName === 'CartItems') {
+    const req = remotePool.request();
+    req.input("id", data.Id || data.id);
+    req.input("cartId", data.CartId || data.cartId);
+    req.input("payload", data.CartPayload || data.cartPayload || (typeof data.payload === 'object' ? JSON.stringify(data.payload) : data.payload));
+
+    await req.query(`
+      IF EXISTS (SELECT 1 FROM CartItems WHERE Id = @id OR CartId = @cartId)
+        UPDATE CartItems SET CartId = @cartId, CartPayload = @payload, UpdatedAt = GETDATE() WHERE Id = @id OR CartId = @cartId;
+      ELSE
+        INSERT INTO CartItems (Id, CartId, CartPayload, UpdatedAt) VALUES (@id, @cartId, @payload, GETDATE());
+    `).catch(() => {});
+    return true;
+  }
+
+  // Master Table push handling (DishGroupMaster, DishMaster, ImageList, TableMaster, ComboGroupMaster, Paymode, MemberMaster, etc.)
+  if (['DishGroupMaster', 'DishMaster', 'ImageList', 'TableMaster', 'ComboGroupMaster', 'ComboGroupDishMapping', 'ParentDishComboGroupMapping', 'ModifierMaster', 'DishModifier', 'DishGroupModifier', 'DishModifierGroup', 'CategoryMaster', 'Paymode', 'MemberMaster'].includes(entityName)) {
+    const keys = Object.keys(data).filter(k => data[k] !== null && k !== 'rawSql');
+    if (keys.length > 0) {
+      const primaryKeyCol = keys[0]; // Primary column check
+      const checkReq = remotePool.request();
+      checkReq.input("pkVal", data[primaryKeyCol]);
+      const existsRes = await checkReq.query(`SELECT 1 FROM [dbo].[${entityName}] WHERE [${primaryKeyCol}] = @pkVal`).catch(() => ({ recordset: [] }));
+      
+      if (!existsRes.recordset || existsRes.recordset.length === 0) {
+        const colList = keys.map(k => `[${k}]`).join(", ");
+        const req = remotePool.request();
+        const valList = keys.map((k, idx) => {
+          const paramName = `p_${idx}`;
+          req.input(paramName, data[k]);
+          return `@${paramName}`;
+        }).join(", ");
+
+        const insertSql = `
+          SET IDENTITY_INSERT [dbo].[${entityName}] ON;
+          INSERT INTO [dbo].[${entityName}] (${colList}) VALUES (${valList});
+          SET IDENTITY_INSERT [dbo].[${entityName}] OFF;
+        `;
+        try {
+          await req.query(insertSql);
+        } catch (_) {
+          const fallbackReq = remotePool.request();
+          const fallbackValList = keys.map((k, idx) => {
+            const paramName = `p_${idx}`;
+            fallbackReq.input(paramName, data[k]);
+            return `@${paramName}`;
+          }).join(", ");
+          await fallbackReq.query(`INSERT INTO [dbo].[${entityName}] (${colList}) VALUES (${fallbackValList});`).catch(() => {});
+        }
+      }
+    }
+    return true;
+  }
+
   // Generic fallback query execution if script is passed
   if (data.rawSql) {
     await remotePool.request().query(data.rawSql);
@@ -206,21 +304,61 @@ async function syncSingleItemToRemote(remotePool, entityName, action, data) {
   return true;
 }
 
+// Pull / Fetch latest Master Data (Dishes, Prices, Categories, Settings) from Remote DB -> Local DB
+async function pullMasterDataFromRemote() {
+  let remotePool = getRemotePool();
+  if (!isRemoteOnline()) {
+    remotePool = await connectRemote();
+  }
+
+  if (!remotePool || !isRemoteOnline()) {
+    console.log("🟡 [Sync Engine] Remote DB is offline. Skipping 5-minute master data pull.");
+    return false;
+  }
+
+  const localPool = getPool();
+  if (!localPool) return false;
+
+  console.log("📥 [Sync Engine] Running 5-minute Master Data Pull from Remote DB -> Local DB...");
+
+  try {
+    const { syncSchemaFromRemoteToLocal } = require("./autoProvisionLocalDb");
+    await syncSchemaFromRemoteToLocal();
+    console.log("✅ [Sync Engine] 5-minute Master Data Pull completed successfully.");
+    return true;
+  } catch (err) {
+    console.warn("⚠️ [Sync Engine] Error during 5-minute Master Data Pull:", err.message);
+    return false;
+  }
+}
+
+let pullIntervalObj = null;
+
 // Start periodic heartbeat & sync worker
-function startSyncWorker(intervalMs = 5000) {
+function startSyncWorker(pushIntervalMs = 5000, pullIntervalMs = 5 * 60 * 1000) {
   initSyncQueue();
   if (syncIntervalObj) clearInterval(syncIntervalObj);
+  if (pullIntervalObj) clearInterval(pullIntervalObj);
   
+  // 1. Push local transactions to Remote DB every 5 seconds
   syncIntervalObj = setInterval(() => {
     triggerSyncProcess();
-  }, intervalMs);
+  }, pushIntervalMs);
+
+  // 2. Pull / Fetch updated Master Data from Remote DB every 5 minutes (300,000ms)
+  pullIntervalObj = setInterval(() => {
+    pullMasterDataFromRemote();
+  }, pullIntervalMs);
   
-  console.log(`🚀 [Sync Engine] Background Sync Worker started (interval: ${intervalMs / 1000}s)`);
+  console.log(`🚀 [Sync Engine] Automatic 2-Way Sync Worker Started:`);
+  console.log(`   ⬆️ Push Local Transactions -> Remote DB: Every ${pushIntervalMs / 1000} seconds`);
+  console.log(`   ⬇️ Pull Master Data & Prices <- Remote DB: Every ${pullIntervalMs / 60000} minutes`);
 }
 
 module.exports = {
   startSyncWorker,
   triggerSyncProcess,
+  pullMasterDataFromRemote,
   enqueueSync,
   getSyncStats: () => ({
     ...syncStats,

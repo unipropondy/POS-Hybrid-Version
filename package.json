@@ -14,7 +14,10 @@
   "name": "POS-1",
   "version": "3.0.0",
   "scripts": {
-    "build": "node scripts/build-all.js"
+    "build": "node scripts/build-all.js",
+    "package-installer": "node scripts/build-all.js && node scripts/pack-installer.js",
+    "electron:start": "cd electron && npm start",
+    "electron:build": "node scripts/build-all.js && cd electron && npm run dist"
   },
   "devDependencies": {
     "@types/react": "~19.2.10",

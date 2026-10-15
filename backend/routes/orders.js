@@ -159,18 +159,41 @@ async function getOrGenerateOrderId(req, tableId) {
 
       let dailySequence = 1;
 
-      // ATOMIC ATTEMPT: Use MERGE or Transaction for Sequence
       const seqResult = await pool
         .request()
         .input("RestId", sql.UniqueIdentifier, String(currentBizId))
-        .input("Today", sql.Date, todayStr).query(`
+        .input("Today", sql.Date, todayStr)
+        .input("Prefix", sql.VarChar(20), datePrefix)
+        .query(`
           BEGIN TRANSACTION;
           IF NOT EXISTS (SELECT 1 FROM OrderSequences WITH (UPDLOCK, HOLDLOCK) WHERE RestaurantId = @RestId AND SequenceDate = @Today)
           BEGIN
               INSERT INTO OrderSequences (RestaurantId, SequenceDate, LastNumber) VALUES (@RestId, @Today, 0);
           END
-          UPDATE OrderSequences SET LastNumber = LastNumber + 1 OUTPUT INSERTED.LastNumber
-          WHERE RestaurantId = @RestId AND SequenceDate = @Today;
+
+          DECLARE @CurMax INT = 0;
+          DECLARE @SetMax INT = 0;
+          DECLARE @SeqMax INT = 0;
+
+          SELECT @SeqMax = ISNULL(LastNumber, 0) FROM OrderSequences WHERE RestaurantId = @RestId AND SequenceDate = @Today;
+
+          SELECT @CurMax = ISNULL(MAX(TRY_CAST(SUBSTRING(OrderNumber, CHARINDEX('-', OrderNumber) + 1, 10) AS INT)), 0)
+          FROM RestaurantOrderCur
+          WHERE OrderNumber LIKE @Prefix + '-%';
+
+          SELECT @SetMax = ISNULL(MAX(TRY_CAST(SUBSTRING(BillNo, CHARINDEX('-', BillNo) + 1, 10) AS INT)), 0)
+          FROM SettlementHeader
+          WHERE BillNo LIKE @Prefix + '-%';
+
+          DECLARE @NextNum INT = @SeqMax;
+          IF @CurMax > @NextNum SET @NextNum = @CurMax;
+          IF @SetMax > @NextNum SET @NextNum = @SetMax;
+
+          SET @NextNum = @NextNum + 1;
+
+          UPDATE OrderSequences SET LastNumber = @NextNum WHERE RestaurantId = @RestId AND SequenceDate = @Today;
+
+          SELECT @NextNum AS LastNumber;
           COMMIT TRANSACTION;
         `);
 
@@ -202,13 +225,29 @@ async function getOrGenerateOrderId(req, tableId) {
     // was null or mismatched (e.g. after a QR order created a new ID). Ghost cleanup is now
     // handled safely by syncToProfessionalTables Ghost Shield v2 (with item migration).
 
-    // 2. Instant check for existing ID
+    // 2. Instant check for existing ID on this specific table
     const quickCheck = await pool
       .request()
       .input("tid", sql.VarChar(50), cleanId)
-      .query("SELECT CurrentOrderId FROM TableMaster WHERE TableNumber = @tid OR (TRY_CAST(@tid AS UNIQUEIDENTIFIER) IS NOT NULL AND TableId = TRY_CAST(@tid AS UNIQUEIDENTIFIER))");
+      .query(`
+        SELECT CurrentOrderId, Status, TableNumber 
+        FROM TableMaster 
+        WHERE TableNumber = @tid OR (TRY_CAST(@tid AS UNIQUEIDENTIFIER) IS NOT NULL AND TableId = TRY_CAST(@tid AS UNIQUEIDENTIFIER))
+      `);
 
-    let existingId = quickCheck.recordset[0]?.CurrentOrderId;
+    const tableRow = quickCheck.recordset[0];
+    const tableStatus = Number(tableRow?.Status ?? 0);
+    const resolvedTblNo = String(tableRow?.TableNumber || cleanId).trim();
+    let existingId = (tableStatus > 0) ? tableRow?.CurrentOrderId : null;
+
+    // If table is officially Available (Status = 0), never reuse an old order ID!
+    if (tableStatus === 0 && tableRow?.CurrentOrderId) {
+      await pool.request()
+        .input("tid", sql.VarChar(50), cleanId)
+        .query("UPDATE TableMaster SET CurrentOrderId = NULL, TotalAmount = 0, StartTime = NULL WHERE TableNumber = @tid OR (TRY_CAST(@tid AS UNIQUEIDENTIFIER) IS NOT NULL AND TableId = TRY_CAST(@tid AS UNIQUEIDENTIFIER))")
+        .catch(() => {});
+    }
+
     if (
       existingId &&
       existingId !== "NEW" &&
@@ -216,23 +255,32 @@ async function getOrGenerateOrderId(req, tableId) {
       !existingId.startsWith("TEMP-") &&
       existingId.length > 5
     ) {
-      // Check if this existing ID is already closed in the database
+      // Check if this existing ID is an open order specifically for THIS table
       const closedCheck = await pool.request()
         .input("oid", sql.NVarChar(50), existingId)
-        .query("SELECT TOP 1 isOrderClosed FROM RestaurantOrderCur WHERE OrderNumber = @oid OR (TRY_CAST(@oid AS UNIQUEIDENTIFIER) IS NOT NULL AND OrderId = TRY_CAST(@oid AS UNIQUEIDENTIFIER))");
+        .input("tblNo", sql.VarChar(20), resolvedTblNo)
+        .input("tid", sql.VarChar(50), cleanId)
+        .query(`
+          SELECT TOP 1 h.isOrderClosed, h.Tableno 
+          FROM RestaurantOrderCur h
+          WHERE (h.OrderNumber = @oid OR (TRY_CAST(@oid AS UNIQUEIDENTIFIER) IS NOT NULL AND h.OrderId = TRY_CAST(@oid AS UNIQUEIDENTIFIER)))
+            AND (RTRIM(LTRIM(h.Tableno)) = RTRIM(LTRIM(@tblNo)) OR RTRIM(LTRIM(h.Tableno)) = RTRIM(LTRIM(@tid)))
+        `);
 
-      const isClosed = closedCheck.recordset[0]?.isOrderClosed === true;
-      if (!isClosed) {
-        console.log(`✅ [Cart] Reusing existing active OrderID: ${existingId}`);
+      const matchingOrder = closedCheck.recordset[0];
+      if (matchingOrder && (matchingOrder.isOrderClosed === 0 || matchingOrder.isOrderClosed === false || matchingOrder.isOrderClosed === null)) {
+        console.log(`✅ [Cart] Reusing existing active OrderID: ${existingId} for table: ${resolvedTblNo}`);
         return existingId;
       }
-      console.log(`⚠️ [Cart] Stale closed OrderID detected: ${existingId}. Checking RestaurantOrderCur for active order...`);
+      console.log(`⚠️ [Cart] Stale/mismatched OrderID detected: ${existingId} for table ${resolvedTblNo}. Clearing and regenerating...`);
+      await pool.request()
+        .input("tid", sql.VarChar(50), cleanId)
+        .query("UPDATE TableMaster SET CurrentOrderId = NULL WHERE TableNumber = @tid OR (TRY_CAST(@tid AS UNIQUEIDENTIFIER) IS NOT NULL AND TableId = TRY_CAST(@tid AS UNIQUEIDENTIFIER))")
+        .catch(() => {});
     }
 
     // 🚀 CRITICAL FIX: Before generating a brand new sequence number, check if there is
-    // an ACTIVE open order already in RestaurantOrderCur for this table.
-    // This prevents EM031 vs 0024 split-brain when a QR order exists but TableMaster.CurrentOrderId
-    // was reset or shows a stale/different value.
+    // an ACTIVE open order with active items in RestaurantOrderCur specifically for this table.
     try {
       const guidForCheck = toGuidOrNull(cleanId);
       let activeOrderRes;
@@ -244,10 +292,12 @@ async function getOrGenerateOrderId(req, tableId) {
             FROM RestaurantOrderCur h
             JOIN TableMaster tm ON RTRIM(LTRIM(h.Tableno)) = RTRIM(LTRIM(tm.TableNumber))
             WHERE tm.TableId = @tidForCheck
+              AND tm.Status > 0
               AND (h.isOrderClosed = 0 OR h.isOrderClosed IS NULL)
               AND h.OrderNumber IS NOT NULL
               AND h.OrderNumber NOT IN ('PENDING', 'NEW', '#NEW', '')
               AND h.OrderNumber NOT LIKE 'TEMP-%'
+              AND EXISTS (SELECT 1 FROM RestaurantOrderDetailCur d WHERE d.OrderId = h.OrderId AND d.StatusCode <> 0)
             ORDER BY h.CreatedOn DESC
           `);
       } else {
@@ -256,11 +306,14 @@ async function getOrGenerateOrderId(req, tableId) {
           .query(`
             SELECT TOP 1 h.OrderNumber
             FROM RestaurantOrderCur h
-            WHERE (RTRIM(LTRIM(h.Tableno)) = RTRIM(LTRIM(@tableNoCheck)) OR RTRIM(LTRIM(h.Tableno)) = (SELECT TOP 1 TableNumber FROM TableMaster WHERE TableNumber = @tableNoCheck OR (TRY_CAST(@tableNoCheck AS UNIQUEIDENTIFIER) IS NOT NULL AND TableId = TRY_CAST(@tableNoCheck AS UNIQUEIDENTIFIER))))
+            JOIN TableMaster tm ON RTRIM(LTRIM(h.Tableno)) = RTRIM(LTRIM(tm.TableNumber))
+            WHERE (RTRIM(LTRIM(tm.TableNumber)) = RTRIM(LTRIM(@tableNoCheck)) OR (TRY_CAST(@tableNoCheck AS UNIQUEIDENTIFIER) IS NOT NULL AND tm.TableId = TRY_CAST(@tableNoCheck AS UNIQUEIDENTIFIER)))
+              AND tm.Status > 0
               AND (h.isOrderClosed = 0 OR h.isOrderClosed IS NULL)
               AND h.OrderNumber IS NOT NULL
               AND h.OrderNumber NOT IN ('PENDING', 'NEW', '#NEW', '')
               AND h.OrderNumber NOT LIKE 'TEMP-%'
+              AND EXISTS (SELECT 1 FROM RestaurantOrderDetailCur d WHERE d.OrderId = h.OrderId AND d.StatusCode <> 0)
             ORDER BY h.CreatedOn DESC
           `);
       }
@@ -268,7 +321,6 @@ async function getOrGenerateOrderId(req, tableId) {
       const activeOrderNo = activeOrderRes.recordset[0]?.OrderNumber;
       if (activeOrderNo && activeOrderNo.length > 5) {
         console.log(`✅ [Cart] Found active DB order for table, reusing OrderNumber: ${activeOrderNo}`);
-        // Also sync TableMaster to reflect this order so future calls are consistent
         await pool.request()
           .input('tid2', sql.VarChar(50), cleanId)
           .input('oid2', sql.NVarChar(50), activeOrderNo)
@@ -291,14 +343,38 @@ async function getOrGenerateOrderId(req, tableId) {
     const seqResult = await pool
       .request()
       .input("RestId", sql.UniqueIdentifier, String(currentBizId))
-      .input("Today", sql.Date, todayStr).query(`
+      .input("Today", sql.Date, todayStr)
+      .input("Prefix", sql.VarChar(20), datePrefix)
+      .query(`
         BEGIN TRANSACTION;
         IF NOT EXISTS (SELECT 1 FROM OrderSequences WITH (UPDLOCK, HOLDLOCK) WHERE RestaurantId = @RestId AND SequenceDate = @Today)
         BEGIN
             INSERT INTO OrderSequences (RestaurantId, SequenceDate, LastNumber) VALUES (@RestId, @Today, 0);
         END
-        UPDATE OrderSequences SET LastNumber = LastNumber + 1 OUTPUT INSERTED.LastNumber
-        WHERE RestaurantId = @RestId AND SequenceDate = @Today;
+
+        DECLARE @CurMax INT = 0;
+        DECLARE @SetMax INT = 0;
+        DECLARE @SeqMax INT = 0;
+
+        SELECT @SeqMax = ISNULL(LastNumber, 0) FROM OrderSequences WHERE RestaurantId = @RestId AND SequenceDate = @Today;
+
+        SELECT @CurMax = ISNULL(MAX(TRY_CAST(SUBSTRING(OrderNumber, CHARINDEX('-', OrderNumber) + 1, 10) AS INT)), 0)
+        FROM RestaurantOrderCur
+        WHERE OrderNumber LIKE @Prefix + '-%';
+
+        SELECT @SetMax = ISNULL(MAX(TRY_CAST(SUBSTRING(BillNo, CHARINDEX('-', BillNo) + 1, 10) AS INT)), 0)
+        FROM SettlementHeader
+        WHERE BillNo LIKE @Prefix + '-%';
+
+        DECLARE @NextNum INT = @SeqMax;
+        IF @CurMax > @NextNum SET @NextNum = @CurMax;
+        IF @SetMax > @NextNum SET @NextNum = @SetMax;
+
+        SET @NextNum = @NextNum + 1;
+
+        UPDATE OrderSequences SET LastNumber = @NextNum WHERE RestaurantId = @RestId AND SequenceDate = @Today;
+
+        SELECT @NextNum AS LastNumber;
         COMMIT TRANSACTION;
       `);
 
@@ -393,8 +469,10 @@ async function syncToProfessionalTables(
       -- 🛡️ SHIELD: Find the DEFINITIVE active order for this table/number
       SELECT TOP 1 OrderId, Tableno, BusinessUnitId, OrderNumber
       FROM RestaurantOrderCur WITH (UPDLOCK)
-      WHERE OrderNumber = @orderNo 
-      OR (RTRIM(LTRIM(Tableno)) = RTRIM(LTRIM(@ActualTableNo)) AND (isOrderClosed = 0 OR isOrderClosed IS NULL)) 
+      WHERE (
+        (@orderNo NOT IN ('PENDING', 'NEW', '#NEW', '') AND OrderNumber = @orderNo AND (RTRIM(LTRIM(Tableno)) = RTRIM(LTRIM(@ActualTableNo)) OR @ActualTableNo = 'TAKEAWAY'))
+        OR (RTRIM(LTRIM(Tableno)) = RTRIM(LTRIM(@ActualTableNo)) AND (isOrderClosed = 0 OR isOrderClosed IS NULL))
+      )
       ORDER BY 
         CASE WHEN OrderNumber = @orderNo THEN 0 ELSE 1 END,
         CreatedOn DESC;
@@ -728,8 +806,8 @@ async function syncToProfessionalTables(
           END
           ELSE
           BEGIN
-            INSERT INTO RestaurantOrderDetailCur (OrderDetailId, OrderId, DishId, Description, DishName,SongName, Quantity, PricePerUnit, ActualAmount, TotalDetailLineAmount, BaseAmount, StatusCode, CreatedBy, CreatedOn, ModifiersJSON, ComboDetailsJSON, OrderNumber, Remarks, isTakeAway, BusinessUnitId, OrderDateTime, DiscountAmount, DiscountType, ServiceCharge, start_date)
-            VALUES (@${p_id}, @orderId, @${p_dish}, @${p_name}, @${p_name}, @${p_song}, @${p_qty}, @${p_cost}, @${p_cost} * @${p_qty}, @${p_cost} * @${p_qty}, @${p_cost} * @${p_qty}, @${p_status}, @userId, CASE WHEN @${p_status} = 2 THEN GETDATE() ELSE @${p_created} END, @${p_mods}, @${p_combo}, @orderNo, @${p_note}, @${p_tw}, @bizId, GETDATE(), @${p_disc}, @${p_disctype}, @${p_sc}, @startDate);
+            INSERT INTO RestaurantOrderDetailCur (OrderDetailId, OrderId, DishId, Description, DishName,SongName, Quantity, PricePerUnit, ActualAmount, TotalDetailLineAmount, BaseAmount, StatusCode, CreatedBy, CreatedOn, ModifiersJSON, ComboDetailsJSON, OrderNumber, Remarks, isTakeAway, BusinessUnitId, OrderDateTime, DiscountAmount, DiscountType, ServiceCharge, start_date, isSettlement)
+            VALUES (@${p_id}, @orderId, @${p_dish}, @${p_name}, @${p_name}, @${p_song}, @${p_qty}, @${p_cost}, @${p_cost} * @${p_qty}, @${p_cost} * @${p_qty}, @${p_cost} * @${p_qty}, @${p_status}, @userId, CASE WHEN @${p_status} = 2 THEN GETDATE() ELSE @${p_created} END, @${p_mods}, @${p_combo}, @orderNo, @${p_note}, @${p_tw}, @bizId, GETDATE(), @${p_disc}, @${p_disctype}, @${p_sc}, @startDate, 0);
           END
         END
 
@@ -854,11 +932,11 @@ async function syncTableStatus(req, tableId) {
 
     DECLARE @ActualOrderId UNIQUEIDENTIFIER, @ActualOrderNo NVARCHAR(50), @count INT, @total DECIMAL(18,2);
 
-    -- 🚀 ROBUST LOOKUP: Prioritize the CurrentOrderId stored in TableMaster to avoid ghost orders
+    -- 🚀 ROBUST LOOKUP: Look for open orders belonging STRICTLY to this table
     SELECT TOP 1 @ActualOrderId = OrderId, @ActualOrderNo = OrderNumber
     FROM RestaurantOrderCur 
-    WHERE (OrderId = (SELECT TOP 1 OrderId FROM RestaurantOrderCur h2 WHERE h2.OrderNumber = @CurrentOrderId AND h2.isOrderClosed = 0))
-       OR ((RTRIM(LTRIM(Tableno)) = RTRIM(LTRIM(@TableNo)) OR RTRIM(LTRIM(Tableno)) = RTRIM(LTRIM(@tid))) AND (isOrderClosed = 0 OR isOrderClosed IS NULL))
+    WHERE (RTRIM(LTRIM(Tableno)) = RTRIM(LTRIM(@TableNo)) OR RTRIM(LTRIM(Tableno)) = RTRIM(LTRIM(@tid)))
+      AND (isOrderClosed = 0 OR isOrderClosed IS NULL)
     ORDER BY CASE WHEN OrderNumber = @CurrentOrderId THEN 0 ELSE 1 END, CreatedOn DESC;
 
     DECLARE @TakeawayOverride INT = 0;
@@ -972,7 +1050,7 @@ async function syncTableStatus(req, tableId) {
     WHERE TableNumber = @tid OR (TRY_CAST(@tid AS UNIQUEIDENTIFIER) IS NOT NULL AND TableId = TRY_CAST(@tid AS UNIQUEIDENTIFIER));
 
     SELECT 
-      Status, entry_status AS entryStatus, PAYMENT_STATUS AS paymentStatus, TotalAmount, CONVERT(VARCHAR, StartTime, 126) AS StartTime, 
+      TableId, Status, entry_status AS entryStatus, PAYMENT_STATUS AS paymentStatus, TotalAmount, CONVERT(VARCHAR, StartTime, 126) AS StartTime, 
       CurrentOrderId, TableNumber as tableNo, DiningSection as section, CustomerName as customerName, Pax as pax,
       CASE 
         WHEN Status IN (1, 2, 3) AND StartTime IS NOT NULL AND DATEDIFF(MINUTE, StartTime, GETDATE()) >= 60 THEN 1 
@@ -1004,7 +1082,7 @@ async function syncTableStatus(req, tableId) {
       `[TRACE] [${Date.now()}] [SOCKET_EMIT] table_status_updated | Table: ${cleanId} | Status: ${updated.Status}`,
     );
     req.app.get("io")?.emit("table_status_updated", {
-      tableId: cleanId.toLowerCase(),
+      tableId: (updated.TableId || cleanId).toLowerCase(),
       status: Number(updated.Status),
       totalAmount: Number(updated.TotalAmount) || 0,
       startTime: updated.StartTime,
@@ -1116,87 +1194,116 @@ router.post("/save-cart", async (req, res) => {
       }
     }
 
-    const transaction = new sql.Transaction(pool);
-    await transaction.begin();
-    try {
-      // 🛡️ SAFETY: If items is empty AND we blocked the nuclear clear (SENT items exist),
-      // do NOT call syncToProfessionalTables — it would delete all StatusCode=1 NEW items
-      // via Smart Removal, leaving 0 items total and causing syncTableStatus to close the order.
-      if (!nuclearClearWasBlocked) {
-        await syncToProfessionalTables(
-          transaction,
-          cleanId,
-          currentOrderId,
-          items || [],
-          userId,
-          formattedStartDate,
-          entryStatus === "q",
-          0,
-          null,
-          mobileNo,
-          customerName,
-        );
-      } else {
-        console.log(`[TRACE] [${now}] [SAVE-CART] Skipping syncToProfessionalTables — nuclear clear was blocked, order ${currentOrderId} has active SENT items, preserving DB state.`);
-      }
+    let txSuccess = false;
+    let lastErr = null;
+    let currentOrderIdResult = currentOrderId;
 
-      // 🚀 CRITICAL: Update TableMaster INSIDE the same transaction
-      await transaction
-        .request()
-        .input("tid", sql.VarChar(50), cleanId)
-        .input("oid", sql.NVarChar(50), currentOrderId)
-        .input("skipSync", sql.Bit, !!skipTableStatusSync).query(`
-          UPDATE TableMaster 
-          SET Status = CASE 
-                         WHEN @skipSync = 1 AND Status IN (2, 3) THEN Status 
-                         WHEN @oid IS NOT NULL THEN 1 
-                         ELSE 0 
-                       END, 
-              CurrentOrderId = @oid,
-              StartTime = CASE WHEN @oid IS NOT NULL AND (StartTime IS NULL OR StartTime < '2000-01-01') THEN GETDATE() 
-                               WHEN @oid IS NULL THEN NULL 
-                               ELSE StartTime END
-          WHERE TableNumber = @tid OR (TRY_CAST(@tid AS UNIQUEIDENTIFIER) IS NOT NULL AND TableId = TRY_CAST(@tid AS UNIQUEIDENTIFIER))
-        `);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const transaction = new sql.Transaction(pool);
+      try {
+        await transaction.begin();
 
-      // 🔹 QR ORDER: If entryStatus is 'q', set table to Status 1 (Dining/Active)
-      if (entryStatus === "q" && hasItems) {
-        await transaction.request().input("tid", sql.VarChar(50), cleanId)
-          .query(`
-            UPDATE TableMaster SET Status = 1, entry_status = 'q', PAYMENT_STATUS = 0 WHERE TableNumber = @tid OR (TRY_CAST(@tid AS UNIQUEIDENTIFIER) IS NOT NULL AND TableId = TRY_CAST(@tid AS UNIQUEIDENTIFIER))
+        // 🛡️ SAFETY: If items is empty AND we blocked the nuclear clear (SENT items exist),
+        // do NOT call syncToProfessionalTables — it would delete all StatusCode=1 NEW items
+        // via Smart Removal, leaving 0 items total and causing syncTableStatus to close the order.
+        if (!nuclearClearWasBlocked) {
+          await syncToProfessionalTables(
+            transaction,
+            cleanId,
+            currentOrderId,
+            items || [],
+            userId,
+            formattedStartDate,
+            entryStatus === "q",
+            0,
+            null,
+            mobileNo,
+            customerName,
+          );
+        } else {
+          console.log(`[TRACE] [${now}] [SAVE-CART] Skipping syncToProfessionalTables — nuclear clear was blocked, order ${currentOrderId} has active SENT items, preserving DB state.`);
+        }
+
+        // 🚀 CRITICAL: Update TableMaster INSIDE the same transaction
+        await transaction
+          .request()
+          .input("tid", sql.VarChar(50), cleanId)
+          .input("oid", sql.NVarChar(50), currentOrderId)
+          .input("skipSync", sql.Bit, !!skipTableStatusSync).query(`
+            UPDATE TableMaster 
+            SET Status = CASE 
+                           WHEN @skipSync = 1 AND Status IN (2, 3) THEN Status 
+                           WHEN @oid IS NOT NULL THEN 1 
+                           ELSE 0 
+                         END, 
+                CurrentOrderId = @oid,
+                StartTime = CASE WHEN @oid IS NOT NULL AND (StartTime IS NULL OR StartTime < '2000-01-01') THEN GETDATE() 
+                                 WHEN @oid IS NULL THEN NULL 
+                                 ELSE StartTime END
+            WHERE TableNumber = @tid OR (TRY_CAST(@tid AS UNIQUEIDENTIFIER) IS NOT NULL AND TableId = TRY_CAST(@tid AS UNIQUEIDENTIFIER))
           `);
+
+        // 🔹 QR ORDER: If entryStatus is 'q', set table to Status 1 (Dining/Active)
+        if (entryStatus === "q" && hasItems) {
+          await transaction.request().input("tid", sql.VarChar(50), cleanId)
+            .query(`
+              UPDATE TableMaster SET Status = 1, entry_status = 'q', PAYMENT_STATUS = 0 WHERE TableNumber = @tid OR (TRY_CAST(@tid AS UNIQUEIDENTIFIER) IS NOT NULL AND TableId = TRY_CAST(@tid AS UNIQUEIDENTIFIER))
+            `);
+        }
+
+        await transaction.commit();
+        txSuccess = true;
+        currentOrderIdResult = currentOrderId;
+        break;
+      } catch (e) {
+        if (transaction._isStarted) {
+          try { await transaction.rollback(); } catch (_) { }
+        }
+        lastErr = e;
+        const isDeadlock = e?.number === 1205 || e?.originalError?.info?.number === 1205 || (e?.message && e.message.includes("deadlock"));
+        if (isDeadlock && attempt < 3) {
+          console.warn(`⚠️ [SaveCart] Deadlock victim detected on attempt ${attempt}/3 for Table ${cleanId}. Retrying in ${attempt * 75}ms...`);
+          await new Promise(r => setTimeout(r, attempt * 75));
+          continue;
+        }
+        break;
       }
+    }
 
-      await transaction.commit();
-
-      res.json({ success: true, orderId: currentOrderId });
-
-      // 🔥 LIVE SYNC: Notify all other devices that this table's cart has changed
-      const io = req.app.get("io");
-      if (io) {
-        io.emit("cart_updated", {
-          tableId: cleanId.toLowerCase(),
-          orderId: currentOrderId,
-          source: skipTableStatusSync ? "pos_auto_save" : "normal",
-        });
-      }
-
-      // Always sync table status to update the payable amount instantly on the main grid via socket/db
-      syncTableStatus(req, cleanId).catch(() => { });
-    } catch (e) {
-      if (transaction._isStarted) await transaction.rollback();
-      console.error("❌ SaveCart SQL Error FULL:", e);
-      console.error("❌ SaveCart SQL Message:", e.message);
-      console.error("❌ SaveCart SQL Stack:", e.stack);
+    if (!txSuccess) {
+      console.error("❌ SaveCart SQL Error FULL:", lastErr);
+      console.error("❌ SaveCart SQL Message:", lastErr?.message);
+      console.error("❌ SaveCart SQL Stack:", lastErr?.stack);
       require("fs").appendFileSync(
         "error_log.txt",
-        new Date().toISOString() + " " + e.stack + "\n",
+        new Date().toISOString() + " " + lastErr?.stack + "\n",
       );
-      res.status(500).json({
-        error: e.message,
-        stack: e.stack,
+      return res.status(500).json({
+        error: lastErr?.message || "Failed to save cart to professional tables",
+        stack: lastErr?.stack,
       });
     }
+
+    res.json({ success: true, orderId: currentOrderIdResult });
+
+    // 🔥 LIVE SYNC: Notify all other devices that this table's cart has changed
+    const io = req.app.get("io");
+    if (io) {
+      io.emit("cart_updated", {
+        tableId: cleanId.toLowerCase(),
+        orderId: currentOrderIdResult,
+        source: skipTableStatusSync ? "pos_auto_save" : "normal",
+      });
+    }
+
+    // Always sync table status to update the payable amount instantly on the main grid via socket/db
+    syncTableStatus(req, cleanId).catch(() => { });
+
+    // ⚡ Background 2-way table & order push to Remote DB
+    try {
+      const { triggerSyncProcess } = require("../services/syncService");
+      triggerSyncProcess();
+    } catch (_) { }
   } catch (err) {
     console.error("SAVE CART ERROR:", err);
     require("fs").appendFileSync(
@@ -1239,20 +1346,30 @@ router.post("/send", async (req, res) => {
   try {
     const { tableId, orderId, items, userId, discountAmount, discountRemarks, mobileNo, customerName } = req.body;
     const pool = await poolPromise;
-    const cleanId = await getCleanTableId(pool, tableId);
-    tableKey = String(cleanId).toLowerCase().trim();
+    const rawTableId = tableId || req.body.tableNo;
+    const cleanId = await getCleanTableId(pool, rawTableId);
+    if (cleanId && cleanId !== "null" && cleanId !== "undefined") {
+      tableKey = "tbl_" + String(cleanId).toLowerCase().trim();
+    } else if (req.body.tableNo) {
+      tableKey = "tbl_" + String(req.body.tableNo).toLowerCase().trim();
+    } else {
+      tableKey = "takeaway_" + (req.body.takeawayNo || req.body.orderId || (Date.now() + "_" + Math.random()));
+    }
     const signature = generateItemsSignature(items);
+    const isTakeawayKey = tableKey.startsWith("takeaway_");
 
-    // 🛡️ DEDUP CHECK 1: If exact same items were sent for this table within 5 seconds, block duplicate execution
+    // 🛡️ DEDUP CHECK 1: If exact same items were sent for this table within 3 seconds, block duplicate execution
     const now = Date.now();
-    const recent = recentSendCache.get(tableKey);
-    if (recent && (now - recent.timestamp < 5000) && signature && recent.signature === signature) {
-      console.warn(`🛡️ [Send Guard] Blocked duplicate /send request for table "${cleanId}" (${now - recent.timestamp}ms ago). Returning OrderId: ${recent.orderId}`);
-      return res.json({ success: true, orderId: recent.orderId, duplicateBlocked: true });
+    if (!isTakeawayKey && recentSendCache.has(tableKey)) {
+      const recent = recentSendCache.get(tableKey);
+      if (recent && (now - recent.timestamp < 3000) && signature && recent.signature === signature) {
+        console.warn(`🛡️ [Send Guard] Blocked duplicate /send request for table "${cleanId}" (${now - recent.timestamp}ms ago). Returning OrderId: ${recent.orderId}`);
+        return res.json({ success: true, orderId: recent.orderId, duplicateBlocked: true });
+      }
     }
 
     // 🛡️ CONCURRENCY LOCK 2: If another /send is currently in progress for this table, wait for it
-    if (activeSendLocks.has(tableKey)) {
+    if (!isTakeawayKey && activeSendLocks.has(tableKey)) {
       console.warn(`🛡️ [Send Guard] Concurrent /send request for table "${cleanId}" detected. Waiting for in-flight send...`);
       try {
         await activeSendLocks.get(tableKey);
@@ -1407,7 +1524,8 @@ router.post("/send", async (req, res) => {
             FROM RestaurantOrderDetailCur d 
             JOIN RestaurantOrderCur h ON d.OrderId = h.OrderId 
             LEFT JOIN DishMaster dish ON d.DishId = dish.DishId
-            WHERE (h.OrderNumber = @orderNoCheck OR RTRIM(LTRIM(h.Tableno)) = RTRIM(LTRIM(@RealTableNo)) OR RTRIM(LTRIM(h.Tableno)) = RTRIM(LTRIM(@tableNoCheck)))
+            WHERE (RTRIM(LTRIM(h.Tableno)) = RTRIM(LTRIM(@RealTableNo)) OR RTRIM(LTRIM(h.Tableno)) = RTRIM(LTRIM(@tableNoCheck)))
+              AND (h.OrderNumber = @orderNoCheck OR @orderNoCheck IS NULL)
               AND (h.isOrderClosed = 0 OR h.isOrderClosed IS NULL)
               AND d.StatusCode <> 0
           `);
@@ -1568,6 +1686,17 @@ router.post("/send", async (req, res) => {
 
       // 5. Refresh totals and notify instantly
       syncTableStatus(req, cleanId).catch(() => { });
+
+      // ⚡ Background 2-way table & order push to Remote DB
+      try {
+        const { getPool, getRemotePool, isRemoteOnline } = require("../config/db");
+        const { syncOperationalStateFromRemote } = require("../services/autoProvisionLocalDb");
+        const { triggerSyncProcess } = require("../services/syncService");
+        triggerSyncProcess();
+        if (isRemoteOnline()) {
+          syncOperationalStateFromRemote(getRemotePool(), getPool()).catch(() => { });
+        }
+      } catch (_) { }
     } catch (e) {
       if (rejectLock) rejectLock(e);
       await transaction.rollback();
@@ -1599,17 +1728,30 @@ router.get("/cart/:tableId", async (req, res) => {
       return res.json({ items: [], currentOrderId: null });
     }
 
-    // Get table info (TableNumber + CurrentOrderId)
+    // Get table info (TableNumber + CurrentOrderId + Status)
     const tableInfo = await pool
       .request()
       .input("tid", sql.VarChar(50), cleanId)
       .query(
-        "SELECT TableNumber, CurrentOrderId FROM TableMaster WHERE TableNumber = @tid OR (TRY_CAST(@tid AS UNIQUEIDENTIFIER) IS NOT NULL AND TableId = TRY_CAST(@tid AS UNIQUEIDENTIFIER))",
+        "SELECT TableNumber, CurrentOrderId, Status FROM TableMaster WHERE TableNumber = @tid OR (TRY_CAST(@tid AS UNIQUEIDENTIFIER) IS NOT NULL AND TableId = TRY_CAST(@tid AS UNIQUEIDENTIFIER))",
       );
 
     const tableRow = tableInfo.recordset[0];
     const tableNumber = tableRow?.TableNumber;
     let currentOrderId = tableRow?.CurrentOrderId;
+    const tableStatus = Number(tableRow?.Status ?? 0);
+
+    // 🛡️ CRITICAL GUARD: If the table is officially Available (Status = 0), it MUST NOT return any cart items!
+    if (tableStatus === 0) {
+      if (currentOrderId) {
+        // Clean up any dangling stale CurrentOrderId in DB
+        await pool.request()
+          .input("tid", sql.VarChar(50), cleanId)
+          .query("UPDATE TableMaster SET CurrentOrderId = NULL, TotalAmount = 0, StartTime = NULL WHERE TableNumber = @tid OR (TRY_CAST(@tid AS UNIQUEIDENTIFIER) IS NOT NULL AND TableId = TRY_CAST(@tid AS UNIQUEIDENTIFIER))")
+          .catch(() => {});
+      }
+      return res.json({ items: [], currentOrderId: null, orderDiscount: null });
+    }
 
     // 🚀 RESOLVE ACTIVE DB ORDER ID: If TableMaster has no current order ID, check RestaurantOrderCur
     if (!currentOrderId || currentOrderId === "NEW" || currentOrderId === "PENDING" || currentOrderId.length < 5) {
@@ -1717,7 +1859,16 @@ router.get("/cart/:tableId", async (req, res) => {
             RTRIM(LTRIM(h.Tableno)) = RTRIM(LTRIM(@tableNo))
             OR RTRIM(LTRIM(h.Tableno)) = RTRIM(LTRIM(@tid))
             OR RTRIM(LTRIM(h.Tableno)) = RTRIM(LTRIM((SELECT TOP 1 TableNumber FROM TableMaster WHERE TableNumber = @tid OR (TRY_CAST(@tid AS UNIQUEIDENTIFIER) IS NOT NULL AND TableId = TRY_CAST(@tid AS UNIQUEIDENTIFIER)))))
-            OR h.OrderNumber = @orderNo
+          )
+          AND (
+            (@orderNo <> '__NONE__' AND h.OrderNumber = @orderNo)
+            OR (@orderNo = '__NONE__' AND h.OrderId = (
+              SELECT TOP 1 h2.OrderId 
+              FROM RestaurantOrderCur h2 
+              WHERE (RTRIM(LTRIM(h2.Tableno)) = RTRIM(LTRIM(@tableNo)) OR RTRIM(LTRIM(h2.Tableno)) = RTRIM(LTRIM(@tid)))
+                AND (h2.isOrderClosed = 0 OR h2.isOrderClosed IS NULL)
+              ORDER BY h2.CreatedOn DESC
+            ))
           )
         ORDER BY d.CreatedOn ASC
       `);
@@ -2070,16 +2221,6 @@ router.post("/checkout", async (req, res) => {
         status: 2,
         totalAmount: updated?.TotalAmount,
         startTime: updated?.StartTime
-      });
-      io.emit("order_closed", {
-        tableId: lid,
-        tableNo: updated?.tableNo,
-        section: updated?.section,
-      });
-      io.emit("order_status_update", {
-        tableId: lid,
-        action: "CLOSE",
-        orderId: updated?.CurrentOrderId,
       });
     }
 
@@ -2714,7 +2855,7 @@ router.post("/merge", async (req, res) => {
           .query(
             "SELECT TOP 1 OrderId FROM RestaurantOrderCur WHERE OrderNumber = @orderNo AND (isOrderClosed = 0 OR isOrderClosed IS NULL)",
           );
-        
+
         // 🚀 FALLBACK: if not found with open filter, try without (stale closed order edge case)
         if (!sourceGuidRes.recordset[0]?.OrderId) {
           console.log(`[MERGE LOOP] Open order not found, trying without isOrderClosed filter...`);
@@ -2725,7 +2866,7 @@ router.post("/merge", async (req, res) => {
               "SELECT TOP 1 OrderId FROM RestaurantOrderCur WHERE OrderNumber = @orderNo2 ORDER BY CreatedOn DESC",
             );
         }
-        
+
         const sourceOrderGuid = sourceGuidRes.recordset[0]?.OrderId;
         if (!sourceOrderGuid) {
           console.log(`[MERGE LOOP ERROR] Active source order GUID not found for OrderNo: ${sourceOrderId}.`);

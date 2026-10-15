@@ -23,9 +23,24 @@ export function formatToSingaporeDate(
   if (!dateInput) return "";
   const date = parseDatabaseDate(dateInput);
   if (isNaN(date.getTime())) return "";
-  return new Intl.DateTimeFormat('en-US', {
+  return new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Asia/Singapore',
     ...options
+  }).format(date);
+}
+
+/**
+ * Returns date strictly formatted as DD/MM/YY (e.g. 14/10/26) for thermal & receipt printers
+ */
+export function formatToPrinterDate(dateInput: Date | string | number): string {
+  if (!dateInput) return "";
+  const date = parseDatabaseDate(dateInput);
+  if (isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Singapore',
+    day: '2-digit',
+    month: '2-digit',
+    year: '2-digit'
   }).format(date);
 }
 
@@ -102,16 +117,11 @@ export function parseDatabaseDate(dateInput: Date | string | number): Date {
     return new Date(isoStr);
   }
 
-  // If string has explicit timezone offset (+08:00, -05:00, Z), parse directly as JS Date
-  if (/[Z+-]\d{2}:?\d{2}$/i.test(str) || str.endsWith('Z')) {
-    const directParsed = new Date(str);
-    if (!isNaN(directParsed.getTime())) {
-      return directParsed;
-    }
-  }
-
-  // For bare local date strings (e.g. "2026-09-22 15:26:00"), normalize space to 'T' and append SGT (+08:00)
-  let cleanStr = str.replace(/Z$/i, '').replace(/[+-]\d{2}:\d{2}$/, '');
+  // DB DATETIME fields store local Singapore wall-clock time (e.g. 2026-10-10 17:24:17.340).
+  // When serialized to JSON by Express/mssql, it becomes "2026-10-10T17:24:17.340Z".
+  // The 'Z' causes double timezone conversion (adding +8 hours again, e.g. 17:24 -> 01:24 AM next day).
+  // We strip 'Z' and explicit offsets so the wall-clock time is anchored to Singapore Time (+08:00).
+  let cleanStr = str.replace(/Z$/i, '').replace(/[+-]\d{2}:?\d{2}$/, '');
 
   if (!cleanStr.includes('T') && cleanStr.includes(' ') && !/^[a-zA-Z]{3}/.test(cleanStr)) {
     cleanStr = cleanStr.replace(' ', 'T');

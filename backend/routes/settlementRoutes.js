@@ -71,6 +71,13 @@ router.post("/day-start", async (req, res) => {
       
     const io = req.app.get('io');
     if (io) io.emit('settlement_updated', { action: 'day_started' });
+
+    // 🚀 Non-blocking background push to remote cloud DB if online
+    try {
+      const { triggerSyncProcess } = require("../services/syncService");
+      triggerSyncProcess();
+    } catch (_) {}
+
     res.json({ success: true, message: "Day started successfully" });
   } catch (err) {
     console.error("Day Start Error:", err);
@@ -133,6 +140,12 @@ router.post("/day-end", async (req, res) => {
     // Notify all connected clients to refresh settlement data
     const io = req.app.get('io');
     if (io) io.emit('settlement_updated', { action: 'day_ended' });
+
+    // 🚀 Non-blocking background push to remote cloud DB if online
+    try {
+      const { triggerSyncProcess } = require("../services/syncService");
+      triggerSyncProcess();
+    } catch (_) {}
 
     res.json({
       success: true,
@@ -996,9 +1009,9 @@ router.post('/cash-in', authenticateToken, async (req, res) => {
       .input('targetDate', sql.Date, targetDate)
       .input('AttachmentUrl', sql.VarChar(500), attachmentUrl || null)
       .query(`
-        INSERT INTO CashInEntry (CashInNo, CashInDate, Amount, Reason, Remarks, PaymentMode, ReferenceNo, TerminalCode, CreatedBy, CreatedOn, start_date, AttachmentUrl)
+        INSERT INTO CashInEntry (CashInId, CashInNo, CashInDate, Amount, Reason, Remarks, PaymentMode, ReferenceNo, TerminalCode, CreatedBy, CreatedOn, start_date, AttachmentUrl)
         OUTPUT inserted.*
-        VALUES (@CashInNo, @targetDate, @Amount, @Reason, @Remarks, @PaymentMode, @ReferenceNo, @TerminalCode, @CreatedBy, @targetDate, @targetDate, @AttachmentUrl)
+        VALUES (NEWID(), @CashInNo, @targetDate, @Amount, @Reason, @Remarks, @PaymentMode, @ReferenceNo, @TerminalCode, @CreatedBy, @targetDate, @targetDate, @AttachmentUrl)
       `);
 
     const io = req.app.get('io');
@@ -1381,6 +1394,11 @@ router.post('/artist-cashbox', authenticateToken, async (req, res) => {
       await transaction.commit();
       console.log(`[CASHBOX] SUCCESS - settlement ${settlementId} for ${ArtistName} - Amount: ${Amount}`);
 
+      try {
+        const { triggerSyncProcess } = require("../services/syncService");
+        triggerSyncProcess();
+      } catch (_) {}
+
       res.json({
         success: true,
         settlementId
@@ -1440,6 +1458,11 @@ router.delete('/artist-cashbox/:id', authenticateToken, async (req, res) => {
 
       const io = req.app.get('io');
       if (io) io.emit('settlement_updated', { action: 'settlement_deleted' });
+
+      try {
+        const { triggerSyncProcess } = require("../services/syncService");
+        triggerSyncProcess();
+      } catch (_) {}
 
       res.json({ success: true, message: 'Cash box entry and associated settlement deleted successfully' });
     } catch (innerErr) {

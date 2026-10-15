@@ -282,9 +282,9 @@ router.post('/', authenticateBridge, async (req, res) => {
         } else {
           try {
             const companyRes = await pool.request()
-              .query("SELECT TOP 1 PrinterIP, CashierPrinterIP FROM CompanySettings WHERE Id = '1'");
-            if (companyRes.recordset.length > 0) {
-              printerIp = companyRes.recordset[0].CashierPrinterIP || companyRes.recordset[0].PrinterIP || '';
+              .query("SELECT TOP 1 PrinterIP FROM CompanySettings WHERE Id = '1'");
+            if (companyRes.recordset.length > 0 && companyRes.recordset[0].PrinterIP) {
+              printerIp = companyRes.recordset[0].PrinterIP.trim();
               printerName = printerIp || 'Cashier Printer';
             }
           } catch (cErr) {
@@ -292,6 +292,38 @@ router.post('/', authenticateBridge, async (req, res) => {
           }
         }
       }
+    }
+
+    // Safety fallback: if printerIp is still not resolved to an IP address, check CompanySettings or ANY active printer in PrintMaster
+    if (!printerIp || !/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(printerIp.trim())) {
+      try {
+        const csFallback = await pool.request()
+          .query("SELECT TOP 1 PrinterIP FROM CompanySettings WHERE Id = '1'");
+        if (csFallback.recordset.length > 0 && csFallback.recordset[0].PrinterIP) {
+          const cand = csFallback.recordset[0].PrinterIP.trim();
+          if (/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(cand)) {
+            printerIp = cand;
+            printerName = cand;
+          }
+        }
+      } catch (_) {}
+    }
+
+    if (!printerIp || !/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(printerIp.trim())) {
+      try {
+        const pmFallback = await pool.request().query(`
+          SELECT TOP 1 ISNULL(NULLIF(PrinterIP, ''), NULLIF(PrinterPath, '')) as PrinterIP, PrinterName 
+          FROM PrintMaster 
+          WHERE IsActive = 1 AND (PrinterIP IS NOT NULL AND PrinterIP <> '' OR PrinterPath IS NOT NULL AND PrinterPath <> '')
+        `);
+        if (pmFallback.recordset.length > 0 && pmFallback.recordset[0].PrinterIP) {
+          const cand = pmFallback.recordset[0].PrinterIP.trim();
+          if (/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(cand)) {
+            printerIp = cand;
+            printerName = pmFallback.recordset[0].PrinterName || cand;
+          }
+        }
+      } catch (_) {}
     }
 
     if (!printerIp || printerIp.trim() === '') {
@@ -315,6 +347,14 @@ router.post('/', authenticateBridge, async (req, res) => {
       `);
 
     res.json({ success: true, message: 'Print job queued successfully', jobId, printerIp, printerName });
+
+    // Instantly wake up the local print queue worker so USB and LAN printers execute with 0ms delay!
+    try {
+      const { processPrintQueue } = require('../services/printQueueWorker');
+      setImmediate(() => {
+        processPrintQueue().catch(() => {});
+      });
+    } catch (_) {}
 
     // Notify native APK clients to process the queue immediately (don't wait for 20s poll)
     try {

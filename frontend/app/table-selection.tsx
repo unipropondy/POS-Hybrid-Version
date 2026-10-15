@@ -164,14 +164,25 @@ export default function TableSelectionScreen() {
 
   // Select Table Handler
   const handleSelectTable = (table: TableItem) => {
+    useCartStore.getState().cancelPendingSync();
     const sectionName = `SECTION_${table.DiningSection}`;
-    useOrderContextStore.getState().setOrderContext({
-      orderType: "DINE_IN",
+    const newContext = {
+      orderType: "DINE_IN" as const,
       tableId: table.id,
       tableNo: table.label,
       section: sectionName,
-    });
-    useCartStore.getState().setCurrentContext(table.id);
+    };
+    useOrderContextStore.getState().setOrderContext(newContext);
+    
+    const contextId = `DINE_IN_${sectionName}_${table.label}`;
+    // Clear any stale cart session if table is available (Status === 0)
+    if (table.Status === 0) {
+      useCartStore.getState().clearTableSession(table.id);
+      useCartStore.getState().setTableOrderId(table.id, null);
+      useCartStore.getState().setCartItems(contextId, [], true);
+    }
+    
+    useCartStore.getState().setCurrentContext(contextId);
     router.push("/(tabs)/category");
   };
 

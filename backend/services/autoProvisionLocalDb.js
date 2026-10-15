@@ -3,6 +3,7 @@ const { getPool, getRemotePool, isRemoteOnline, connectRemote } = require("../co
 
 // Master reference tables to copy initial data from Remote DB to Local DB
 const MASTER_DATA_TABLES = [
+  "UserGroupMaster",
   "UserMaster",
   "CompanyMaster",
   "CompanySettings",
@@ -10,13 +11,26 @@ const MASTER_DATA_TABLES = [
   "SubCategoryMaster",
   "DishGroupMaster",
   "DishMaster",
+  "ImageList",
+  "ComboGroupMaster",
+  "ComboGroupDishMapping",
+  "ParentDishComboGroupMapping",
+  "ModifierMaster",
+  "DishModifier",
+  "DishGroupModifier",
+  "DishModifierGroup",
   "TableMaster",
   "DiningSectionMaster",
-  "PaymentModeMaster",
+  "Paymode",
+  "MemberMaster",
+  "CreditCustomerMaster",
+  "CustomerCreditTransactions",
   "PrintMaster",
   "KitchenMaster",
   "TerminalMaster",
-  "SettingsMaster"
+  "SettingsMaster",
+  "AppSettings",
+  "DateEntry"
 ];
 
 // Step 1: Ensure Local Database exists (creates DB on local SQL Server if missing)
@@ -33,7 +47,7 @@ async function ensureLocalDatabaseExists() {
   const port = parseInt(process.env.LOCAL_DB_PORT || process.env.DB_PORT || "1433");
   const user = process.env.LOCAL_DB_USER || process.env.DB_USER;
   const password = process.env.LOCAL_DB_PASSWORD || process.env.DB_PASSWORD;
-  const targetDbName = process.env.LOCAL_DB_NAME || process.env.DB_NAME || "UCSPONDY";
+  const targetDbName = process.env.LOCAL_DB_NAME || process.env.DB_NAME || "UCSPONDY_HYBRID";
 
   const masterConfig = {
     user,
@@ -76,7 +90,7 @@ async function ensureLocalDatabaseExists() {
 }
 
 // Step 2: Sync full schema and tables from Remote DB -> Local DB
-async function syncSchemaFromRemoteToLocal() {
+async function syncSchemaFromRemoteToLocal(localPoolOverride) {
   let remotePool = getRemotePool();
   if (!isRemoteOnline()) {
     remotePool = await connectRemote();
@@ -87,7 +101,7 @@ async function syncSchemaFromRemoteToLocal() {
     return false;
   }
 
-  const localPool = getPool();
+  const localPool = localPoolOverride || getPool();
   if (!localPool) {
     console.warn("⚠️ [Auto-Provision] Local DB pool not ready.");
     return false;
@@ -111,15 +125,26 @@ async function syncSchemaFromRemoteToLocal() {
       await replicateTableSchema(remotePool, localPool, tableName);
     }
 
-    // 2. Hydrate Master Data if Local Tables are Empty
-    console.log("🚚 [Auto-Provision] Hydrating initial Master Data from Remote DB to empty Local tables...");
-    for (const masterTable of MASTER_DATA_TABLES) {
-      if (remoteTables.includes(masterTable)) {
-        await hydrateMasterTableData(remotePool, localPool, masterTable);
-      }
-    }
+    // 1.2. Replicate default constraints for any tables that exist on Local DB
+    await replicateDefaultConstraintsFromRemote(remotePool, localPool);
 
-    console.log("✅ [Auto-Provision] Local Database schema & master data provisioning complete!");
+    // 1.5. Ensure database views exist on Local DB
+    await ensureEssentialLocalViews(localPool);
+    await replicateViewsFromRemote(remotePool, localPool);
+
+    // 2. Hydrate ALL tables and master data from Remote DB to Local DB
+    console.log("🚚 [Auto-Provision] Hydrating ALL tables & data from Remote Cloud DB to Local DB...");
+    await hydrateAllTablesFromRemote(remotePool, localPool);
+
+    // 2.5. Hydrate & 2-Way Sync Master Catalog from Remote DB to Local DB
+    console.log("🚚 [Auto-Provision] Verifying 2-Way Sync for Master Catalog (Categories, Dishes, Tables, Settings)...");
+    await syncMasterCatalog2Way(remotePool, localPool);
+
+    // 3. Sync Active Operational State (Table status, active orders, Day-Start sequence)
+    console.log("⚡ [Auto-Provision] Syncing Active Floor State & Business Day status from Remote DB...");
+    await syncOperationalStateFromRemote(remotePool, localPool);
+
+    console.log("✅ [Auto-Provision] Local Database schema & ALL tables/data provisioning complete!");
     return true;
   } catch (err) {
     console.error("❌ [Auto-Provision] Error syncing schema from Remote DB:", err.message);
@@ -135,19 +160,20 @@ async function replicateTableSchema(remotePool, localPool, tableName) {
       SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = '${tableName}'
     `);
 
-    // Fetch column details from Remote DB
+    // Fetch column details from Remote DB (including identity info)
     const remoteColumnsRes = await remotePool.request().query(`
       SELECT 
-        COLUMN_NAME, 
-        DATA_TYPE, 
-        CHARACTER_MAXIMUM_LENGTH, 
-        NUMERIC_PRECISION, 
-        NUMERIC_SCALE, 
-        IS_NULLABLE, 
-        COLUMN_DEFAULT
-      FROM INFORMATION_SCHEMA.COLUMNS
-      WHERE TABLE_NAME = '${tableName}'
-      ORDER BY ORDINAL_POSITION
+        c.COLUMN_NAME, 
+        c.DATA_TYPE, 
+        c.CHARACTER_MAXIMUM_LENGTH, 
+        c.NUMERIC_PRECISION, 
+        c.NUMERIC_SCALE, 
+        c.IS_NULLABLE, 
+        c.COLUMN_DEFAULT,
+        COLUMNPROPERTY(OBJECT_ID(QUOTENAME(c.TABLE_SCHEMA) + '.' + QUOTENAME(c.TABLE_NAME)), c.COLUMN_NAME, 'IsIdentity') AS is_identity
+      FROM INFORMATION_SCHEMA.COLUMNS c
+      WHERE c.TABLE_NAME = '${tableName}'
+      ORDER BY c.ORDINAL_POSITION
     `);
 
     const remoteCols = remoteColumnsRes.recordset;
@@ -157,8 +183,30 @@ async function replicateTableSchema(remotePool, localPool, tableName) {
       // Table does not exist in Local DB -> Generate CREATE TABLE statement
       console.log(`🛠️ [Auto-Provision] Creating table [${tableName}] in Local DB...`);
       
-      const colDefs = remoteCols.map(col => {
+      let pkCols = [];
+      let pkClause = "";
+      try {
+        const pkRes = await remotePool.request().query(`
+          SELECT kcu.COLUMN_NAME
+          FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
+          JOIN INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc 
+            ON kcu.CONSTRAINT_NAME = tc.CONSTRAINT_NAME 
+           AND kcu.TABLE_NAME = tc.TABLE_NAME
+          WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY' 
+            AND kcu.TABLE_NAME = '${tableName}'
+          ORDER BY kcu.ORDINAL_POSITION
+        `);
+        if (pkRes.recordset && pkRes.recordset.length > 0) {
+          pkCols = pkRes.recordset.map(r => r.COLUMN_NAME);
+          pkClause = `,\n  PRIMARY KEY (${pkCols.map(c => `[${c}]`).join(", ")})`;
+        }
+      } catch (_) {}
+
+      const buildColDefs = (includeDefaults = true) => remoteCols.map(col => {
         let typeStr = col.DATA_TYPE.toUpperCase();
+        if (["TIMESTAMP", "ROWVERSION"].includes(typeStr)) {
+          return `[${col.COLUMN_NAME}] ROWVERSION`;
+        }
         if (["NVARCHAR", "VARCHAR", "NCHAR", "CHAR", "VARBINARY", "BINARY"].includes(typeStr)) {
           if (col.CHARACTER_MAXIMUM_LENGTH === -1 || col.CHARACTER_MAXIMUM_LENGTH > 8000) {
             typeStr += "(MAX)";
@@ -169,13 +217,34 @@ async function replicateTableSchema(remotePool, localPool, tableName) {
           typeStr += `(${col.NUMERIC_PRECISION || 18}, ${col.NUMERIC_SCALE || 2})`;
         }
 
-        const nullableStr = col.IS_NULLABLE === "YES" ? "NULL" : "NOT NULL";
-        return `[${col.COLUMN_NAME}] ${typeStr} ${nullableStr}`;
+        if (col.is_identity === 1) {
+          typeStr += " IDENTITY(1,1)";
+        }
+
+        let defaultClause = "";
+        if (includeDefaults && col.COLUMN_DEFAULT && col.is_identity !== 1) {
+          defaultClause = ` DEFAULT ${col.COLUMN_DEFAULT}`;
+        }
+
+        const isPk = pkCols.some(pk => pk.toLowerCase() === col.COLUMN_NAME.toLowerCase());
+        const nullableStr = (isPk || col.IS_NULLABLE === "NO") ? "NOT NULL" : "NULL";
+        return `[${col.COLUMN_NAME}] ${typeStr}${defaultClause} ${nullableStr}`;
       });
 
-      const createTableSql = `CREATE TABLE [dbo].[${tableName}] (\n  ${colDefs.join(",\n  ")}\n);`;
-      await localPool.request().query(createTableSql);
-      console.log(`✅ [Auto-Provision] Table [${tableName}] created in Local DB.`);
+      const createTableSql = `CREATE TABLE [dbo].[${tableName}] (\n  ${buildColDefs(true).join(",\n  ")}${pkClause}\n);`;
+      try {
+        await localPool.request().query(createTableSql);
+        console.log(`✅ [Auto-Provision] Table [${tableName}] created in Local DB.`);
+      } catch (createErr) {
+        // Fallback: retry without default clauses in case a default expression is incompatible
+        try {
+          const fallbackSql = `CREATE TABLE [dbo].[${tableName}] (\n  ${buildColDefs(false).join(",\n  ")}${pkClause}\n);`;
+          await localPool.request().query(fallbackSql);
+          console.log(`✅ [Auto-Provision] Table [${tableName}] created in Local DB (clean fallback).`);
+        } catch (innerErr) {
+          console.warn(`⚠️ [Auto-Provision] Failed to create table [${tableName}]:`, innerErr.message);
+        }
+      }
     } else {
       // Table exists -> Add missing columns if any
       const localColsRes = await localPool.request().query(`
@@ -187,7 +256,9 @@ async function replicateTableSchema(remotePool, localPool, tableName) {
         if (!localColNames.has(col.COLUMN_NAME.toLowerCase())) {
           console.log(`➕ [Auto-Provision] Adding missing column [${col.COLUMN_NAME}] to Local table [${tableName}]...`);
           let typeStr = col.DATA_TYPE.toUpperCase();
-          if (["NVARCHAR", "VARCHAR", "NCHAR", "CHAR"].includes(typeStr)) {
+          if (["TIMESTAMP", "ROWVERSION"].includes(typeStr)) {
+            typeStr = "ROWVERSION";
+          } else if (["NVARCHAR", "VARCHAR", "NCHAR", "CHAR"].includes(typeStr)) {
             if (col.CHARACTER_MAXIMUM_LENGTH === -1 || col.CHARACTER_MAXIMUM_LENGTH > 8000) {
               typeStr += "(MAX)";
             } else if (col.CHARACTER_MAXIMUM_LENGTH) {
@@ -198,8 +269,21 @@ async function replicateTableSchema(remotePool, localPool, tableName) {
           }
 
           const addColSql = `ALTER TABLE [dbo].[${tableName}] ADD [${col.COLUMN_NAME}] ${typeStr} NULL;`;
-          await localPool.request().query(addColSql);
+          await localPool.request().query(addColSql).catch(() => {});
         }
+      }
+
+      // Ensure UserPassword column is at least NVARCHAR(255) for bcrypt hashes
+      if (tableName.toLowerCase() === "usermaster") {
+        await localPool.request().query(`
+          IF EXISTS (
+            SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_NAME = 'UserMaster' AND COLUMN_NAME = 'UserPassword' AND CHARACTER_MAXIMUM_LENGTH < 255
+          )
+          BEGIN
+            ALTER TABLE [dbo].[UserMaster] ALTER COLUMN [UserPassword] NVARCHAR(255) NULL;
+          END
+        `).catch(() => {});
       }
     }
   } catch (err) {
@@ -207,62 +291,1051 @@ async function replicateTableSchema(remotePool, localPool, tableName) {
   }
 }
 
-// Helper: Copy master table records if local table is empty
-async function hydrateMasterTableData(remotePool, localPool, tableName) {
+// Helper: Find computed columns for a table to prevent SQL insertion errors
+async function getReadOnlyColumns(pool, tableName) {
   try {
-    const localCountRes = await localPool.request().query(`SELECT COUNT(*) AS cnt FROM [dbo].[${tableName}]`);
-    if (localCountRes.recordset[0].cnt > 0) {
-      return; // Already populated
+    const res = await pool.request().query(`
+      SELECT c.name
+      FROM sys.columns c
+      JOIN sys.tables t ON c.object_id = t.object_id
+      WHERE t.name = '${tableName}' AND c.is_computed = 1
+    `);
+    return new Set(res.recordset.map(r => r.name.toLowerCase()));
+  } catch (_) {
+    return new Set();
+  }
+}
+
+// Helper: Check if a table has an identity column
+async function hasIdentityCol(pool, tableName) {
+  try {
+    const res = await pool.request().query(`
+      SELECT 1 FROM sys.columns c JOIN sys.tables t ON c.object_id = t.object_id
+      WHERE t.name = '${tableName}' AND c.is_identity = 1
+    `);
+    return res.recordset && res.recordset.length > 0;
+  } catch (_) {
+    return false;
+  }
+}
+
+// Helper: Safely get row property case-insensitively
+function getRowVal(row, col) {
+  if (!row) return undefined;
+  if (row[col] !== undefined) return row[col];
+  const lower = col.toLowerCase();
+  for (const k of Object.keys(row)) {
+    if (k.toLowerCase() === lower) return row[k];
+  }
+  return undefined;
+}
+
+// Helper: Get valid column names for a table
+async function getTableColumns(pool, tbl) {
+  try {
+    const res = await pool.request().query(`
+      SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '${tbl}'
+    `);
+    return new Set(res.recordset.map(r => r.COLUMN_NAME.toLowerCase()));
+  } catch (_) {
+    return new Set();
+  }
+}
+
+// Helper: Get primary key columns for a table (supports composite primary keys)
+async function getPrimaryKeyColumns(pool, tableName, fallbackPk) {
+  try {
+    const res = await pool.request().query(`
+      SELECT kcu.COLUMN_NAME
+      FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
+      JOIN INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc 
+        ON kcu.CONSTRAINT_NAME = tc.CONSTRAINT_NAME 
+       AND kcu.TABLE_NAME = tc.TABLE_NAME
+      WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY' 
+        AND kcu.TABLE_NAME = '${tableName}'
+      ORDER BY kcu.ORDINAL_POSITION
+    `);
+    if (res.recordset.length > 0) {
+      return res.recordset.map(r => r.COLUMN_NAME);
+    }
+  } catch (_) {}
+  if (Array.isArray(fallbackPk)) return fallbackPk;
+  return fallbackPk ? [fallbackPk] : [];
+}
+
+// Top-level 2-Way table delta sync (Missing rows pushed/pulled + timestamp-based updates)
+async function syncTable2Way(remotePool, localPool, tableName, fallbackPk, maxDelta = 100) {
+  try {
+    let lCols = await getTableColumns(localPool, tableName);
+    const rCols = await getTableColumns(remotePool, tableName);
+
+    // If table doesn't exist on remote, nothing to sync
+    if (rCols.size === 0) return { tableName, pushed: 0, pulled: 0, updatedLocal: 0, updatedRemote: 0 };
+
+    // If table doesn't exist on local, auto-replicate schema from remote
+    if (lCols.size === 0) {
+      await replicateTableSchema(remotePool, localPool, tableName);
+      lCols = await getTableColumns(localPool, tableName);
     }
 
-    console.log(`📦 [Auto-Provision] Hydrating table [${tableName}] data from Remote DB...`);
-    const remoteDataRes = await remotePool.request().query(`SELECT * FROM [dbo].[${tableName}]`);
-    const records = remoteDataRes.recordset;
+    const lReadOnly = await getReadOnlyColumns(localPool, tableName);
+    const rReadOnly = await getReadOnlyColumns(remotePool, tableName);
+    const readOnlyCols = new Set([...lReadOnly, ...rReadOnly]);
 
-    if (records.length === 0) return;
+    const pkCols = await getPrimaryKeyColumns(localPool, tableName, fallbackPk);
+    if (!pkCols || pkCols.length === 0) return { tableName, pushed: 0, pulled: 0, updatedLocal: 0, updatedRemote: 0 };
+    const pkColSql = pkCols.map(p => `[${p}]`).join(", ");
 
-    for (const record of records) {
-      const keys = Object.keys(record).filter(k => record[k] !== null);
+    const dateCandidates = [
+      'ModifiedOn', 'ModifyOn', 'ModifyDate', 'UpdatedOn',
+      'CreatedOn', 'CreateDate', 'CreatedDate',
+      'OrderDateTime', 'LastSettlementDate', 'InvoiceDate', 'start_date', 'Id', 'ID'
+    ];
+    const sortCol = dateCandidates.find(c => lCols.has(c.toLowerCase()) && rCols.has(c.toLowerCase()));
+    const orderSql = sortCol ? `ORDER BY [${sortCol}] DESC` : '';
+
+    const modCandidates = ['ModifiedOn', 'ModifyOn', 'ModifyDate', 'UpdatedOn'];
+    const modCol = modCandidates.find(c => lCols.has(c.toLowerCase()) && rCols.has(c.toLowerCase()));
+
+    const selectColsSql = modCol ? `${pkColSql}, [${modCol}]` : pkColSql;
+
+    const queryLimit = maxDelta > 500 ? 5000 : 500;
+    const lPkRes = await localPool.request().query(`SELECT TOP ${queryLimit} ${selectColsSql} FROM [dbo].[${tableName}] ${orderSql}`).catch(() => ({ recordset: [] }));
+    const rPkRes = await remotePool.request().query(`SELECT TOP ${queryLimit} ${selectColsSql} FROM [dbo].[${tableName}] ${orderSql}`).catch(() => ({ recordset: [] }));
+
+    const makePkKey = (row) => pkCols.map(pk => String(getRowVal(row, pk) ?? '')).join('___');
+
+    const lPkMap = new Map();
+    lPkRes.recordset.forEach(r => lPkMap.set(makePkKey(r), r));
+
+    const rPkMap = new Map();
+    rPkRes.recordset.forEach(r => rPkMap.set(makePkKey(r), r));
+
+    const missingOnRemote = lPkRes.recordset.filter(r => !rPkMap.has(makePkKey(r)));
+    const missingOnLocal = rPkRes.recordset.filter(r => !lPkMap.has(makePkKey(r)));
+
+    const toPush = (maxDelta && missingOnRemote.length > maxDelta) ? missingOnRemote.slice(0, maxDelta) : missingOnRemote;
+    const toPull = (maxDelta && missingOnLocal.length > maxDelta) ? missingOnLocal.slice(0, maxDelta) : missingOnLocal;
+
+    const lHasIdent = await hasIdentityCol(localPool, tableName);
+    const rHasIdent = await hasIdentityCol(remotePool, tableName);
+
+    let pushed = 0, pulled = 0, updatedLocal = 0, updatedRemote = 0;
+
+    // 1. LOCAL -> REMOTE (Push new local records to Remote Cloud DB)
+    for (const targetPkRow of toPush) {
+      const reqWhere = pkCols.map((pk, idx) => `[${pk}] = @lpk_${idx}`).join(" AND ");
+      const fetchReq = localPool.request();
+      pkCols.forEach((pk, idx) => fetchReq.input(`lpk_${idx}`, getRowVal(targetPkRow, pk)));
+
+      const lRowRes = await fetchReq.query(`SELECT TOP 1 * FROM [dbo].[${tableName}] WHERE ${reqWhere}`).catch(() => ({ recordset: [] }));
+      const lRow = lRowRes.recordset[0];
+      if (!lRow) continue;
+
+      const keys = Object.keys(lRow).filter(k => lRow[k] !== null && !readOnlyCols.has(k.toLowerCase()) && rCols.has(k.toLowerCase()));
       if (keys.length === 0) continue;
+      const colList = keys.map(k => `[${k}]`).join(", ");
+      const req = remotePool.request();
+      const valList = keys.map((k, idx) => {
+        const paramName = `lp_${idx}`;
+        req.input(paramName, lRow[k]);
+        return `@${paramName}`;
+      }).join(", ");
 
+      const insertWhere = pkCols.map((pk, idx) => `[${pk}] = @rpk_${idx}`).join(" AND ");
+      pkCols.forEach((pk, idx) => req.input(`rpk_${idx}`, getRowVal(targetPkRow, pk)));
+
+      const identOn = rHasIdent ? `SET IDENTITY_INSERT [dbo].[${tableName}] ON;` : '';
+      const identOff = rHasIdent ? `SET IDENTITY_INSERT [dbo].[${tableName}] OFF;` : '';
+
+      const sqlQuery = `
+        ${identOn}
+        IF NOT EXISTS (SELECT 1 FROM [dbo].[${tableName}] WHERE ${insertWhere})
+        BEGIN
+          INSERT INTO [dbo].[${tableName}] (${colList}) VALUES (${valList});
+        END;
+        ${identOff}
+      `;
+      await req.query(sqlQuery).catch((err) => console.warn(`⚠️ [Auto-Provision] Local->Remote ${tableName} push warning:`, err.message));
+      pushed++;
+    }
+
+    // 2. REMOTE -> LOCAL (Pull cloud updates to Local DB)
+    for (const targetPkRow of toPull) {
+      const reqWhere = pkCols.map((pk, idx) => `[${pk}] = @rpk_${idx}`).join(" AND ");
+      const fetchReq = remotePool.request();
+      pkCols.forEach((pk, idx) => fetchReq.input(`rpk_${idx}`, getRowVal(targetPkRow, pk)));
+
+      const rRowRes = await fetchReq.query(`SELECT TOP 1 * FROM [dbo].[${tableName}] WHERE ${reqWhere}`).catch(() => ({ recordset: [] }));
+      const rRow = rRowRes.recordset[0];
+      if (!rRow) continue;
+
+      const keys = Object.keys(rRow).filter(k => rRow[k] !== null && !readOnlyCols.has(k.toLowerCase()) && lCols.has(k.toLowerCase()));
+      if (keys.length === 0) continue;
       const colList = keys.map(k => `[${k}]`).join(", ");
       const req = localPool.request();
       const valList = keys.map((k, idx) => {
         const paramName = `p_${idx}`;
-        req.input(paramName, record[k]);
+        req.input(paramName, rRow[k]);
         return `@${paramName}`;
       }).join(", ");
 
-      const insertSql = `
-        SET IDENTITY_INSERT [dbo].[${tableName}] ON;
-        INSERT INTO [dbo].[${tableName}] (${colList}) VALUES (${valList});
-        SET IDENTITY_INSERT [dbo].[${tableName}] OFF;
-      `;
+      const insertWhere = pkCols.map((pk, idx) => `[${pk}] = @lpk_${idx}`).join(" AND ");
+      pkCols.forEach((pk, idx) => req.input(`lpk_${idx}`, getRowVal(targetPkRow, pk)));
 
-      try {
-        await req.query(insertSql);
-      } catch (_) {
-        // Fallback without IDENTITY_INSERT if not an identity column table
-        try {
-          const fallbackReq = localPool.request();
-          const fallbackValList = keys.map((k, idx) => {
-            const paramName = `p_${idx}`;
-            fallbackReq.input(paramName, record[k]);
-            return `@${paramName}`;
-          }).join(", ");
-          await fallbackReq.query(`INSERT INTO [dbo].[${tableName}] (${colList}) VALUES (${fallbackValList});`);
-        } catch (innerErr) {
-          // Ignore duplicate constraint or identity errors
+      const identOn = lHasIdent ? `SET IDENTITY_INSERT [dbo].[${tableName}] ON;` : '';
+      const identOff = lHasIdent ? `SET IDENTITY_INSERT [dbo].[${tableName}] OFF;` : '';
+
+      const sqlQuery = `
+        ${identOn}
+        IF NOT EXISTS (SELECT 1 FROM [dbo].[${tableName}] WHERE ${insertWhere})
+        BEGIN
+          INSERT INTO [dbo].[${tableName}] (${colList}) VALUES (${valList});
+        END;
+        ${identOff}
+      `;
+      await req.query(sqlQuery).catch((err) => console.warn(`⚠️ [Auto-Provision] Remote->Local ${tableName} pull warning:`, err.message));
+      pulled++;
+    }
+
+    // 3. UPDATES: If modCol exists, compare timestamps for items present on both sides (capped at 50 updates per cycle)
+    if (modCol) {
+      let updateCount = 0;
+      for (const [key, lRowSummary] of lPkMap.entries()) {
+        if (updateCount >= 50) break;
+        const rRowSummary = rPkMap.get(key);
+        if (!rRowSummary) continue;
+
+        const lRawTime = getRowVal(lRowSummary, modCol);
+        const rRawTime = getRowVal(rRowSummary, modCol);
+        const lTime = lRawTime ? new Date(lRawTime).getTime() : 0;
+        const rTime = rRawTime ? new Date(rRawTime).getTime() : 0;
+
+        if (rTime - lTime > 2000) {
+          // Remote is newer -> Pull update to Local
+          const reqWhere = pkCols.map((pk, idx) => `[${pk}] = @rpk_${idx}`).join(" AND ");
+          const fetchReq = remotePool.request();
+          pkCols.forEach((pk, idx) => fetchReq.input(`rpk_${idx}`, getRowVal(rRowSummary, pk)));
+          const rRowRes = await fetchReq.query(`SELECT TOP 1 * FROM [dbo].[${tableName}] WHERE ${reqWhere}`).catch(() => ({ recordset: [] }));
+          const rRow = rRowRes.recordset[0];
+          if (rRow) {
+            const keys = Object.keys(rRow).filter(k => rRow[k] !== null && !readOnlyCols.has(k.toLowerCase()) && lCols.has(k.toLowerCase()) && !pkCols.some(pk => pk.toLowerCase() === k.toLowerCase()));
+            if (keys.length > 0) {
+              const uReq = localPool.request();
+              const updateAssignments = keys.map((k, idx) => {
+                uReq.input(`up_${idx}`, rRow[k]);
+                return `[${k}] = @up_${idx}`;
+              }).join(", ");
+              pkCols.forEach((pk, idx) => uReq.input(`up_pk_${idx}`, getRowVal(rRowSummary, pk)));
+              const uWhere = pkCols.map((pk, idx) => `[${pk}] = @up_pk_${idx}`).join(" AND ");
+              await uReq.query(`UPDATE [dbo].[${tableName}] SET ${updateAssignments} WHERE ${uWhere}`).catch(() => {});
+              updatedLocal++;
+              updateCount++;
+            }
+          }
+        } else if (lTime - rTime > 2000) {
+          // Local is newer -> Push update to Remote
+          const reqWhere = pkCols.map((pk, idx) => `[${pk}] = @lpk_${idx}`).join(" AND ");
+          const fetchReq = localPool.request();
+          pkCols.forEach((pk, idx) => fetchReq.input(`lpk_${idx}`, getRowVal(lRowSummary, pk)));
+          const lRowRes = await fetchReq.query(`SELECT TOP 1 * FROM [dbo].[${tableName}] WHERE ${reqWhere}`).catch(() => ({ recordset: [] }));
+          const lRow = lRowRes.recordset[0];
+          if (lRow) {
+            const keys = Object.keys(lRow).filter(k => lRow[k] !== null && !readOnlyCols.has(k.toLowerCase()) && rCols.has(k.toLowerCase()) && !pkCols.some(pk => pk.toLowerCase() === k.toLowerCase()));
+            if (keys.length > 0) {
+              const uReq = remotePool.request();
+              const updateAssignments = keys.map((k, idx) => {
+                uReq.input(`up_${idx}`, lRow[k]);
+                return `[${k}] = @up_${idx}`;
+              }).join(", ");
+              pkCols.forEach((pk, idx) => uReq.input(`up_pk_${idx}`, getRowVal(lRowSummary, pk)));
+              const uWhere = pkCols.map((pk, idx) => `[${pk}] = @up_pk_${idx}`).join(" AND ");
+              await uReq.query(`UPDATE [dbo].[${tableName}] SET ${updateAssignments} WHERE ${uWhere}`).catch(() => {});
+              updatedRemote++;
+              updateCount++;
+            }
+          }
         }
       }
     }
-    console.log(`✅ [Auto-Provision] Hydrated ${records.length} records into Local table [${tableName}].`);
+
+    return { tableName, pushed, pulled, updatedLocal, updatedRemote };
   } catch (err) {
-    console.warn(`⚠️ [Auto-Provision] Data hydration warning for [${tableName}]:`, err.message);
+    console.warn(`⚠️ [Auto-Provision] 2-way sync error for ${tableName}:`, err.message);
+    return { tableName, pushed: 0, pulled: 0, updatedLocal: 0, updatedRemote: 0 };
+  }
+}
+
+// Master Menu, Catalog, Settings & Terminal tables to keep in continuous 2-way synchronization
+const MASTER_CATALOG_TABLES = [
+  { name: 'CategoryMaster', pk: 'CategoryId' },
+  { name: 'CategoryKitchenType', pk: ['CategoryId', 'KitchenTypeCode'] },
+  { name: 'DishGroupMaster', pk: 'DishGroupId' },
+  { name: 'DishGroupKitchentype', pk: ['DishGroupid', 'KitchenTypeCode'] },
+  { name: 'DishGroupMapping', pk: ['DishId', 'DishGroupId'] },
+  { name: 'DishMaster', pk: 'DishId' },
+  { name: 'ModifierMaster', pk: 'ModifierID' },
+  { name: 'DishModifier', pk: ['DishId', 'ModifierId'] },
+  { name: 'DishGroupModifier', pk: ['DishGroupId', 'ModifierId'] },
+  { name: 'DishModifierGroup', pk: 'ModifierGroupId' },
+  { name: 'ComboGroupMaster', pk: 'ComboGroupId' },
+  { name: 'ComboGroupDishMapping', pk: 'MappingId' },
+  { name: 'ParentDishComboGroupMapping', pk: ['ComboGroupId', 'ParentDishId'] },
+  { name: 'TableMaster', pk: 'TableId' },
+  { name: 'Paymode', pk: 'PayMode' },
+  { name: 'PrintMaster', pk: 'PrinterId' },
+  { name: 'TerminalMaster', pk: 'TerminalId' },
+  { name: 'ImageList', pk: 'Imageid' },
+  { name: 'CompanySettings', pk: 'Id' },
+  { name: 'CompanyMaster', pk: 'CompanyId' },
+  { name: 'AppSettings', pk: 'Id' },
+  { name: 'SettingsMaster', pk: 'Id' },
+  { name: 'UserGroupMaster', pk: 'UserGroupId' },
+  { name: 'UserMaster', pk: 'UserId' },
+  { name: 'UserPermission', pk: 'UserId' }
+];
+
+let lastMasterCatalogSyncTime = 0;
+const MASTER_CATALOG_SYNC_INTERVAL_MS = 20000; // Check catalog every 20 seconds
+
+// 2-Way Master Catalog Synchronizer: Checks every remote and local record, pushes and pulls differences
+async function syncMasterCatalog2Way(remotePool, localPool) {
+  if (!remotePool || !localPool) return;
+  lastMasterCatalogSyncTime = Date.now();
+  console.log("⚡ [Auto-Provision] Verifying 2-Way sync for Master Catalog (Categories, Dishes, Combos, Modifiers, Tables, Paymodes)...");
+  let totalChanges = 0;
+  for (const t of MASTER_CATALOG_TABLES) {
+    const res = await syncTable2Way(remotePool, localPool, t.name, t.pk, 2000);
+    if (res && (res.pulled > 0 || res.pushed > 0 || res.updatedLocal > 0 || res.updatedRemote > 0)) {
+      totalChanges += (res.pulled + res.pushed + res.updatedLocal + res.updatedRemote);
+      console.log(`📦 [MasterSync] ${t.name}: Pulled=${res.pulled}, Pushed=${res.pushed}, UpdLocal=${res.updatedLocal}, UpdRemote=${res.updatedRemote}`);
+    }
+  }
+
+  if (totalChanges > 0) {
+    console.log(`✨ [MasterSync] Master Catalog updated with ${totalChanges} changes! Invalidating menu cache...`);
+    try {
+      const menuRoute = require("../routes/menu");
+      if (menuRoute && typeof menuRoute.clearMenuCache === "function") {
+        menuRoute.clearMenuCache();
+      }
+    } catch (_) {}
+  }
+}
+
+// Helper: Fast batch hydrator for any table from Remote DB -> Local DB
+async function hydrateTableFast(remotePool, localPool, tableName) {
+  try {
+    const rCountRes = await remotePool.request().query(`SELECT COUNT(*) as cnt FROM [dbo].[${tableName}]`);
+    const rCount = rCountRes.recordset[0].cnt;
+    if (rCount === 0) return { tableName, synced: 0 };
+
+    let lCount = 0;
+    try {
+      const lCountRes = await localPool.request().query(`SELECT COUNT(*) as cnt FROM [dbo].[${tableName}]`);
+      lCount = lCountRes.recordset[0].cnt;
+    } catch (_) {}
+
+    if (lCount >= rCount) {
+      return { tableName, synced: 0 };
+    }
+
+    console.log(`📦 [Auto-Provision] Hydrating table [${tableName}] (Local: ${lCount}, Remote: ${rCount})...`);
+
+    const readOnlyCols = await getReadOnlyColumns(localPool, tableName);
+    const hasIdent = await hasIdentityCol(localPool, tableName);
+
+    const pkRes = await localPool.request().query(`
+      SELECT kcu.COLUMN_NAME
+      FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
+      JOIN INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc 
+        ON kcu.CONSTRAINT_NAME = tc.CONSTRAINT_NAME 
+       AND kcu.TABLE_NAME = tc.TABLE_NAME
+      WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY' 
+        AND kcu.TABLE_NAME = '${tableName}'
+      ORDER BY kcu.ORDINAL_POSITION
+    `).catch(() => ({ recordset: [] }));
+    const pkCols = pkRes.recordset.map(r => r.COLUMN_NAME);
+
+    let existingLocalPks = new Set();
+    if (lCount > 0 && pkCols.length > 0) {
+      const pkSql = pkCols.map(c => `[${c}]`).join(", ");
+      const lPkRes = await localPool.request().query(`SELECT ${pkSql} FROM [dbo].[${tableName}]`);
+      lPkRes.recordset.forEach(r => {
+        const key = pkCols.map(p => String(r[p] ?? '')).join('___');
+        existingLocalPks.add(key);
+      });
+    }
+
+    const rDataRes = await remotePool.request().query(`SELECT * FROM [dbo].[${tableName}]`);
+    let records = rDataRes.recordset;
+
+    if (existingLocalPks.size > 0 && pkCols.length > 0) {
+      records = records.filter(r => {
+        const key = pkCols.map(p => String(r[p] ?? '')).join('___');
+        return !existingLocalPks.has(key);
+      });
+    }
+
+    if (records.length === 0) {
+      return { tableName, synced: 0 };
+    }
+
+    const lColsRes = await localPool.request().query(`SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '${tableName}'`);
+    const validLocalCols = new Set(lColsRes.recordset.map(r => r.COLUMN_NAME.toLowerCase()));
+
+    const firstRow = records[0];
+    const insertCols = Object.keys(firstRow).filter(k => 
+      !readOnlyCols.has(k.toLowerCase()) && 
+      validLocalCols.has(k.toLowerCase())
+    );
+
+    if (insertCols.length === 0) return { tableName, synced: 0 };
+
+    const colListSql = insertCols.map(c => `[${c}]`).join(", ");
+    const batchSize = Math.max(1, Math.min(100, Math.floor(1800 / insertCols.length)));
+
+    let inserted = 0;
+    for (let i = 0; i < records.length; i += batchSize) {
+      const batch = records.slice(i, i + batchSize);
+      const req = localPool.request();
+      const valueTuples = [];
+
+      batch.forEach((row, rowIdx) => {
+        const rowParams = insertCols.map((col, colIdx) => {
+          const val = row[col];
+          if (val === null || val === undefined) {
+            return "NULL";
+          }
+          const paramName = `p_${rowIdx}_${colIdx}`;
+          req.input(paramName, val);
+          return `@${paramName}`;
+        });
+        valueTuples.push(`(${rowParams.join(", ")})`);
+      });
+
+      const identOn = hasIdent ? `SET IDENTITY_INSERT [dbo].[${tableName}] ON;` : '';
+      const identOff = hasIdent ? `SET IDENTITY_INSERT [dbo].[${tableName}] OFF;` : '';
+
+      const batchSql = `
+        ${identOn}
+        INSERT INTO [dbo].[${tableName}] (${colListSql}) VALUES ${valueTuples.join(",\n")};
+        ${identOff}
+      `;
+
+      try {
+        await req.query(batchSql);
+        inserted += batch.length;
+      } catch (batchErr) {
+        // Fallback row-by-row on error
+        for (const row of batch) {
+          try {
+            const singleReq = localPool.request();
+            let pIdx = 0;
+            const singleParams = insertCols.map((col) => {
+              const val = row[col];
+              if (val === null || val === undefined) {
+                return "NULL";
+              }
+              const pName = `sp_${pIdx++}`;
+              singleReq.input(pName, val);
+              return `@${pName}`;
+            });
+            await singleReq.query(`
+              ${identOn}
+              INSERT INTO [dbo].[${tableName}] (${colListSql}) VALUES (${singleParams.join(", ")});
+              ${identOff}
+            `);
+            inserted++;
+          } catch (_) {}
+        }
+      }
+    }
+
+    if (inserted > 0) {
+      console.log(`✅ [Auto-Provision] Hydrated ${inserted} records into Local table [${tableName}].`);
+    }
+    return { tableName, synced: inserted };
+  } catch (err) {
+    console.warn(`⚠️ [Auto-Provision] Hydration warning for [${tableName}]:`, err.message);
+    return { tableName, synced: 0, error: err.message };
+  }
+}
+
+// Helper: Hydrate postal code master table (Singapore postal code directory)
+async function hydratePostalCodeTable(remotePool, localPool) {
+  try {
+    const lCntRes = await localPool.request().query("SELECT COUNT(*) as cnt FROM [dbo].[Mas_PostalCode]").catch(() => ({ recordset: [{ cnt: 0 }] }));
+    if (lCntRes.recordset[0].cnt >= 100000) {
+      return; // Already populated
+    }
+
+    console.log("🚚 [Auto-Provision] Hydrating Singapore Postal Code database (Mas_PostalCode)...");
+    const res = await remotePool.request().query("SELECT Postcode, Street, Block, Country, BuildingName FROM Mas_PostalCode");
+    const records = res.recordset;
+    if (!records || records.length === 0) return;
+
+    const batchSize = 300;
+    for (let i = 0; i < records.length; i += batchSize) {
+      const chunk = records.slice(i, i + batchSize);
+      const req = localPool.request();
+      const tuples = chunk.map((r, idx) => {
+        req.input(`p_${idx}_0`, r.Postcode);
+        req.input(`p_${idx}_1`, r.Street);
+        req.input(`p_${idx}_2`, r.Block);
+        req.input(`p_${idx}_3`, r.Country);
+        req.input(`p_${idx}_4`, r.BuildingName);
+        return `(@p_${idx}_0, @p_${idx}_1, @p_${idx}_2, @p_${idx}_3, @p_${idx}_4)`;
+      });
+      await req.query(`INSERT INTO Mas_PostalCode (Postcode, Street, Block, Country, BuildingName) VALUES ${tuples.join(",")}`).catch(() => {});
+    }
+    console.log(`✅ [Auto-Provision] Mas_PostalCode hydrated (${records.length} postal codes).`);
+  } catch (err) {
+    console.warn("⚠️ [Auto-Provision] Mas_PostalCode hydration warning:", err.message);
+  }
+}
+
+// Step: Hydrate all base tables that have data on Remote DB
+async function hydrateAllTablesFromRemote(remotePool, localPool) {
+  try {
+    console.log("🚚 [Auto-Provision] Checking and hydrating all tables with data from Remote Cloud DB...");
+    const tablesResult = await remotePool.request().query(`
+      SELECT TABLE_NAME 
+      FROM INFORMATION_SCHEMA.TABLES 
+      WHERE TABLE_TYPE = 'BASE TABLE' AND TABLE_NAME NOT IN ('sysdiagrams', 'POS_SyncQueue', 'Mas_PostalCode')
+      ORDER BY TABLE_NAME
+    `);
+    const tables = tablesResult.recordset.map(r => r.TABLE_NAME);
+
+    let totalHydrated = 0;
+    for (const tableName of tables) {
+      const res = await hydrateTableFast(remotePool, localPool, tableName);
+      if (res && res.synced > 0) {
+        totalHydrated += res.synced;
+      }
+    }
+
+    // Hydrate postal codes if empty
+    await hydratePostalCodeTable(remotePool, localPool);
+
+    if (totalHydrated > 0) {
+      console.log(`🎉 [Auto-Provision] Successfully hydrated ${totalHydrated} total records across all tables into Local DB!`);
+    } else {
+      console.log("✅ [Auto-Provision] All tables already fully hydrated in Local DB.");
+    }
+  } catch (err) {
+    console.error("❌ [Auto-Provision] Error hydrating all tables:", err.message);
+  }
+}
+
+// Helper: Sync active floor plan, active open orders, and Day-Start sequence from Remote DB
+async function syncOperationalStateFromRemote(remotePool, localPool) {
+  try {
+    // 0. Mirror business day (DateEntry) and push all sales, settlements, day end, reports, members & credit to Remote DB
+    const { mirrorBusinessDateEntry, pushAllSalesAndOperationalToRemote } = require("./salesPushService");
+    await mirrorBusinessDateEntry(localPool, remotePool);
+    await pushAllSalesAndOperationalToRemote(localPool, remotePool);
+
+    // 0B. SyncDeletedLog Table Creation & Offline Deletion Processing
+    const createDeletedLogTblSql = `
+      IF OBJECT_ID('SyncDeletedLog', 'U') IS NULL
+      BEGIN
+        CREATE TABLE SyncDeletedLog (
+          Id INT IDENTITY(1,1) PRIMARY KEY,
+          TableName VARCHAR(100) NOT NULL,
+          RecordId VARCHAR(100) NOT NULL,
+          DeletedAt DATETIME DEFAULT GETDATE()
+        );
+      END
+    `;
+    await localPool.request().query(createDeletedLogTblSql).catch(() => {});
+    await remotePool.request().query(createDeletedLogTblSql).catch(() => {});
+
+    // Process Local Deletions -> Remote DB
+    const localDeletions = await localPool.request().query("SELECT Id, TableName, RecordId FROM SyncDeletedLog").catch(() => ({ recordset: [] }));
+    for (const del of localDeletions.recordset) {
+      const pkName = (del.TableName === 'CreditCustomerMaster') ? 'CustomerId' :
+                     (del.TableName === 'CustomerCreditTransactions' || del.TableName === 'CreditCustomerTransaction') ? 'TransactionId' : 'MemberId';
+      await remotePool.request()
+        .input("recId", del.RecordId)
+        .query(`DELETE FROM ${del.TableName} WHERE [${pkName}] = @recId`).catch(() => {});
+      await localPool.request()
+        .input("id", del.Id)
+        .query("DELETE FROM SyncDeletedLog WHERE Id = @id").catch(() => {});
+    }
+
+    // Process Remote Deletions -> Local DB
+    const remoteDeletions = await remotePool.request().query("SELECT Id, TableName, RecordId FROM SyncDeletedLog").catch(() => ({ recordset: [] }));
+    for (const rDel of remoteDeletions.recordset) {
+      const pkName = (rDel.TableName === 'CreditCustomerMaster') ? 'CustomerId' :
+                     (rDel.TableName === 'CustomerCreditTransactions' || rDel.TableName === 'CreditCustomerTransaction') ? 'TransactionId' : 'MemberId';
+      await localPool.request()
+        .input("recId", rDel.RecordId)
+        .query(`DELETE FROM ${rDel.TableName} WHERE [${pkName}] = @recId`).catch(() => {});
+      await remotePool.request()
+        .input("id", rDel.Id)
+        .query("DELETE FROM SyncDeletedLog WHERE Id = @id").catch(() => {});
+    }
+
+    // 0A. Master Catalog Sync: verify all menu, catalog, settings & terminals every 20s (or on first run)
+    const now = Date.now();
+    if (now - lastMasterCatalogSyncTime >= MASTER_CATALOG_SYNC_INTERVAL_MS || lastMasterCatalogSyncTime === 0) {
+      lastMasterCatalogSyncTime = now;
+      await syncMasterCatalog2Way(remotePool, localPool);
+    }
+
+    // 0C. 2-Way Delta Sync for Operational Tables (Attendance, Staff, Customer Credit, Invoices & Settlements)
+    await syncTable2Way(remotePool, localPool, "TimeEntry", ["Userid", "ClockinTime"], 50);
+    await syncTable2Way(remotePool, localPool, "DailyAttendance", ["DeliveryPersonId", "StartDateTime"], 50);
+    await syncTable2Way(remotePool, localPool, "DailyAttendanceLog", ["DeliveryPersonId", "StartDateTime"], 50);
+    await syncTable2Way(remotePool, localPool, "MemberMaster", "MemberId", 50);
+    await syncTable2Way(remotePool, localPool, "CreditCustomerMaster", "CustomerId", 50);
+    await syncTable2Way(remotePool, localPool, "CustomerCreditTransactions", "TransactionId", 50);
+    await syncTable2Way(remotePool, localPool, "OrderSequences", ["RestaurantId", "SequenceDate"], 50);
+    await syncTable2Way(remotePool, localPool, "SettlementHeader", "SettlementID", 50);
+    await syncTable2Way(remotePool, localPool, "SettlementItemDetail", "OrderDetailId", 50);
+    await syncTable2Way(remotePool, localPool, "SettlementTotalSales", ["SettlementID", "PayMode"], 50);
+    await syncTable2Way(remotePool, localPool, "PaymentDetailCur", "PaymentId", 50);
+    await syncTable2Way(remotePool, localPool, "PaymentDetail", "PaymentId", 50);
+    await syncTable2Way(remotePool, localPool, "RestaurantInvoice", "RestaurantBillId", 50);
+    await syncTable2Way(remotePool, localPool, "RestaurantOrder", "OrderId", 50);
+    await syncTable2Way(remotePool, localPool, "RestaurantOrderDetail", "OrderDetailId", 50);
+
+    // 1. Sync DailyOrderSequenceNumber (Business Day Start/End status)
+    const remoteSeq = await remotePool.request().query("SELECT TOP 50 * FROM DailyOrderSequenceNumber");
+    for (const seq of remoteSeq.recordset) {
+      const val = seq.NextDailyOrderSequenceNumber || seq.LastNumber || 1;
+      await localPool.request()
+        .input("val", val)
+        .query(`
+          IF EXISTS (SELECT 1 FROM DailyOrderSequenceNumber)
+            UPDATE DailyOrderSequenceNumber SET NextDailyOrderSequenceNumber = @val;
+          ELSE
+            INSERT INTO DailyOrderSequenceNumber (NextDailyOrderSequenceNumber) VALUES (@val);
+        `).catch(() => {});
+    }
+
+    // 2. 2-Way Floor Plan Table State Sync (Timestamp-based: Remote <-> Local)
+    const remoteTables = await remotePool.request().query(`
+      SELECT TableNumber, Status, StartTime, TotalAmount, CurrentOrderId, CustomerName, Pax, LockedByName, entry_status, ModifiedOn
+      FROM TableMaster
+    `);
+    const localTables = await localPool.request().query(`
+      SELECT TableNumber, Status, StartTime, TotalAmount, CurrentOrderId, CustomerName, Pax, LockedByName, entry_status, ModifiedOn
+      FROM TableMaster
+    `);
+
+    const localTableMap = new Map(localTables.recordset.map(t => [t.TableNumber, t]));
+
+    for (const rTbl of remoteTables.recordset) {
+      const lTbl = localTableMap.get(rTbl.TableNumber);
+
+      const rTime = rTbl.ModifiedOn ? new Date(rTbl.ModifiedOn).getTime() : 0;
+      const lTime = lTbl && lTbl.ModifiedOn ? new Date(lTbl.ModifiedOn).getTime() : 0;
+
+      if (rTime > lTime) {
+        // Remote is newer -> Update Local DB
+        await localPool.request()
+          .input("tblNo", rTbl.TableNumber)
+          .input("status", rTbl.Status)
+          .input("startTime", rTbl.StartTime)
+          .input("totalAmt", rTbl.TotalAmount || 0)
+          .input("currOrder", rTbl.CurrentOrderId)
+          .input("custName", rTbl.CustomerName)
+          .input("pax", rTbl.Pax)
+          .input("lockedBy", rTbl.LockedByName)
+          .input("entryStatus", rTbl.entry_status)
+          .input("modifiedOn", rTbl.ModifiedOn)
+          .query(`
+            UPDATE TableMaster
+            SET Status = @status, StartTime = @startTime, TotalAmount = @totalAmt,
+                CurrentOrderId = @currOrder, CustomerName = @custName, Pax = @pax,
+                LockedByName = @lockedBy, entry_status = @entryStatus, ModifiedOn = @modifiedOn
+            WHERE TableNumber = @tblNo
+          `).catch(() => {});
+      } else if (lTime > rTime && lTbl) {
+        // Local is newer -> Push to Remote DB
+        await remotePool.request()
+          .input("tblNo", lTbl.TableNumber)
+          .input("status", lTbl.Status)
+          .input("startTime", lTbl.StartTime)
+          .input("totalAmt", lTbl.TotalAmount || 0)
+          .input("currOrder", lTbl.CurrentOrderId)
+          .input("custName", lTbl.CustomerName)
+          .input("pax", lTbl.Pax)
+          .input("lockedBy", lTbl.LockedByName)
+          .input("entryStatus", lTbl.entry_status)
+          .input("modifiedOn", lTbl.ModifiedOn)
+          .query(`
+            UPDATE TableMaster
+            SET Status = @status, StartTime = @startTime, TotalAmount = @totalAmt,
+                CurrentOrderId = @currOrder, CustomerName = @custName, Pax = @pax,
+                LockedByName = @lockedBy, entry_status = @entryStatus, ModifiedOn = @modifiedOn
+            WHERE TableNumber = @tblNo
+          `).catch(() => {});
+      }
+    }
+
+    // 3. 2-Way Active Cart & Open Order Details Sync (CartItems & RestaurantOrderDetailCur)
+    // A. Sync CartItems from Remote DB -> Local DB
+    const remoteCartItems = await remotePool.request().query("SELECT * FROM CartItems").catch(() => ({ recordset: [] }));
+    for (const cItem of remoteCartItems.recordset) {
+      await localPool.request()
+        .input("id", cItem.Id)
+        .input("cartId", cItem.CartId)
+        .input("payload", cItem.CartPayload)
+        .query(`
+          IF EXISTS (SELECT 1 FROM CartItems WHERE Id = @id)
+            UPDATE CartItems SET CartId = @cartId, CartPayload = @payload, UpdatedAt = GETDATE() WHERE Id = @id;
+          ELSE
+            INSERT INTO CartItems (Id, CartId, CartPayload, UpdatedAt) VALUES (@id, @cartId, @payload, GETDATE());
+        `).catch(() => {});
+    }
+
+    // B. Sync CartItems from Local DB -> Remote DB
+    const localCartItems = await localPool.request().query("SELECT * FROM CartItems").catch(() => ({ recordset: [] }));
+    for (const lItem of localCartItems.recordset) {
+      await remotePool.request()
+        .input("id", lItem.Id)
+        .input("cartId", lItem.CartId)
+        .input("payload", lItem.CartPayload)
+        .query(`
+          IF EXISTS (SELECT 1 FROM CartItems WHERE Id = @id)
+            UPDATE CartItems SET CartId = @cartId, CartPayload = @payload, UpdatedAt = GETDATE() WHERE Id = @id;
+          ELSE
+            INSERT INTO CartItems (Id, CartId, CartPayload, UpdatedAt) VALUES (@id, @cartId, @payload, GETDATE());
+        `).catch(() => {});
+    }
+
+    // 4. 2-Way Sync Active Open Orders & Line Items (RestaurantOrderCur & RestaurantOrderDetailCur)
+    // A. Sync from Remote DB -> Local DB (only pull new orders that do not exist locally)
+    const remoteOrders = await remotePool.request().query(`
+      SELECT TOP 100 * FROM RestaurantOrderCur WITH (NOLOCK) WHERE (isOrderClosed = 0 OR isOrderClosed IS NULL)
+    `).catch(() => ({ recordset: [] }));
+
+    const localOrdersMapRes = await localPool.request().query(`
+      SELECT OrderId, ModifiedOn FROM RestaurantOrderCur WITH (NOLOCK) WHERE (isOrderClosed = 0 OR isOrderClosed IS NULL)
+    `).catch(() => ({ recordset: [] }));
+    const localModifiedMap = new Map(localOrdersMapRes.recordset.map(o => [o.OrderId, o.ModifiedOn ? new Date(o.ModifiedOn).getTime() : 0]));
+
+    for (const ro of remoteOrders.recordset) {
+      // 🛡️ LOCK SHIELD: If this order already exists on Local DB, Local POS is the active master!
+      // Do not overwrite or delete local line items from remote.
+      if (localModifiedMap.has(ro.OrderId)) continue;
+
+      const keys = Object.keys(ro).filter(k => ro[k] !== null);
+      if (keys.length === 0) continue;
+      const colList = keys.map(k => `[${k}]`).join(", ");
+      const req = localPool.request();
+      const valList = keys.map((k, idx) => {
+        const paramName = `p_${idx}`;
+        req.input(paramName, ro[k]);
+        return `@${paramName}`;
+      }).join(", ");
+      const updateAssignments = keys
+        .map((k, idx) => ({ key: k, idx }))
+        .filter(item => item.key.toLowerCase() !== 'orderid')
+        .map(item => `[${item.key}] = @p_${item.idx}`)
+        .join(", ");
+      req.input("p_OrderId", ro.OrderId);
+
+      await req.query(`
+        IF NOT EXISTS (SELECT 1 FROM RestaurantOrderCur WHERE OrderId = @p_OrderId)
+        BEGIN
+          INSERT INTO RestaurantOrderCur (${colList}) VALUES (${valList})
+        END
+        ELSE
+        BEGIN
+          UPDATE RestaurantOrderCur SET ${updateAssignments} WHERE OrderId = @p_OrderId
+        END
+      `).catch((err) => console.warn(`⚠️ [Auto-Provision] Remote->Local header pull warning (${ro.OrderId}):`, err.message));
+
+      const remoteOrderDetails = await remotePool.request()
+        .input("oid", ro.OrderId)
+        .query("SELECT * FROM RestaurantOrderDetailCur WHERE OrderId = @oid AND StatusCode <> 0").catch(() => ({ recordset: [] }));
+
+      const remoteDetailIds = remoteOrderDetails.recordset.map(d => d.OrderDetailId);
+      if (remoteDetailIds.length > 0) {
+        const cleanDetailIds = remoteDetailIds.map(id => `'${id}'`).join(",");
+        await localPool.request().query(`
+          DELETE FROM RestaurantOrderDetailCur 
+          WHERE OrderId = '${ro.OrderId}' AND StatusCode = 1 AND OrderDetailId NOT IN (${cleanDetailIds})
+        `).catch(() => {});
+      }
+
+      for (const rod of remoteOrderDetails.recordset) {
+        const dKeys = Object.keys(rod).filter(k => rod[k] !== null);
+        if (dKeys.length === 0) continue;
+        const dColList = dKeys.map(k => `[${k}]`).join(", ");
+        const dReq = localPool.request();
+        const dValList = dKeys.map((k, idx) => {
+          const paramName = `dp_${idx}`;
+          dReq.input(paramName, rod[k]);
+          return `@${paramName}`;
+        }).join(", ");
+        const dUpdateAssignments = dKeys
+          .map((k, idx) => ({ key: k, idx }))
+          .filter(item => item.key.toLowerCase() !== 'orderdetailid')
+          .map(item => `[${item.key}] = @dp_${item.idx}`)
+          .join(", ");
+        dReq.input("dp_OrderDetailId", rod.OrderDetailId);
+
+        await dReq.query(`
+          IF NOT EXISTS (SELECT 1 FROM RestaurantOrderDetailCur WHERE OrderDetailId = @dp_OrderDetailId)
+          BEGIN
+            INSERT INTO RestaurantOrderDetailCur (${dColList}) VALUES (${dValList})
+          END
+          ELSE
+          BEGIN
+            UPDATE RestaurantOrderDetailCur SET ${dUpdateAssignments} WHERE OrderDetailId = @dp_OrderDetailId
+          END
+        `).catch((err) => console.warn(`⚠️ [Auto-Provision] Remote->Local detail pull warning (${rod.OrderDetailId}):`, err.message));
+      }
+    }
+
+    // A2. Sync Closed Status from Remote DB -> Local DB (close Local orders if closed on Remote by exact OrderId)
+    const remoteClosedOrders = await remotePool.request().query(`
+      SELECT OrderId FROM RestaurantOrderCur WHERE isOrderClosed = 1 AND ModifiedOn >= DATEADD(DAY, -1, GETDATE())
+    `).catch(() => ({ recordset: [] }));
+    for (const rco of remoteClosedOrders.recordset) {
+      if (rco.OrderId) {
+        await localPool.request().query(`
+          UPDATE RestaurantOrderCur SET isOrderClosed = 1, ModifiedOn = GETDATE() WHERE OrderId = '${rco.OrderId}' AND (isOrderClosed = 0 OR isOrderClosed IS NULL)
+        `).catch(() => {});
+      }
+    }
+
+    // B. Sync from Local DB -> Remote DB (Push Local Active Carts/Orders to Remote Cloud DB)
+    const localOrders = await localPool.request().query(`
+      SELECT TOP 100 * FROM RestaurantOrderCur WITH (NOLOCK) WHERE (isOrderClosed = 0 OR isOrderClosed IS NULL)
+    `).catch(() => ({ recordset: [] }));
+
+    const remoteOrdersMapRes = await remotePool.request().query(`
+      SELECT OrderId, ModifiedOn FROM RestaurantOrderCur WITH (NOLOCK) WHERE (isOrderClosed = 0 OR isOrderClosed IS NULL)
+    `).catch(() => ({ recordset: [] }));
+    const remoteModifiedMap = new Map(remoteOrdersMapRes.recordset.map(o => [o.OrderId, o.ModifiedOn ? new Date(o.ModifiedOn).getTime() : 0]));
+
+    for (const lo of localOrders.recordset) {
+      const lTime = lo.ModifiedOn ? new Date(lo.ModifiedOn).getTime() : 0;
+      const rTime = remoteModifiedMap.get(lo.OrderId) || 0;
+
+      // Skip if Remote DB is already up-to-date or newer
+      if (rTime >= lTime && rTime > 0) continue;
+
+      const keys = Object.keys(lo).filter(k => lo[k] !== null);
+      if (keys.length === 0) continue;
+      const colList = keys.map(k => `[${k}]`).join(", ");
+      const req = remotePool.request();
+      const valList = keys.map((k, idx) => {
+        const paramName = `lp_${idx}`;
+        req.input(paramName, lo[k]);
+        return `@${paramName}`;
+      }).join(", ");
+      const updateAssignments = keys
+        .map((k, idx) => ({ key: k, idx }))
+        .filter(item => item.key.toLowerCase() !== 'orderid')
+        .map(item => `[${item.key}] = @lp_${item.idx}`)
+        .join(", ");
+      req.input("lp_OrderId", lo.OrderId);
+
+      await req.query(`
+        IF NOT EXISTS (SELECT 1 FROM RestaurantOrderCur WHERE OrderId = @lp_OrderId)
+        BEGIN
+          INSERT INTO RestaurantOrderCur (${colList}) VALUES (${valList})
+        END
+        ELSE
+        BEGIN
+          UPDATE RestaurantOrderCur SET ${updateAssignments} WHERE OrderId = @lp_OrderId
+        END
+      `).catch((err) => console.warn(`⚠️ [Auto-Provision] Local->Remote header push warning (${lo.OrderId}):`, err.message));
+
+      const localOrderDetails = await localPool.request()
+        .input("oid", lo.OrderId)
+        .query("SELECT * FROM RestaurantOrderDetailCur WITH (NOLOCK) WHERE OrderId = @oid AND StatusCode <> 0").catch(() => ({ recordset: [] }));
+
+      const localDetailIds = localOrderDetails.recordset.map(d => d.OrderDetailId);
+      if (localDetailIds.length > 0) {
+        const cleanDetailIds = localDetailIds.map(id => `'${id}'`).join(",");
+        await remotePool.request().query(`
+          DELETE FROM RestaurantOrderDetailCur 
+          WHERE OrderId = '${lo.OrderId}' AND StatusCode = 1 AND OrderDetailId NOT IN (${cleanDetailIds})
+        `).catch(() => {});
+      } else {
+        await remotePool.request().query(`
+          DELETE FROM RestaurantOrderDetailCur 
+          WHERE OrderId = '${lo.OrderId}' AND StatusCode = 1
+        `).catch(() => {});
+      }
+
+      for (const lod of localOrderDetails.recordset) {
+        const dKeys = Object.keys(lod).filter(k => lod[k] !== null);
+        if (dKeys.length === 0) continue;
+        const dColList = dKeys.map(k => `[${k}]`).join(", ");
+        const dReq = remotePool.request();
+        const dValList = dKeys.map((k, idx) => {
+          const paramName = `ldp_${idx}`;
+          dReq.input(paramName, lod[k]);
+          return `@${paramName}`;
+        }).join(", ");
+        const dUpdateAssignments = dKeys
+          .map((k, idx) => ({ key: k, idx }))
+          .filter(item => item.key.toLowerCase() !== 'orderdetailid')
+          .map(item => `[${item.key}] = @ldp_${item.idx}`)
+          .join(", ");
+        dReq.input("ldp_OrderDetailId", lod.OrderDetailId);
+
+        await dReq.query(`
+          IF NOT EXISTS (SELECT 1 FROM RestaurantOrderDetailCur WHERE OrderDetailId = @ldp_OrderDetailId)
+          BEGIN
+            INSERT INTO RestaurantOrderDetailCur (${dColList}) VALUES (${dValList})
+          END
+          ELSE
+          BEGIN
+            UPDATE RestaurantOrderDetailCur SET ${dUpdateAssignments} WHERE OrderDetailId = @ldp_OrderDetailId
+          END
+        `).catch((err) => console.warn(`⚠️ [Auto-Provision] Local->Remote detail push warning (${lod.OrderDetailId}):`, err.message));
+      }
+    }
+
+    console.log("⚡ [Auto-Provision] Operational state, carts & active open orders synced!");
+  } catch (err) {
+    console.warn("⚠️ [Auto-Provision] Operational state sync warning:", err.message);
+  }
+}
+
+// Helper: Ensure core views like Vw_UserMaster exist on Local DB even if Remote is offline
+async function ensureEssentialLocalViews(localPool) {
+  if (!localPool) return;
+  try {
+    const checkTable = await localPool.request().query(`SELECT OBJECT_ID('UserMaster', 'U') AS id`).catch(() => ({ recordset: [] }));
+    if (!checkTable.recordset[0]?.id) {
+      return; // Wait until UserMaster table exists
+    }
+
+    const checkView = await localPool.request().query(`
+      SELECT OBJECT_ID('vw_UserMaster', 'V') AS v1, OBJECT_ID('Vw_UserMaster', 'V') AS v2
+    `).catch(() => ({ recordset: [] }));
+
+    const r = checkView.recordset[0] || {};
+    if (!r.v1 && !r.v2) {
+      let created = false;
+      await localPool.request().batch(`
+        CREATE VIEW [dbo].[Vw_UserMaster] AS
+        SELECT UserMaster.*, UG.UserGroupName 
+        FROM UserMaster
+        LEFT JOIN UserGroupMaster UG ON UG.UserGroupId = UserMaster.UserGroupId
+      `).then(() => { created = true; }).catch((err) => {
+        console.warn("⚠️ [Auto-Provision] Failed to create essential Vw_UserMaster view:", err.message);
+      });
+      if (created) {
+        console.log("✅ [Auto-Provision] Created essential Vw_UserMaster view on Local DB!");
+      }
+    }
+  } catch (err) {
+    console.warn("⚠️ [Auto-Provision] View creation error:", err.message);
+  }
+}
+
+// Helper: Replicate database views from Remote DB -> Local DB
+async function replicateViewsFromRemote(remotePool, localPool) {
+  if (!remotePool || !localPool) return;
+  try {
+    const viewsRes = await remotePool.request().query(`
+      SELECT TABLE_NAME FROM INFORMATION_SCHEMA.VIEWS
+    `).catch(() => ({ recordset: [] }));
+
+    for (const vRow of viewsRes.recordset) {
+      const viewName = vRow.TABLE_NAME;
+      try {
+        const defRes = await remotePool.request()
+          .input("vName", viewName)
+          .query(`SELECT OBJECT_DEFINITION(OBJECT_ID(@vName)) AS ViewDef`);
+        const viewDef = defRes.recordset[0]?.ViewDef;
+        if (viewDef) {
+          const createOrAlterSql = viewDef.replace(/CREATE\s+VIEW/i, 'CREATE OR ALTER VIEW');
+          await localPool.request().query(createOrAlterSql).catch(() => {});
+        }
+      } catch (_) {}
+    }
+    console.log("✅ [Auto-Provision] Database views replicated successfully to Local DB!");
+  } catch (err) {
+    console.warn("⚠️ [Auto-Provision] View replication warning:", err.message);
+  }
+}
+
+// Helper: Replicate column default constraints from Remote DB -> Local DB
+async function replicateDefaultConstraintsFromRemote(remotePool, localPool) {
+  if (!remotePool || !localPool) return;
+  try {
+    const remoteDefaults = await remotePool.request().query(`
+      SELECT 
+        t.name AS TableName,
+        c.name AS ColumnName,
+        d.definition AS DefaultDefinition
+      FROM sys.default_constraints d
+      INNER JOIN sys.tables t ON d.parent_object_id = t.object_id
+      INNER JOIN sys.columns c ON d.parent_object_id = c.object_id AND d.parent_column_id = c.column_id
+    `).catch(() => ({ recordset: [] }));
+
+    if (!remoteDefaults.recordset || remoteDefaults.recordset.length === 0) return;
+
+    const localDefaults = await localPool.request().query(`
+      SELECT 
+        t.name AS TableName,
+        c.name AS ColumnName
+      FROM sys.default_constraints d
+      INNER JOIN sys.tables t ON d.parent_object_id = t.object_id
+      INNER JOIN sys.columns c ON d.parent_object_id = c.object_id AND d.parent_column_id = c.column_id
+    `).catch(() => ({ recordset: [] }));
+
+    const localSet = new Set(
+      (localDefaults.recordset || []).map(r => `${r.TableName.toLowerCase()}.${r.ColumnName.toLowerCase()}`)
+    );
+
+    let addedCount = 0;
+    for (const row of remoteDefaults.recordset) {
+      const key = `${row.TableName.toLowerCase()}.${row.ColumnName.toLowerCase()}`;
+      if (!localSet.has(key)) {
+        try {
+          const colCheck = await localPool.request().query(`
+            SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_NAME = '${row.TableName}' AND COLUMN_NAME = '${row.ColumnName}'
+          `).catch(() => ({ recordset: [] }));
+
+          if (colCheck.recordset && colCheck.recordset.length > 0) {
+            const constraintName = `DF_${row.TableName}_${row.ColumnName}`;
+            await localPool.request().query(`
+              ALTER TABLE [dbo].[${row.TableName}] 
+              ADD CONSTRAINT [${constraintName}] DEFAULT ${row.DefaultDefinition} FOR [${row.ColumnName}]
+            `).catch(async () => {
+              const fallbackName = `DF_${row.TableName}_${row.ColumnName}_${Math.floor(Math.random() * 10000)}`;
+              await localPool.request().query(`
+                ALTER TABLE [dbo].[${row.TableName}] 
+                ADD CONSTRAINT [${fallbackName}] DEFAULT ${row.DefaultDefinition} FOR [${row.ColumnName}]
+              `).catch(() => {});
+            });
+            addedCount++;
+            localSet.add(key);
+          }
+        } catch (_) {}
+      }
+    }
+    if (addedCount > 0) {
+      console.log(`✅ [Auto-Provision] Replicated ${addedCount} default constraints to Local DB.`);
+    }
+  } catch (err) {
+    console.warn("⚠️ [Auto-Provision] Default constraint replication warning:", err.message);
   }
 }
 
 module.exports = {
   ensureLocalDatabaseExists,
-  syncSchemaFromRemoteToLocal
+  ensureEssentialLocalViews,
+  replicateTableSchema,
+  hydrateTableFast,
+  hydrateAllTablesFromRemote,
+  syncSchemaFromRemoteToLocal,
+  syncOperationalStateFromRemote,
+  syncMasterCatalog2Way,
+  syncTable2Way
 };

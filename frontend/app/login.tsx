@@ -25,6 +25,7 @@ import { Theme } from "@/constants/theme";
 import { API_URL } from "@/constants/Config";
 import { useAuthStore } from "@/stores/authStore";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { ServerConnectionModal } from "@/components/ServerConnectionModal";
 
 /* ============ ROLE CONFIG ============ */
 
@@ -54,6 +55,7 @@ export default function LoginScreen() {
   const [rememberMe, setRememberMe] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [serverModalVisible, setServerModalVisible] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
@@ -187,7 +189,7 @@ export default function LoginScreen() {
         errorObject: err,
         timestamp: new Date().toISOString()
       });
-      setError("Cannot connect to server. Check your network.");
+      setError("Cannot connect to server. Tap 'Server Setup' to verify IP.");
       shakeError();
     } finally {
       setLoading(false);
@@ -243,15 +245,35 @@ export default function LoginScreen() {
 
                 {/* Card */}
                 <Animated.View style={[styles.card, { transform: [{ translateX: shakeAnim }] }, isLandscape && { padding: 20 }]}>
-                  <Text style={styles.cardTitle}>Sign In</Text>
-                  <Text style={styles.cardSubtitle}>Enter your credentials to continue</Text>
+                  <View style={styles.cardHeaderRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.cardTitle}>Sign In</Text>
+                      <Text style={styles.cardSubtitle}>Enter your credentials to continue</Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.serverSetupBadge}
+                      onPress={() => setServerModalVisible(true)}
+                      activeOpacity={0.7}
+                    >
+                      <Ionicons name="server-outline" size={15} color="#A855F7" />
+                      <Text style={styles.serverSetupBadgeText}>Server Setup</Text>
+                    </TouchableOpacity>
+                  </View>
 
                   {/* Error Banner */}
                   {error !== "" && (
-                    <View style={styles.errorBanner}>
+                    <TouchableOpacity
+                      style={styles.errorBanner}
+                      onPress={() => {
+                        if (error.includes("Server Setup") || error.includes("connect")) {
+                          setServerModalVisible(true);
+                        }
+                      }}
+                      activeOpacity={0.8}
+                    >
                       <Ionicons name="alert-circle" size={16} color="#DC2626" />
                       <Text style={styles.errorText}>{error}</Text>
-                    </View>
+                    </TouchableOpacity>
                   )}
 
                   {/* User ID */}
@@ -336,6 +358,13 @@ export default function LoginScreen() {
           </ScrollView>
         </KeyboardAvoidingView>
       </SafeAreaView>
+
+      {/* 🌐 Server Connection Setup Modal */}
+      <ServerConnectionModal
+        visible={serverModalVisible}
+        onClose={() => setServerModalVisible(false)}
+        onSaved={() => setError("")}
+      />
     </View>
   );
 }
@@ -346,6 +375,30 @@ const styles = StyleSheet.create({
   keyboardView:   { flex: 1 },
   scrollContent:  { flexGrow: 1 },
   centeredContent: { flex: 1, justifyContent: "center", alignItems: "center", paddingHorizontal: 20, paddingVertical: 20 },
+
+  cardHeaderRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    marginBottom: 4,
+  },
+  serverSetupBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 12,
+    backgroundColor: "rgba(168, 85, 247, 0.1)",
+    borderWidth: 1,
+    borderColor: "rgba(168, 85, 247, 0.25)",
+    marginTop: 2,
+  },
+  serverSetupBadgeText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#7E22CE",
+  },
   content:        { width: "100%", maxWidth: 440, alignItems: "center" },
 
   bgCircle:   { position: "absolute", borderRadius: 999 },

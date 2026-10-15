@@ -1,6 +1,7 @@
 import { API_URL } from "@/constants/Config";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
+import { Image } from "expo-image";
 import { useRouter } from "expo-router";
 import React, { useEffect, useMemo, useState } from "react";
 import {
@@ -21,19 +22,19 @@ import {
   useWindowDimensions,
   View
 } from "react-native";
-import { Image } from "expo-image";
 import {
   SafeAreaView,
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
 import CartSidebar from "../../components/CartSidebar";
 import ComboCustomizer from "../../components/ComboCustomizer";
-import WindowControls from "../../components/WindowControls";
 import { useToast } from "../../components/Toast";
 import { Skeleton } from "../../components/ui/Skeleton";
 import UniversalPrinter from "../../components/UniversalPrinter";
+import WindowControls from "../../components/WindowControls";
 import { Fonts } from "../../constants/Fonts";
 import { Theme } from "../../constants/theme";
+import { useBarcodeScanner } from "../../hooks/useBarcodeScanner";
 import { useAuthStore } from "../../stores/authStore";
 import {
   addToCartGlobal,
@@ -41,12 +42,11 @@ import {
   setCurrentContext,
   useCartStore
 } from "../../stores/cartStore";
+import { useCompanySettingsStore } from "../../stores/companySettingsStore";
 import { useGeneralSettingsStore } from "../../stores/generalSettingsStore";
 import { useMenuStore } from "../../stores/menuStore";
 import { useOrderContextStore } from "../../stores/orderContextStore";
 import { usePaymentSettingsStore } from "../../stores/paymentSettingsStore";
-import { useCompanySettingsStore } from "../../stores/companySettingsStore";
-import { useBarcodeScanner } from "../../hooks/useBarcodeScanner";
 
 const EMPTY_ARRAY: any[] = [];
 
@@ -169,7 +169,10 @@ const DishCard = React.memo(
               source={{ uri: `${IMAGE_BASE_URL}${dish.Image}` }}
               style={styles.dishImg}
               contentFit="cover"
-              transition={150}
+              transition={0}
+              cachePolicy="memory-disk"
+              priority="high"
+              recyclingKey={String(dish.Image)}
             />
           ) : (
             <View
@@ -249,13 +252,15 @@ const DishCard = React.memo(
 // This wrapper ensures only the SPECIFIC dish card being updated re-renders.
 const DishCardWrapper = React.memo(
   ({ item, width, isPhone, isTablet, isLandscape, onPress }: any) => {
+    const orderContext = useOrderContextStore((state) => state.currentOrder);
     const currentContextId = useCartStore((state) => state.currentContextId);
+    const effectiveContextId = (orderContext ? getContextId(orderContext) : null) || currentContextId;
     const dishId = item.DishId || item.id;
 
     // ⚡ SURGICAL SUBSCRIPTION: Only re-render if the quantity of THIS specific product changes
     const cartQty = useCartStore((state) => {
-      if (!currentContextId) return 0;
-      const qtyMap = state.cartQtyMap[currentContextId] || {};
+      if (!effectiveContextId) return 0;
+      const qtyMap = state.cartQtyMap[effectiveContextId] || {};
       return qtyMap[dishId] || 0;
     });
 
@@ -337,10 +342,12 @@ const GroupSkeleton = () => (
 
 // 🚀 PERFORMANCE OPTIMIZATION: Cart Badge Component
 const CartBadge = React.memo(({ isPhone, isLandscape }: any) => {
+  const orderContext = useOrderContextStore((state) => state.currentOrder);
   const currentContextId = useCartStore((state) => state.currentContextId);
+  const effectiveContextId = (orderContext ? getContextId(orderContext) : null) || currentContextId;
   const count = useCartStore((state) => {
-    if (!currentContextId) return 0;
-    return (state.carts[currentContextId] || []).length;
+    if (!effectiveContextId) return 0;
+    return (state.carts[effectiveContextId] || []).length;
   });
 
   if (count === 0) return null;
@@ -477,7 +484,8 @@ export default function MenuScreen() {
   // MenuScreen no longer needs to calculate these on every render.
 
   const handleReprintKOT = async () => {
-    const cart = useCartStore.getState().carts[currentContextId!] || [];
+    const effectiveContextId = (orderContext ? getContextId(orderContext) : null) || currentContextId;
+    const cart = effectiveContextId ? (useCartStore.getState().carts[effectiveContextId] || []) : [];
     if (!cart.length) {
       showToast({ type: "error", message: "Cart is empty" });
       return;
@@ -515,17 +523,15 @@ export default function MenuScreen() {
   };
 
   const handleReprintBill = async () => {
-    const cart = useCartStore.getState().carts[currentContextId!] || [];
+    const effectiveContextId = (orderContext ? getContextId(orderContext) : null) || currentContextId;
+    const cart = effectiveContextId ? (useCartStore.getState().carts[effectiveContextId] || []) : [];
     if (!cart.length) {
       showToast({ type: "error", message: "Cart is empty" });
       return;
     }
 
     try {
-      const cart = useCartStore.getState().carts[currentContextId!] || [];
-      const discountInfo = useCartStore.getState().discounts[
-        currentContextId!
-      ] || { applied: false, type: "fixed", value: 0 };
+      const discountInfo = (effectiveContextId && useCartStore.getState().discounts[effectiveContextId]) || { applied: false, type: "fixed", value: 0 };
 
       const subtotal = cart.reduce((sum: number, item: any) => {
         if (item.status === "VOIDED") return sum;
@@ -859,19 +865,42 @@ export default function MenuScreen() {
   }, []);
 
   const loadGroups = async (kitchenId: string) => {
-    setSelectedKitchenId(kitchenId);
-    const groupsData = await fetchGroups(kitchenId);
-    setGroups(groupsData);
-    if (groupsData.length > 0) {
-      await loadDishes(groupsData[0].DishGroupId);
+    const kIdStr = String(kitchenId);
+    if (selectedKitchenId === kIdStr && groups.length > 0) return;
+    setSelectedKitchenId(kIdStr);
+
+    const store = useMenuStore.getState();
+    let groupsData = store.dishGroups[kIdStr];
+    if (!groupsData || groupsData.length === 0) {
+      groupsData = await fetchGroups(kIdStr);
+    }
+    setGroups(groupsData || []);
+
+    if (groupsData && groupsData.length > 0) {
+      loadDishes(groupsData[0].DishGroupId);
+    } else {
+      setSelectedGroup("");
+      setItems([]);
     }
   };
 
   const loadDishes = async (groupId: string) => {
-    setSelectedGroup(groupId);
+    const gIdStr = String(groupId);
+    if (selectedGroup === gIdStr && items.length > 0) return;
+    setSelectedGroup(gIdStr);
+
+    // 🚀 INSTANT SWITCH: Read from in-memory cache with zero flicker/refresh!
+    const store = useMenuStore.getState();
+    const cachedDishes = store.dishesByGroup[gIdStr];
+    if (Array.isArray(cachedDishes)) {
+      setItems(cachedDishes);
+      return;
+    }
+
+    // Only if not found in cache, show brief loader and fetch
     setIsLoadingDishes(true);
-    const dishesData = await fetchDishes(groupId);
-    setItems(dishesData);
+    const dishesData = await fetchDishes(gIdStr);
+    setItems(dishesData || []);
     setIsLoadingDishes(false);
   };
 
@@ -995,7 +1024,7 @@ export default function MenuScreen() {
       try {
         const res = await fetch(`${API_URL}/api/menu/modifiers/${dish.DishId}`);
         const data = await res.json();
-        
+
         if (Array.isArray(data) && data.length > 0) {
           setModifiers(data);
           setShowModifier(true);
@@ -1067,7 +1096,7 @@ export default function MenuScreen() {
 
   const adjustModifierQuantity = (mod: any, gId: string, delta: number) => {
     const key = `${mod.ModifierID}_${gId}`;
-    
+
     const group = groupedModifiers.find(g => g.groupId === gId);
     const maxSelect = group ? group.maxSelect : 0;
     const multiselect = group ? group.multiselect : false;
@@ -1102,20 +1131,26 @@ export default function MenuScreen() {
     });
   };
 
+  const openModifiersRef = React.useRef(openModifiers);
+  openModifiersRef.current = openModifiers;
+  const handleDishPress = React.useCallback((dish: any) => {
+    openModifiersRef.current(dish);
+  }, []);
+
   const renderDishItem = React.useCallback(
     ({ item }: { item: any }) => {
       return (
         <DishCardWrapper
           item={item}
           width={cardWidth}
-          onPress={openModifiers}
+          onPress={handleDishPress}
           isPhone={isPhone}
           isTablet={isTablet}
           isLandscape={isLandscape}
         />
       );
     },
-    [cardWidth, openModifiers, isPhone, isTablet, isLandscape],
+    [cardWidth, handleDishPress, isPhone, isTablet, isLandscape],
   );
 
   const toggleModifier = (mod: any) => {
@@ -1650,7 +1685,7 @@ export default function MenuScreen() {
                       const maxSelect = group.maxSelect;
                       const minSelect = group.minSelect;
                       const multiselect = group.multiselect;
-                      
+
                       const groupSelectedCount = Object.entries(selectedModifierQuantities)
                         .filter(([k]) => k.endsWith(`_${gId}`))
                         .reduce((sum, [, q]) => sum + q, 0);

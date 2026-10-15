@@ -15,6 +15,218 @@ async function initDB(pool) {
   };
 
   try {
+    // 0. Essential Core Baseline Tables (Ensure clean offline boot & no 'Invalid object name' errors on blank DBs)
+    await runQuery("Create UserGroupMaster", `
+      IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[UserGroupMaster]') AND type in (N'U'))
+      BEGIN
+          CREATE TABLE [dbo].[UserGroupMaster](
+              [UserGroupId] [uniqueidentifier] NOT NULL PRIMARY KEY DEFAULT NEWID(),
+              [UserGroupCode] [varchar](50) NULL,
+              [UserGroupName] [varchar](100) NULL,
+              [isActive] [bit] NULL DEFAULT 1
+          );
+          INSERT INTO [dbo].[UserGroupMaster] ([UserGroupId], [UserGroupCode], [UserGroupName], [isActive])
+          VALUES ('E6EAA22D-44ED-420F-96CA-5468F0D25DB4', 'ADMIN', 'ADMINISTRATOR', 1);
+      END
+    `);
+
+    await runQuery("Create UserMaster", `
+      IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[UserMaster]') AND type in (N'U'))
+      BEGIN
+          CREATE TABLE [dbo].[UserMaster](
+              [UserId] [uniqueidentifier] NOT NULL PRIMARY KEY DEFAULT NEWID(),
+              [UserCode] [varchar](50) NOT NULL,
+              [UserName] [varchar](50) NOT NULL,
+              [UserPassword] [nvarchar](255) NULL,
+              [UserGroupid] [uniqueidentifier] NULL,
+              [FullName] [varchar](100) NULL,
+              [IsDisabled] [bit] NULL DEFAULT 0,
+              [CreatedOn] [datetime] NULL DEFAULT GETDATE()
+          );
+          INSERT INTO [dbo].[UserMaster] ([UserId], [UserCode], [UserName], [UserPassword], [UserGroupid], [FullName])
+          VALUES ('8C026364-77E7-4002-803B-9BBE187C60BD', 'U_00000065', '123', '123', 'E6EAA22D-44ED-420F-96CA-5468F0D25DB4', 'Cashier 123');
+      END
+    `);
+
+    await runQuery("Create TableMaster", `
+      IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[TableMaster]') AND type in (N'U'))
+      BEGIN
+          CREATE TABLE [dbo].[TableMaster](
+              [TableId] [uniqueidentifier] NOT NULL PRIMARY KEY DEFAULT NEWID(),
+              [TableNumber] [varchar](50) NOT NULL,
+              [DiningSection] [varchar](10) NULL DEFAULT '1',
+              [Status] [int] NULL DEFAULT 0,
+              [StartTime] [datetime] NULL,
+              [TotalAmount] [decimal](18, 2) NULL DEFAULT 0,
+              [CurrentOrderId] [varchar](100) NULL,
+              [entry_status] [varchar](50) NULL,
+              [CustomerName] [varchar](100) NULL,
+              [Pax] [int] NULL DEFAULT 1,
+              [Seats] [int] NULL DEFAULT 4,
+              [LockedByName] [varchar](100) NULL,
+              [ModifiedOn] [datetime] NULL DEFAULT GETDATE()
+          );
+      END
+    `);
+
+    await runQuery("Create DishMaster", `
+      IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[DishMaster]') AND type in (N'U'))
+      BEGIN
+          CREATE TABLE [dbo].[DishMaster](
+              [DishId] [uniqueidentifier] NOT NULL PRIMARY KEY DEFAULT NEWID(),
+              [DishCode] [varchar](50) NULL,
+              [DishName] [nvarchar](255) NOT NULL,
+              [CategoryId] [uniqueidentifier] NULL,
+              [DishGroupId] [uniqueidentifier] NULL,
+              [Price] [decimal](18, 2) NULL DEFAULT 0,
+              [IsPublished] [bit] NULL DEFAULT 1,
+              [IsActive] [bit] NULL DEFAULT 1
+          );
+      END
+    `);
+
+    await runQuery("Create CategoryMaster", `
+      IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[CategoryMaster]') AND type in (N'U'))
+      BEGIN
+          CREATE TABLE [dbo].[CategoryMaster](
+              [CategoryId] [uniqueidentifier] NOT NULL PRIMARY KEY DEFAULT NEWID(),
+              [CategoryCode] [varchar](50) NULL,
+              [CategoryName] [nvarchar](255) NOT NULL,
+              [IsPublished] [bit] NULL DEFAULT 1
+          );
+      END
+    `);
+
+    await runQuery("Create DishGroupMaster", `
+      IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[DishGroupMaster]') AND type in (N'U'))
+      BEGIN
+          CREATE TABLE [dbo].[DishGroupMaster](
+              [DishGroupId] [uniqueidentifier] NOT NULL PRIMARY KEY DEFAULT NEWID(),
+              [DishGroupName] [nvarchar](255) NOT NULL,
+              [IsPublished] [bit] NULL DEFAULT 1
+          );
+      END
+    `);
+
+    await runQuery("Create AppSettings", `
+      IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[AppSettings]') AND type in (N'U'))
+      BEGIN
+          CREATE TABLE [dbo].[AppSettings](
+              [Id] [int] IDENTITY(1,1) NOT NULL PRIMARY KEY,
+              [Shop] [nvarchar](255) NULL DEFAULT 'My Restaurant',
+              [HoldOvertimeMinutes] [int] NULL DEFAULT 60,
+              [EnableCheckoutFlow] [bit] NULL DEFAULT 1,
+              [EnableDirectProcessToPay] [bit] NULL DEFAULT 0,
+              [EnableDirectPaymentToProcess] [bit] NULL DEFAULT 0,
+              [EnableSkipSummaryScreen] [bit] NULL DEFAULT 0,
+              [CustomerSideDisplay] [bit] NULL DEFAULT 1,
+              [EnableGuestDetailsPopup] [bit] NULL DEFAULT 1,
+              [EnableCashDrawer] [bit] NULL DEFAULT 1,
+              [EnableOnlinePayment] [bit] NULL DEFAULT 1,
+              [EnableComboPrint] [bit] NULL DEFAULT 0,
+              [EnableCookingInstructions] [bit] NULL DEFAULT 1,
+              [EnableReceiptPrint] [bit] NULL DEFAULT 1
+          );
+          INSERT INTO [dbo].[AppSettings] ([Shop]) VALUES ('My Restaurant');
+      END
+    `);
+
+    await runQuery("Create Paymode", `
+      IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[Paymode]') AND type in (N'U'))
+      BEGIN
+          CREATE TABLE [dbo].[Paymode](
+              [PaymodeId] [uniqueidentifier] NOT NULL PRIMARY KEY DEFAULT NEWID(),
+              [PaymodeCode] [varchar](50) NULL,
+              [PaymodeName] [varchar](100) NOT NULL,
+              [isActive] [bit] NULL DEFAULT 1
+          );
+      END
+    `);
+
+    await runQuery("Create SettlementHeader", `
+      IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[SettlementHeader]') AND type in (N'U'))
+      BEGIN
+          CREATE TABLE [dbo].[SettlementHeader](
+              [SettlementID] [uniqueidentifier] NOT NULL PRIMARY KEY DEFAULT NEWID(),
+              [BillNo] [varchar](50) NULL,
+              [OrderId] [varchar](100) NULL,
+              [CashierId] [varchar](100) NULL,
+              [SubTotal] [decimal](18, 2) NULL DEFAULT 0,
+              [DiscountAmount] [decimal](18, 2) NULL DEFAULT 0,
+              [ServiceCharge] [decimal](18, 2) NULL DEFAULT 0,
+              [TotalTax] [decimal](18, 2) NULL DEFAULT 0,
+              [TakeawayCharge] [decimal](18, 2) NULL DEFAULT 0,
+              [SysAmount] [decimal](18, 2) NULL DEFAULT 0,
+              [PaidAmount] [decimal](18, 2) NULL DEFAULT 0,
+              [BalanceAmount] [decimal](18, 2) NULL DEFAULT 0,
+              [RoundedBy] [decimal](18, 2) NULL DEFAULT 0,
+              [LastSettlementDate] [datetime] NULL DEFAULT GETDATE(),
+              [start_date] [date] NULL,
+              [IsCancelled] [bit] NULL DEFAULT 0
+          );
+      END
+    `);
+
+    await runQuery("Create RestaurantOrder", `
+      IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[RestaurantOrder]') AND type in (N'U'))
+      BEGIN
+          CREATE TABLE [dbo].[RestaurantOrder](
+              [OrderId] [varchar](100) NOT NULL PRIMARY KEY,
+              [OrderNo] [varchar](50) NULL,
+              [TableNo] [varchar](50) NULL,
+              [OrderDateTime] [datetime] NULL DEFAULT GETDATE(),
+              [TotalAmount] [decimal](18, 2) NULL DEFAULT 0,
+              [start_date] [date] NULL
+          );
+      END
+    `);
+
+    await runQuery("Create RestaurantOrderCur", `
+      IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[RestaurantOrderCur]') AND type in (N'U'))
+      BEGIN
+          CREATE TABLE [dbo].[RestaurantOrderCur](
+              [OrderId] [varchar](100) NOT NULL PRIMARY KEY,
+              [OrderNo] [varchar](50) NULL,
+              [TableNo] [varchar](50) NULL,
+              [OrderDateTime] [datetime] NULL DEFAULT GETDATE(),
+              [isOrderClosed] [bit] NULL DEFAULT 0,
+              [TotalAmount] [decimal](18, 2) NULL DEFAULT 0,
+              [start_date] [date] NULL,
+              [ModifiedOn] [datetime] NULL DEFAULT GETDATE()
+          );
+      END
+    `);
+
+    await runQuery("Create RestaurantOrderDetail", `
+      IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[RestaurantOrderDetail]') AND type in (N'U'))
+      BEGIN
+          CREATE TABLE [dbo].[RestaurantOrderDetail](
+              [OrderDetailId] [uniqueidentifier] NOT NULL PRIMARY KEY DEFAULT NEWID(),
+              [OrderId] [varchar](100) NOT NULL,
+              [DishId] [uniqueidentifier] NULL,
+              [DishName] [nvarchar](255) NULL,
+              [Qty] [decimal](18, 3) NULL DEFAULT 1,
+              [Price] [decimal](18, 2) NULL DEFAULT 0,
+              [StatusCode] [int] NULL DEFAULT 1
+          );
+      END
+    `);
+
+    await runQuery("Create RestaurantOrderDetailCur", `
+      IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[RestaurantOrderDetailCur]') AND type in (N'U'))
+      BEGIN
+          CREATE TABLE [dbo].[RestaurantOrderDetailCur](
+              [OrderDetailId] [uniqueidentifier] NOT NULL PRIMARY KEY DEFAULT NEWID(),
+              [OrderId] [varchar](100) NOT NULL,
+              [DishId] [uniqueidentifier] NULL,
+              [DishName] [nvarchar](255) NULL,
+              [Qty] [decimal](18, 3) NULL DEFAULT 1,
+              [Price] [decimal](18, 2) NULL DEFAULT 0,
+              [StatusCode] [int] NULL DEFAULT 1
+          );
+      END
+    `);
+
     // 1. SettlementItemDetail
     await runQuery("Create SettlementItemDetail", `
       IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[SettlementItemDetail]') AND type in (N'U'))
@@ -186,6 +398,7 @@ async function initDB(pool) {
     await runQuery("SettlementHeader - VoidItemAmount", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[SettlementHeader]') AND name = 'VoidItemAmount') ALTER TABLE [dbo].[SettlementHeader] ADD VoidItemAmount DECIMAL(18, 2) DEFAULT 0");
     await runQuery("SettlementHeader - ServiceCharge", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[SettlementHeader]') AND name = 'ServiceCharge') ALTER TABLE [dbo].[SettlementHeader] ADD ServiceCharge DECIMAL(18, 2) DEFAULT 0");
     await runQuery("SettlementHeader - RoundedBy", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[SettlementHeader]') AND name = 'RoundedBy') ALTER TABLE [dbo].[SettlementHeader] ADD RoundedBy DECIMAL(18, 2) DEFAULT 0");
+    await runQuery("SettlementHeader - OrderId Nullable", "IF EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[SettlementHeader]') AND name = 'OrderId' AND is_nullable = 0 AND is_identity = 0) ALTER TABLE [dbo].[SettlementHeader] ALTER COLUMN OrderId INT NULL");
 
     // 4. SettlementItemDetail Columns
     await runQuery("SettlementItemDetail - Status", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[SettlementItemDetail]') AND name = 'Status') ALTER TABLE [dbo].[SettlementItemDetail] ADD Status NVARCHAR(50) NULL");
@@ -273,6 +486,7 @@ async function initDB(pool) {
     await runQuery("RestaurantOrderDetailCur - OrderNumber", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[RestaurantOrderDetailCur]') AND name = 'OrderNumber') ALTER TABLE [dbo].[RestaurantOrderDetailCur] ADD OrderNumber NVARCHAR(100)");
     await runQuery("RestaurantOrderDetailCur - Remarks", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[RestaurantOrderDetailCur]') AND name = 'Remarks') ALTER TABLE [dbo].[RestaurantOrderDetailCur] ADD Remarks NVARCHAR(300)");
     await runQuery("RestaurantOrderDetailCur - isTakeAway", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[RestaurantOrderDetailCur]') AND name = 'isTakeAway') ALTER TABLE [dbo].[RestaurantOrderDetailCur] ADD isTakeAway BIT DEFAULT 0");
+    await runQuery("RestaurantOrderDetailCur - isSettlement Nullable", "IF EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[RestaurantOrderDetailCur]') AND name = 'isSettlement' AND is_nullable = 0) BEGIN DECLARE @dfName VARCHAR(256); SELECT @dfName = name FROM sys.default_constraints WHERE parent_object_id = OBJECT_ID('RestaurantOrderDetailCur') AND parent_column_id = COLUMNPROPERTY(OBJECT_ID('RestaurantOrderDetailCur'), 'isSettlement', 'ColumnId'); IF @dfName IS NOT NULL EXEC('ALTER TABLE RestaurantOrderDetailCur DROP CONSTRAINT ' + @dfName); ALTER TABLE RestaurantOrderDetailCur ALTER COLUMN isSettlement BIT NULL; END");
 
     await runQuery("TableMaster - CurrentOrderId", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[TableMaster]') AND name = 'CurrentOrderId') ALTER TABLE [dbo].[TableMaster] ADD CurrentOrderId NVARCHAR(100)");
     await runQuery("TableMaster - entry_status", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[TableMaster]') AND name = 'entry_status') ALTER TABLE [dbo].[TableMaster] ADD entry_status VARCHAR(50) NULL");
@@ -382,6 +596,8 @@ async function initDB(pool) {
     await runQuery("AppSettings - EnableComboPrint", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[AppSettings]') AND name = 'EnableComboPrint') ALTER TABLE [dbo].[AppSettings] ADD EnableComboPrint BIT NOT NULL DEFAULT 0");
     await runQuery("AppSettings - EnableCookingInstructions", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[AppSettings]') AND name = 'EnableCookingInstructions') ALTER TABLE [dbo].[AppSettings] ADD EnableCookingInstructions BIT NOT NULL DEFAULT 1");
     await runQuery("AppSettings - EnableReceiptPrint", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[AppSettings]') AND name = 'EnableReceiptPrint') ALTER TABLE [dbo].[AppSettings] ADD EnableReceiptPrint BIT NOT NULL DEFAULT 1");
+    await runQuery("AppSettings - HoldOvertimeMinutes", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[AppSettings]') AND name = 'HoldOvertimeMinutes') ALTER TABLE [dbo].[AppSettings] ADD HoldOvertimeMinutes INT DEFAULT 60");
+    await runQuery("AppSettings - Ensure Default Row", "IF EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[AppSettings]') AND type = 'U') AND NOT EXISTS (SELECT TOP 1 1 FROM [dbo].[AppSettings]) INSERT INTO [dbo].[AppSettings] DEFAULT VALUES");
     await runQuery("RestaurantOrderCur - TakeawayCharge", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[RestaurantOrderCur]') AND name = 'TakeawayCharge') ALTER TABLE [dbo].[RestaurantOrderCur] ADD TakeawayCharge DECIMAL(18, 2) DEFAULT 0");
     await runQuery("RestaurantOrder - TakeawayCharge", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[RestaurantOrder]') AND name = 'TakeawayCharge') ALTER TABLE [dbo].[RestaurantOrder] ADD TakeawayCharge DECIMAL(18, 2) DEFAULT 0");
     await runQuery("SettlementHeader - TakeawayCharge", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[SettlementHeader]') AND name = 'TakeawayCharge') ALTER TABLE [dbo].[SettlementHeader] ADD TakeawayCharge DECIMAL(18, 2) DEFAULT 0");
@@ -725,6 +941,25 @@ async function initDB(pool) {
     // Ensure AttachmentUrl exists in CashInEntry
     await runQuery("CashInEntry - AttachmentUrl", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[CashInEntry]') AND name = 'AttachmentUrl') ALTER TABLE [dbo].[CashInEntry] ADD [AttachmentUrl] NVARCHAR(500) NULL");
 
+    // Ensure CashInEntry and CashOutEntry have default constraints for CashInId/CashOutId
+    await runQuery("CashInEntry - CashInId default constraint", `
+      IF NOT EXISTS (
+        SELECT 1 FROM sys.default_constraints d 
+        INNER JOIN sys.columns c ON d.parent_object_id = c.object_id AND d.parent_column_id = c.column_id
+        WHERE d.parent_object_id = OBJECT_ID('CashInEntry') AND c.name = 'CashInId'
+      )
+      ALTER TABLE [dbo].[CashInEntry] ADD CONSTRAINT [DF_CashInEntry_CashInId] DEFAULT (NEWID()) FOR [CashInId]
+    `);
+
+    await runQuery("CashOutEntry - CashOutId default constraint", `
+      IF NOT EXISTS (
+        SELECT 1 FROM sys.default_constraints d 
+        INNER JOIN sys.columns c ON d.parent_object_id = c.object_id AND d.parent_column_id = c.column_id
+        WHERE d.parent_object_id = OBJECT_ID('CashOutEntry') AND c.name = 'CashOutId'
+      )
+      ALTER TABLE [dbo].[CashOutEntry] ADD CONSTRAINT [DF_CashOutEntry_CashOutId] DEFAULT (NEWID()) FOR [CashOutId]
+    `);
+
     // 18.2 Create ArtistCashBox table
     await runQuery("Create ArtistCashBox table", `
       IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[ArtistCashBox]') AND type in (N'U'))
@@ -909,10 +1144,11 @@ async function initDB(pool) {
       END
     `);
 
-    // --- Automated schema sync from reference database UCSPONDY ---
+    // --- Automated schema sync from reference database ---
     try {
-      const ucsPondyCheck = await pool.request().query("SELECT 1 FROM sys.databases WHERE name = 'UCSPONDY'");
-      if (ucsPondyCheck.recordset.length > 0) {
+      const activeDb = process.env.LOCAL_DB_NAME || process.env.DB_NAME || "UCSPONDY_HYBRID";
+      const ucsCheck = await pool.request().query("SELECT 1 FROM sys.databases WHERE name = 'UCSPONDY'");
+      if (ucsCheck.recordset.length > 0 && activeDb !== 'UCSPONDY') {
         const missingCols = await pool.request().query(`
           SELECT 
             src.TABLE_NAME, 
@@ -922,9 +1158,9 @@ async function initDB(pool) {
             src.NUMERIC_PRECISION, 
             src.NUMERIC_SCALE
           FROM UCSPONDY.INFORMATION_SCHEMA.COLUMNS src
-          JOIN UCSSITARAS.INFORMATION_SCHEMA.TABLES tgt_tbl 
+          JOIN [${activeDb}].INFORMATION_SCHEMA.TABLES tgt_tbl 
             ON src.TABLE_NAME = tgt_tbl.TABLE_NAME AND tgt_tbl.TABLE_TYPE = 'BASE TABLE'
-          LEFT JOIN UCSSITARAS.INFORMATION_SCHEMA.COLUMNS tgt
+          LEFT JOIN [${activeDb}].INFORMATION_SCHEMA.COLUMNS tgt
             ON src.TABLE_NAME = tgt.TABLE_NAME AND src.COLUMN_NAME = tgt.COLUMN_NAME
           WHERE tgt.COLUMN_NAME IS NULL
         `);
@@ -1290,6 +1526,20 @@ async function initDB(pool) {
               [CreatedOn] [datetime] DEFAULT GETDATE()
           );
           CREATE NONCLUSTERED INDEX IX_ComboGroupDishMapping_ComboGroupId ON [dbo].[ComboGroupDishMapping](ComboGroupId);
+      END
+    `);
+
+    // 🪑 SECTION LAYOUT SETTINGS TABLE (Themes & Chair toggles)
+    await runQuery("Create POS_SectionLayoutSettings table", `
+      IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[POS_SectionLayoutSettings]') AND type in (N'U'))
+      BEGIN
+          CREATE TABLE [dbo].[POS_SectionLayoutSettings](
+              [ID] [int] IDENTITY(1,1) NOT NULL PRIMARY KEY,
+              [SectionKey] [nvarchar](50) NOT NULL UNIQUE,
+              [BackgroundTheme] [nvarchar](50) NULL DEFAULT 'champagne_fizz',
+              [ShowChairs] [bit] NULL DEFAULT 1,
+              [UpdatedOn] [datetime] NULL DEFAULT GETDATE()
+          );
       END
     `);
 

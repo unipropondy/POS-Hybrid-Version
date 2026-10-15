@@ -31,8 +31,8 @@ router.get("/kitchens", async (req, res) => {
     const pool = await poolPromise;
     const result = await pool.request().query(`
       SELECT cm.CategoryId, cm.CategoryName AS KitchenTypeName, ckt.KitchenTypeCode, cm.SortCode, ISNULL(cm.IsPublished, 0) AS IsPublished
-      FROM CategoryMaster cm
-      LEFT JOIN CategoryKitchenType ckt ON cm.CategoryId = ckt.CategoryId
+      FROM CategoryMaster cm WITH (NOLOCK)
+      LEFT JOIN CategoryKitchenType ckt WITH (NOLOCK) ON cm.CategoryId = ckt.CategoryId
       WHERE cm.IsActive = 1
       ORDER BY cm.SortCode ASC, cm.CategoryName ASC
     `);
@@ -56,7 +56,7 @@ router.get("/dishgroups/all", async (req, res) => {
         DishGroupId,
         DishGroupName,
         ISNULL(IsPublished, 0) AS IsPublished
-      FROM DishGroupMaster
+      FROM DishGroupMaster WITH (NOLOCK)
       WHERE IsActive = 1
       ORDER BY DishGroupName ASC
     `);
@@ -83,10 +83,10 @@ router.get("/dishgroups/:CategoryId", async (req, res) => {
               a.DishGroupName,
               a.SortCode,
               ISNULL(a.IsPublished, 0) AS IsPublished
-          FROM DishGroupMaster a
-          LEFT JOIN DishGroupKitchentype dkt
+          FROM DishGroupMaster a WITH (NOLOCK)
+          LEFT JOIN DishGroupKitchentype dkt WITH (NOLOCK)
               ON a.DishGroupId = dkt.DishGroupId
-          LEFT JOIN CategoryMaster cm
+          LEFT JOIN CategoryMaster cm WITH (NOLOCK)
               ON cm.CategoryId = @CategoryId
           WHERE a.IsActive = 1
           AND (
@@ -136,13 +136,13 @@ router.get("/dishes/all", async (req, res) => {
         ISNULL(ISNULL(ckt.KitchenTypeName, cat.CategoryName), 'KITCHEN') as KitchenTypeName,
         pm.PrinterPath AS PrinterIP,
         ISNULL(d.SordCode, 0) AS SordCode
-      FROM DishMaster d
-      LEFT JOIN DishGroupMaster dgm ON d.DishGroupId = dgm.DishGroupId
-      LEFT JOIN CategoryMaster cat ON dgm.CategoryId = cat.CategoryId
-      LEFT JOIN CategoryKitchenType ckt ON dgm.CategoryId = ckt.CategoryId
+      FROM DishMaster d WITH (NOLOCK)
+      LEFT JOIN DishGroupMaster dgm WITH (NOLOCK) ON d.DishGroupId = dgm.DishGroupId
+      LEFT JOIN CategoryMaster cat WITH (NOLOCK) ON dgm.CategoryId = cat.CategoryId
+      LEFT JOIN CategoryKitchenType ckt WITH (NOLOCK) ON dgm.CategoryId = ckt.CategoryId
       LEFT JOIN (
         SELECT *, ROW_NUMBER() OVER(PARTITION BY LOWER(TRIM(KitchenTypeName)) ORDER BY PrinterId) as rn 
-        FROM PrintMaster WHERE IsActive = 1 AND IsEnabled = 1 AND PrinterType = 2
+        FROM PrintMaster WITH (NOLOCK) WHERE IsActive = 1 AND IsEnabled = 1 AND PrinterType = 2
       ) pm ON LOWER(TRIM(ISNULL(ckt.KitchenTypeName, cat.CategoryName))) = LOWER(TRIM(pm.KitchenTypeName)) AND pm.rn = 1
       WHERE d.IsActive = 1 ORDER BY ISNULL(d.SordCode, 0) ASC, d.Name ASC
     `);
@@ -184,24 +184,24 @@ router.get("/dishes/group/:DishGroupId", async (req, res) => {
               ISNULL(d.TakeawayCharge, 0) AS takeawayCharge,
               ISNULL(cat.IsPublished, 0) AS CategoryPublished,
               ISNULL(dgm.IsPublished, 0) AS GroupPublished,
-              (SELECT COUNT(1) FROM DishModifier dm WHERE dm.DishId = d.DishId) AS HasModifiers,
+              (SELECT COUNT(1) FROM DishModifier dm WITH (NOLOCK) WHERE dm.DishId = d.DishId) AS HasModifiers,
               CAST(ISNULL(d.IsDiscountAllowed, 1) AS INT) AS IsDiscountAllowed,
               ISNULL(ckt.KitchenTypeCode, '2') AS KitchenTypeCode,
               ISNULL(ISNULL(ckt.KitchenTypeName, cat.CategoryName), 'KITCHEN') AS KitchenTypeName,
               pm.PrinterPath AS PrinterIP,
               ISNULL(d.SordCode, 0) AS SordCode
-          FROM DishMaster d
+          FROM DishMaster d WITH (NOLOCK)
  
-          LEFT JOIN DishGroupMaster dgm
+          LEFT JOIN DishGroupMaster dgm WITH (NOLOCK)
               ON d.DishGroupId = dgm.DishGroupId
  
-          LEFT JOIN CategoryMaster cat
+          LEFT JOIN CategoryMaster cat WITH (NOLOCK)
               ON dgm.CategoryId = cat.CategoryId
  
-          LEFT JOIN CategoryKitchenType ckt
+          LEFT JOIN CategoryKitchenType ckt WITH (NOLOCK)
               ON dgm.CategoryId = ckt.CategoryId
  
-          LEFT JOIN DishGroupMapping dmap
+          LEFT JOIN DishGroupMapping dmap WITH (NOLOCK)
               ON d.DishId = dmap.DishId
  
           LEFT JOIN (
@@ -210,7 +210,7 @@ router.get("/dishes/group/:DishGroupId", async (req, res) => {
                         PARTITION BY LOWER(TRIM(KitchenTypeName))
                         ORDER BY PrinterId
                     ) AS rn
-              FROM PrintMaster
+              FROM PrintMaster WITH (NOLOCK)
               WHERE IsActive = 1
                 AND IsEnabled = 1
                 AND PrinterType = 2
@@ -322,44 +322,58 @@ class LRUImageCache {
 const imageCache = new LRUImageCache(100);
 router.imageCache = imageCache;
 
+const fs = require("fs");
+const path = require("path");
+const DISH_IMAGES_DIR = path.resolve(__dirname, "../public/uploads/dishes");
+
+if (!fs.existsSync(DISH_IMAGES_DIR)) {
+  fs.mkdirSync(DISH_IMAGES_DIR, { recursive: true });
+}
+
 router.get("/image/:imageId", async (req, res) => {
   try {
     const imageId = req.params.imageId;
+    const sanitizedId = imageId.replace(/[^a-zA-Z0-9-]/g, "");
+    const localFilePath = path.join(DISH_IMAGES_DIR, `${sanitizedId}.jpg`);
 
-    // Serve from cache if available
+    // 1. Check if image file exists in local disk folder first
+    if (fs.existsSync(localFilePath)) {
+      res.set("Cache-Control", "public, max-age=31536000, immutable");
+      return res.sendFile(localFilePath);
+    }
+
+    // 2. Serve from memory cache if available
     const cachedBuffer = imageCache.get(imageId);
     if (cachedBuffer) {
-      console.log(`⚡ [ImageCache] Cache HIT: ${imageId}`);
-      res.set("Cache-Control", "public, max-age=86400");
+      res.set("Cache-Control", "public, max-age=31536000, immutable");
       return res.type("image/jpeg").send(cachedBuffer);
     }
 
-    console.log(`⚡ [ImageCache] Cache MISS: ${imageId}`);
+    // 3. Fall back to Local SQL DB (ImageList table)
     const pool = await poolPromise;
     const result = await pool
       .request()
       .input("Imageid", imageId)
-      .query(`SELECT ImageData FROM ImageList WHERE Imageid = @Imageid`);
+      .query(`SELECT ImageData FROM ImageList WITH (NOLOCK) WHERE Imageid = @Imageid`);
 
     if (result.recordset.length > 0 && result.recordset[0].ImageData) {
       let buffer = result.recordset[0].ImageData;
 
-      // Compress large images (> 100KB) dynamically to prevent event loop bottlenecks
+      // Compress large images (> 100KB) dynamically
       if (buffer.length > 100 * 1024) {
         try {
-          const startTime = Date.now();
           buffer = await sharp(buffer)
             .resize(400, 400, { fit: "inside", withoutEnlargement: true })
             .jpeg({ quality: 80 })
             .toBuffer();
-          console.log(`⚡ [ImageCache] Compressed image ${imageId} from ${(result.recordset[0].ImageData.length / 1024).toFixed(1)}KB to ${(buffer.length / 1024).toFixed(1)}KB in ${Date.now() - startTime}ms`);
-        } catch (compressErr) {
-          console.error("⚠️ [ImageCache] Sharp compression failed, serving original image:", compressErr.message);
-        }
+        } catch (_) { }
       }
 
+      // Save to local disk folder for permanent file storage
+      fs.writeFile(localFilePath, buffer, () => { });
       imageCache.set(imageId, buffer);
-      res.set("Cache-Control", "public, max-age=86400");
+
+      res.set("Cache-Control", "public, max-age=31536000, immutable");
       res.type("image/jpeg").send(buffer);
     } else {
       res.status(404).send("Image not found");
@@ -586,7 +600,7 @@ router.clearMenuCache = (io) => {
   cache.clear();
   console.log("⚡ [MenuCache] Cache INVALIDATION: All menu cache cleared dynamically");
   if (typeof imageCache !== 'undefined') {
-    try { imageCache.clear(); } catch(e){}
+    try { imageCache.clear(); } catch (e) { }
   }
   try {
     const comboRoutes = require("./combo");
@@ -608,7 +622,7 @@ router.post("/publish-status", async (req, res) => {
     const { dishId, categoryId, dishGroupId, isPublished } = req.body;
     const pool = await poolPromise;
     const pubVal = (isPublished === 1 || isPublished === true || String(isPublished) === "1") ? 1 : 0;
-    
+
     if (dishId) {
       await pool.request()
         .input("DishId", dishId)
@@ -638,10 +652,33 @@ router.post("/publish-status", async (req, res) => {
   }
 });
 
-router.post("/clear-cache", (req, res) => {
+router.post("/clear-cache", async (req, res) => {
   const io = req.app.get("io");
   router.clearMenuCache(io);
-  res.json({ success: true, message: "Menu and image cache cleared successfully" });
+  try {
+    const { getRemotePool, getPool, isRemoteOnline } = require("../config/db");
+    const { syncMasterCatalog2Way } = require("../services/autoProvisionLocalDb");
+    if (isRemoteOnline()) {
+      syncMasterCatalog2Way(getRemotePool(), getPool()).catch(() => { });
+    }
+  } catch (_) { }
+  res.json({ success: true, message: "Menu and image cache cleared, background sync triggered" });
+});
+
+router.post("/sync-catalog", async (req, res) => {
+  try {
+    const { getRemotePool, getPool, isRemoteOnline } = require("../config/db");
+    const { syncMasterCatalog2Way } = require("../services/autoProvisionLocalDb");
+    if (!isRemoteOnline()) {
+      return res.status(503).json({ success: false, error: "Remote Cloud DB is currently offline" });
+    }
+    await syncMasterCatalog2Way(getRemotePool(), getPool());
+    const io = req.app.get("io");
+    router.clearMenuCache(io);
+    res.json({ success: true, message: "Master catalog (categories, dishes, combos, modifiers) fully synchronized!" });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 module.exports = router;

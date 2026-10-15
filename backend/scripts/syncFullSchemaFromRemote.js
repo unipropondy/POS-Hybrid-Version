@@ -22,7 +22,7 @@ async function runFullSync() {
     console.log("✅ Successfully connected to BOTH Local DB and Remote Cloud DB!");
     console.log("🔄 Replicating ALL tables, columns, data types, and master data...");
 
-    const success = await syncSchemaFromRemoteToLocal();
+    const success = await syncSchemaFromRemoteToLocal(localPool);
 
     if (success) {
       console.log("\n==========================================================");

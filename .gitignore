@@ -64,18 +64,30 @@ yarn-error.*
 *.tsbuildinfo
 
 # =========================
-# Backend Logs
+# Backend Logs & Temp
 # =========================
 backend/logs/
 backend/error_log.txt
+backend_err.log
+backend_out.log
+logs/
+*.log
+*.log.*
 
 UCS_PONDY/
 
 # =========================
-# Large Binary Files / APKs
+# Large Binary Files / Installers
 # =========================
 *.apk
+*.exe
+*.zip
+*.7z
+installer-output/
+installer-build/
 frontend/public/download/
+backend/public/uploads/
+backend/uploads/
 
 # =========================
 # Print Bridge Builds

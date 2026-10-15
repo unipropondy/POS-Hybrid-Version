@@ -1,31 +1,31 @@
-import React, { useState, useEffect, useRef } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  FlatList,
-  TextInput,
-  Image,
-  ActivityIndicator,
-  Dimensions,
-  Animated,
-  Alert,
-  Platform,
-  Modal,
-  ScrollView,
-  RefreshControl,
-} from "react-native";
-import { useRouter } from "expo-router";
-import { Theme } from "../../constants/theme";
-import { useMenuStore } from "../../stores/menuStore";
-import { useCartStore } from "../../stores/cartStore";
-import { useOrderContextStore } from "../../stores/orderContextStore";
-import { API_URL } from "../../constants/Config";
 import { Ionicons } from "@expo/vector-icons";
-import { formatToSingaporeDate, formatToSingaporeTime } from "../../utils/timezoneHelper";
+import { useRouter } from "expo-router";
+import { useEffect, useRef, useState } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  Animated,
+  Dimensions,
+  FlatList,
+  Modal,
+  Platform,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from "react-native";
+import { Image } from "expo-image";
+import { API_URL } from "../../constants/Config";
+import { Theme } from "../../constants/theme";
+import { useCartStore } from "../../stores/cartStore";
 import { useGeneralSettingsStore } from "../../stores/generalSettingsStore";
+import { useMenuStore } from "../../stores/menuStore";
+import { useOrderContextStore } from "../../stores/orderContextStore";
 import { isDishAvailableNow } from "../../utils/timeAvailabilityHelper";
+import { formatToSingaporeDate, formatToSingaporeTime } from "../../utils/timezoneHelper";
 
 const { width } = Dimensions.get("window");
 
@@ -432,7 +432,7 @@ export default function CustomerMenuScreen() {
     if (typeof localStorage !== "undefined") {
       const stored = localStorage.getItem("qr_pos_user");
       if (stored) {
-        try { setUserInfo(JSON.parse(stored)); } catch (e) {}
+        try { setUserInfo(JSON.parse(stored)); } catch (e) { }
       }
     }
     if (showProfileModal) {
@@ -696,7 +696,7 @@ export default function CustomerMenuScreen() {
             <TouchableOpacity
               style={styles.closeWindowBtn}
               onPress={() => {
-                try { window.close(); } catch (e) {}
+                try { window.close(); } catch (e) { }
               }}
             >
               <Ionicons name="power-outline" size={18} color="#fff" style={{ marginRight: 6 }} />
@@ -744,7 +744,7 @@ export default function CustomerMenuScreen() {
       const descMatch = dish.Description?.toLowerCase().includes(query);
       return nameMatch || descMatch;
     }
-    
+
     // Check if dish matches group (either primary DishGroupId or via DishGroupMapping)
     const matchesDishGroupId = (groupId: string) => {
       if (!groupId) return false;
@@ -758,12 +758,12 @@ export default function CustomerMenuScreen() {
 
     // Check if the dish belongs to any group in the currently selected category
     const belongsToCategory = dishGroups.some(g => matchesDishGroupId(g.DishGroupId));
-    
+
     // If a group is selected, match it; otherwise ensure it belongs to the selected category
     const matchesGroup = selectedGroupId
       ? matchesDishGroupId(selectedGroupId)
       : belongsToCategory;
-      
+
     return matchesGroup;
   });
 
@@ -925,7 +925,7 @@ export default function CustomerMenuScreen() {
             const qtyInCart = getDishQtyInCart(item.DishId || item.id);
 
             return (
-              <View 
+              <View
                 style={[styles.dishCard, isSoldOut && { opacity: 0.7 }]}
                 className="hover-card"
               >
@@ -937,6 +937,10 @@ export default function CustomerMenuScreen() {
                         : "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?q=80&w=150",
                     }}
                     style={styles.dishImage}
+                    transition={0}
+                    cachePolicy="memory-disk"
+                    priority="high"
+                    recyclingKey={String(item.Image || item.DishId)}
                   />
                   {qtyInCart > 0 && (
                     <View style={styles.dishQtyBadge}>
@@ -951,8 +955,8 @@ export default function CustomerMenuScreen() {
                   </Text>
                   <View style={styles.cardFooter}>
                     <Text style={styles.dishPrice}>${Number(item.Price || 0).toFixed(2)}</Text>
-                    <TouchableOpacity 
-                      style={[styles.addButton, isSoldOut && { backgroundColor: "#94A3B8" }]} 
+                    <TouchableOpacity
+                      style={[styles.addButton, isSoldOut && { backgroundColor: "#94A3B8" }]}
                       onPress={() => handleAddSimple(item)}
                       disabled={isSoldOut}
                       className={!isSoldOut ? "hover-button" : ""}
@@ -1035,7 +1039,7 @@ export default function CustomerMenuScreen() {
           activeOpacity={1}
           onPress={() => setShowProfileModal(false)}
         >
-          <TouchableOpacity 
+          <TouchableOpacity
             activeOpacity={1}
             style={{ backgroundColor: "#fff", borderRadius: 24, padding: 22, width: "92%", maxWidth: 420, maxHeight: "88%", shadowColor: "#000", shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.18, shadowRadius: 24, elevation: 10 }}
           >
@@ -1150,7 +1154,7 @@ export default function CustomerMenuScreen() {
                       <ActivityIndicator size="small" color="#FF5E1A" style={{ marginVertical: 10 }} />
                     ) : customerOrders.length > 0 ? (
                       customerOrders.map((order, idx) => {
-                        const dateText = order.OrderDateTime 
+                        const dateText = order.OrderDateTime
                           ? formatToSingaporeDate(order.OrderDateTime)
                           : "N/A";
                         const timeText = order.OrderDateTime
@@ -1308,7 +1312,7 @@ export default function CustomerMenuScreen() {
             </ScrollView>
 
             {/* Modal Action Button */}
-            <TouchableOpacity 
+            <TouchableOpacity
               style={{ width: "100%", paddingVertical: 13, backgroundColor: "#FF5E1A", borderRadius: 14, alignItems: "center", marginTop: 14 }}
               onPress={() => setShowProfileModal(false)}
             >
@@ -1358,7 +1362,7 @@ const styles = StyleSheet.create({
   },
   tableBadge: {
     marginLeft: 8,
-    backgroundColor: "#FFF5ED", 
+    backgroundColor: "#FFF5ED",
     color: Theme.primary,
     paddingHorizontal: 10,
     paddingVertical: 4,
@@ -1384,7 +1388,7 @@ const styles = StyleSheet.create({
     marginHorizontal: 16,
     marginVertical: 14,
     paddingHorizontal: 16,
-    borderRadius: 20, 
+    borderRadius: 20,
     height: 52,
     borderWidth: 1.5,
     borderColor: "#F1F5F9",
@@ -1452,7 +1456,7 @@ const styles = StyleSheet.create({
     cursor: "pointer",
   },
   categoryPillSelected: {
-    backgroundColor: "#FFF7ED", 
+    backgroundColor: "#FFF7ED",
     borderColor: Theme.primary,
   },
   categoryText: {

@@ -408,6 +408,12 @@ router.post("/settlement", async (req, res) => {
     const io = req.app.get('io');
     if (io) io.emit('settlement_updated', { action: 'settlement_saved' });
 
+    // 🚀 Non-blocking background push to remote cloud DB if online
+    try {
+      const { triggerSyncProcess } = require("../services/syncService");
+      triggerSyncProcess();
+    } catch (_) {}
+
     res.json({
       message: "Settlement Completed ✅",
       settlementId

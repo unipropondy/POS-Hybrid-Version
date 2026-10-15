@@ -975,13 +975,14 @@ export default React.memo(function CartSidebar({ width = 400 }: CartSidebarProps
 
   // 🟢 OPTIMIZED SELECTORS: Only re-render when SPECIFIC data changes
   const currentContextId = useCartStore((state) => state.currentContextId);
+  const effectiveContextId = (orderContext ? getContextId(orderContext) : null) || currentContextId;
   const cart = useCartStore(
     (state) =>
-      (currentContextId ? state.carts[currentContextId] : undefined) ||
+      (effectiveContextId ? state.carts[effectiveContextId] : undefined) ||
       EMPTY_ARRAY,
   );
   const currentDiscount = useCartStore(
-    (state) => state.discounts[currentContextId || ""],
+    (state) => state.discounts[effectiveContextId || ""],
   );
   const deletingItems = useCartStore((state) => state.deletingItems);
 
@@ -1022,6 +1023,10 @@ export default React.memo(function CartSidebar({ width = 400 }: CartSidebarProps
   // 🟢 OPTIMIZED: Select only the tableData we care about to prevent re-renders on other tables' updates
   const tableData = useTableStatusStore((s: any) => {
     if (!orderContext) return null;
+    const cleanId = String(orderContext.tableId || "").replace(/^\{|\}$/g, "").trim().toLowerCase();
+    if (cleanId && s.tableMap?.[cleanId]) {
+      return s.tableMap[cleanId];
+    }
     if (orderContext.orderType === "TAKEAWAY") {
       return s.tables.find(
         (t: any) =>
@@ -1114,33 +1119,48 @@ export default React.memo(function CartSidebar({ width = 400 }: CartSidebarProps
   }, [orderContext]);
 
   useEffect(() => {
+    // Only fetch cart from DB if table is currently active/occupied
     if (orderContext?.tableId) {
+      const isAvailable = currentTableStatus === "EMPTY" || (tableData && (tableData.status === 0 || tableData.status === "0" || tableData.status === "EMPTY"));
+      if (isAvailable) {
+        // Table is empty/available: ensure table order ID is clean
+        useCartStore.getState().setTableOrderId(orderContext.tableId, null);
+        return;
+      }
       console.log(
         `🔄 [CartSidebar] Refreshing cart from DB for table: ${orderContext.tableId}`,
       );
       useCartStore.getState().fetchCartFromDB(orderContext.tableId);
     }
-  }, [orderContext?.tableId]);
+  }, [orderContext?.tableId, currentTableStatus]);
 
   useEffect(() => {
-    // ✅ Sync official Order ID from DB whenever table changes
+    // ✅ Sync official Order ID from DB whenever table changes (only for active/occupied tables)
     if (orderContext?.tableId) {
+      const isAvailable = currentTableStatus === "EMPTY" || (tableData && (tableData.status === 0 || tableData.status === "0" || tableData.status === "EMPTY"));
+      if (isAvailable) {
+        useCartStore.getState().setTableOrderId(orderContext.tableId, null);
+        return;
+      }
       fetch(`${API_URL}/api/tables/${orderContext.tableId}`)
         .then((res) => res.json())
         .then((data) => {
+          const tStatus = Number(data.table?.Status ?? data.table?.status ?? 1);
           const oid = data.table?.currentOrderId || data.table?.CurrentOrderId;
-          if (data.success && oid) {
+          if (data.success && oid && tStatus !== 0) {
             useCartStore
               .getState()
               .setTableOrderId(
                 orderContext.tableId!,
                 oid,
               );
+          } else if (tStatus === 0) {
+            useCartStore.getState().setTableOrderId(orderContext.tableId!, null);
           }
         })
         .catch((err) => console.error("Sidebar ID sync error:", err));
     }
-  }, [orderContext?.tableId]);
+  }, [orderContext?.tableId, currentTableStatus]);
 
 
   // 🖥️ CUSTOMER DISPLAY — JOIN TERMINAL ROOM (POS device side)
@@ -1533,6 +1553,7 @@ export default React.memo(function CartSidebar({ width = 400 }: CartSidebarProps
   };
 
   const handleSendOrder = async (skipRedirect = false) => {
+    useCartStore.getState().cancelPendingSync();
     const unsentItems = cart.filter(
       (i: any) => !i.status || i.status === "NEW",
     );

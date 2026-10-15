@@ -5,6 +5,13 @@ const { poolPromise } = require("../config/db");
 const { runInTransaction } = require("../utils/transactionHelper");
 const { processSplitPayments } = require("../services/payment.service");
 
+function triggerSync() {
+  try {
+    const { triggerSyncProcess } = require("../services/syncService");
+    triggerSyncProcess();
+  } catch (_) {}
+}
+
 const toGuidOrNull = (value) => {
   const text = String(value || "").trim();
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(text)
@@ -73,6 +80,7 @@ router.post("/add", async (req, res) => {
         IsActive: isActive !== undefined ? isActive : 1
       }
     });
+    triggerSync();
   } catch (err) {
     console.error("[CREDIT CUSTOMERS ADD ERROR]", err);
     res.status(500).json({ error: err.message });
@@ -99,6 +107,7 @@ router.post("/update", async (req, res) => {
           CreditLimit = @CreditLimit, CurrentBalance = @CurrentBalance, Balance = @Balance
         WHERE CustomerId = @Id
       `);
+    triggerSync();
     res.json({ success: true });
   } catch (err) {
     console.error("[CREDIT CUSTOMERS UPDATE ERROR]", err);
@@ -128,7 +137,7 @@ router.post("/delete", async (req, res) => {
     // Step 2: Delete all credit transactions for this member
     await pool.request()
       .input("MemberId", sql.UniqueIdentifier, memberId)
-      .query("DELETE FROM CustomerCreditTransactions WHERE MemberId = @MemberId");
+      .query("IF OBJECT_ID('SyncDeletedLog', 'U') IS NOT NULL INSERT INTO SyncDeletedLog (TableName, RecordId) SELECT 'CustomerCreditTransactions', CAST(TransactionId AS VARCHAR(100)) FROM CustomerCreditTransactions WHERE MemberId = @MemberId; DELETE FROM CustomerCreditTransactions WHERE MemberId = @MemberId");
 
     // Step 3: Delete the customer record based on type
     if (customerType === "MEMBER") {
@@ -140,9 +149,10 @@ router.post("/delete", async (req, res) => {
       // CREDIT customers are stored in CreditCustomerMaster — fully delete
       await pool.request()
         .input("Id", sql.UniqueIdentifier, memberId)
-        .query("DELETE FROM CreditCustomerMaster WHERE CustomerId = @Id");
+        .query("IF OBJECT_ID('SyncDeletedLog', 'U') IS NOT NULL INSERT INTO SyncDeletedLog (TableName, RecordId) VALUES ('CreditCustomerMaster', CAST(@Id AS VARCHAR(100))); DELETE FROM CreditCustomerMaster WHERE CustomerId = @Id");
     }
 
+    triggerSync();
     res.json({ success: true });
   } catch (err) {
     console.error("[CREDIT CUSTOMERS DELETE ERROR]", err);
@@ -429,6 +439,7 @@ router.post("/pay", async (req, res) => {
       .query("UPDATE CreditCustomerMaster SET CurrentBalance = CurrentBalance - @Amount WHERE CustomerId = @CustomerId");
   }, { name: "CreditCustomerPayment", timeoutMs: 60000 });
 
+  triggerSync();
   res.json({ success: true, paymentTransactionId });
 } catch (err) {
   console.error("[CREDIT CUSTOMER PAYMENT ERROR]", err);

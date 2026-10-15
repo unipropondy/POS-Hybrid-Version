@@ -29,35 +29,83 @@ export const useMenuStore = create<MenuState>((set, get) => ({
   isLoading: false,
 
   fetchMenu: async (force = false) => {
-    const { lastFetched, kitchens } = get();
-    // Cache for 10 minutes unless forced
-    if (!force && lastFetched && kitchens.length > 0 && Date.now() - lastFetched < 600000) {
+    const { lastFetched, kitchens, dishGroups, dishesByGroup } = get();
+    // Cache for 30 minutes unless forced
+    if (!force && lastFetched && kitchens.length > 0 && Object.keys(dishGroups).length > 0 && Object.keys(dishesByGroup).length > 0 && Date.now() - lastFetched < 1800000) {
       return;
     }
 
     set({ isLoading: true });
     try {
-      // 1. Fetch kitchens
-      const kRes = await fetch(`${API_URL}/api/menu/kitchens`);
+      // 1. Fetch kitchens and all dishes in parallel
+      const [kRes, dRes] = await Promise.all([
+        fetch(`${API_URL}/api/menu/kitchens`),
+        fetch(`${API_URL}/api/menu/dishes/all`)
+      ]);
       const kData = await kRes.json();
+      const dData = await dRes.json();
+
       const rawKitchens = Array.isArray(kData) ? kData.filter((k: any) => k.KitchenTypeName && !k.KitchenTypeName.includes("TEST")) : [];
-      // 🟢 Deduplicate kitchens by CategoryId (since backend returns CategoryId)
+      // 🟢 Deduplicate kitchens by CategoryId
       const kitchensData = Array.from(
         new Map(rawKitchens.map((k: any) => [k.CategoryId, k])).values()
       );
 
-      // 2. Fetch all dishes (for search)
-      const dRes = await fetch(`${API_URL}/api/menu/dishes/all`);
-      const dData = await dRes.json();
       const allDishesRaw = Array.isArray(dData) ? dData : [];
-      
       // Deduplicate dishes by DishId
       const allDishesData = Array.from(
         new Map(allDishesRaw.map((d: any) => [d.DishId || d.id, d])).values()
       );
 
+      // 2. ⚡ Pre-index all dishes into dishesByGroup immediately from allDishesData!
+      const preIndexedDishesByGroup: Record<string, any[]> = {};
+      allDishesData.forEach((dish: any) => {
+        const primaryGroupId = String(dish.DishGroupId || "");
+        if (primaryGroupId) {
+          if (!preIndexedDishesByGroup[primaryGroupId]) preIndexedDishesByGroup[primaryGroupId] = [];
+          preIndexedDishesByGroup[primaryGroupId].push(dish);
+        }
+        if (dish.MappedGroupIds) {
+          const mappedIds = String(dish.MappedGroupIds).split(",").map((s: string) => s.trim()).filter(Boolean);
+          mappedIds.forEach((mId: string) => {
+            if (mId !== primaryGroupId) {
+              if (!preIndexedDishesByGroup[mId]) preIndexedDishesByGroup[mId] = [];
+              preIndexedDishesByGroup[mId].push(dish);
+            }
+          });
+        }
+      });
+
+      // 3. ⚡ Pre-fetch groups for all kitchens in parallel so category switching is 100% instant
+      const groupPromises = kitchensData.map(async (k: any) => {
+        try {
+          const res = await fetch(`${API_URL}/api/menu/dishgroups/${k.CategoryId}`);
+          const gData = await res.json();
+          const rawGroups = Array.isArray(gData) ? gData : [];
+          const groups = Array.from(
+            new Map(rawGroups.map((g: any) => [g.DishGroupId || g.id, g])).values()
+          );
+          return { kitchenId: String(k.CategoryId), groups };
+        } catch {
+          return { kitchenId: String(k.CategoryId), groups: [] };
+        }
+      });
+      const groupResults = await Promise.all(groupPromises);
+      const preIndexedGroups: Record<string, any[]> = {};
+      groupResults.forEach(item => {
+        preIndexedGroups[item.kitchenId] = item.groups;
+        item.groups.forEach((g: any) => {
+          const gId = String(g.DishGroupId || g.id || "");
+          if (gId && !preIndexedDishesByGroup[gId]) {
+            preIndexedDishesByGroup[gId] = [];
+          }
+        });
+      });
+
       set({ 
         kitchens: kitchensData, 
+        dishGroups: preIndexedGroups,
+        dishesByGroup: preIndexedDishesByGroup,
         allDishes: allDishesData,
         lastFetched: Date.now(),
         isLoading: false 
@@ -69,8 +117,9 @@ export const useMenuStore = create<MenuState>((set, get) => ({
   },
 
   fetchGroups: async (kitchenId) => {
+    const kIdStr = String(kitchenId);
     const { dishGroups } = get();
-    if (dishGroups[kitchenId]) return dishGroups[kitchenId];
+    if (dishGroups[kIdStr] && dishGroups[kIdStr].length > 0) return dishGroups[kIdStr];
 
     try {
       const res = await fetch(`${API_URL}/api/menu/dishgroups/${kitchenId}`);
@@ -82,7 +131,7 @@ export const useMenuStore = create<MenuState>((set, get) => ({
       );
       
       set((state) => ({
-        dishGroups: { ...state.dishGroups, [kitchenId]: groups }
+        dishGroups: { ...state.dishGroups, [kIdStr]: groups }
       }));
       return groups;
     } catch (error) {
@@ -92,14 +141,30 @@ export const useMenuStore = create<MenuState>((set, get) => ({
   },
 
   fetchDishes: async (groupId) => {
-    const { dishesByGroup, modifierCache } = get();
-    if (dishesByGroup[groupId]) {
-      const groupDishes = dishesByGroup[groupId];
+    const gIdStr = String(groupId);
+    const { dishesByGroup, allDishes, modifierCache } = get();
+    if (dishesByGroup[gIdStr] && dishesByGroup[gIdStr].length > 0) {
+      const groupDishes = dishesByGroup[gIdStr];
       const hasAnyModifierCached = groupDishes.some(d => modifierCache[d.DishId || d.id] !== undefined);
       if (!hasAnyModifierCached) {
-        get().fetchModifiersForGroup(groupId);
+        get().fetchModifiersForGroup(gIdStr);
       }
-      return dishesByGroup[groupId];
+      return dishesByGroup[gIdStr];
+    }
+
+    // ⚡ In-memory fallback from allDishes before hitting network
+    if (allDishes && allDishes.length > 0) {
+      const matched = allDishes.filter((d: any) => 
+        String(d.DishGroupId) === gIdStr || 
+        (d.MappedGroupIds && String(d.MappedGroupIds).split(",").map((s: string) => s.trim()).includes(gIdStr))
+      );
+      if (matched.length > 0) {
+        set((state) => ({
+          dishesByGroup: { ...state.dishesByGroup, [gIdStr]: matched }
+        }));
+        get().fetchModifiersForGroup(gIdStr);
+        return matched;
+      }
     }
 
     try {
@@ -113,11 +178,11 @@ export const useMenuStore = create<MenuState>((set, get) => ({
       );
 
       set((state) => ({
-        dishesByGroup: { ...state.dishesByGroup, [groupId]: dishes }
+        dishesByGroup: { ...state.dishesByGroup, [gIdStr]: dishes }
       }));
 
       // 🚀 BACKGROUND PRE-FETCH: Load all modifiers for this group
-      get().fetchModifiersForGroup(groupId);
+      get().fetchModifiersForGroup(gIdStr);
 
       return dishes;
     } catch (error) {

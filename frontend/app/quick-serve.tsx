@@ -175,6 +175,8 @@ export default function QuickServePOSScreen() {
   const [isProcessingPayment, setIsProcessingPayment] = useState<boolean>(false);
   const [storeSettingsVisible, setStoreSettingsVisible] = useState<boolean>(false);
 
+  const groupsCacheRef = useRef<Record<number, any[]>>({});
+
   // Load Menu Data (Categories, Dish Groups, Dishes)
   useEffect(() => {
     fetchMenuData();
@@ -197,12 +199,25 @@ export default function QuickServePOSScreen() {
         setSelectedCategoryId(firstCatId);
         const groupRes = await fetch(`${API_URL}/api/menu/dishgroups/${firstCatId}`).then((r) => r.json()).catch(() => []);
         const validGroups = Array.isArray(groupRes) ? groupRes : [];
+        groupsCacheRef.current[firstCatId] = validGroups;
         setDishGroups(validGroups);
         if (validGroups.length > 0) {
           setSelectedGroupId(validGroups[0].DishGroupId);
         } else {
           setSelectedGroupId(null);
         }
+
+        // Preload remaining categories in parallel so switching is instant without delays
+        Promise.allSettled(
+          validCats.slice(1).map(async (c: any) => {
+            if (c.CategoryId) {
+              const res = await fetch(`${API_URL}/api/menu/dishgroups/${c.CategoryId}`).then((r) => r.json()).catch(() => []);
+              if (Array.isArray(res)) {
+                groupsCacheRef.current[c.CategoryId] = res;
+              }
+            }
+          })
+        ).catch(() => {});
       }
     } catch (err) {
       console.error("Error fetching menu data:", err);
@@ -220,9 +235,18 @@ export default function QuickServePOSScreen() {
       setSelectedGroupId(null);
       return;
     }
+
+    if (groupsCacheRef.current[catId]) {
+      const validGroups = groupsCacheRef.current[catId];
+      setDishGroups(validGroups);
+      setSelectedGroupId(validGroups.length > 0 ? validGroups[0].DishGroupId : null);
+      return;
+    }
+
     try {
       const res = await fetch(`${API_URL}/api/menu/dishgroups/${catId}`).then((r) => r.json()).catch(() => []);
       const validGroups = Array.isArray(res) ? res : [];
+      groupsCacheRef.current[catId] = validGroups;
       setDishGroups(validGroups);
       if (validGroups.length > 0) {
         setSelectedGroupId(validGroups[0].DishGroupId);
@@ -1015,14 +1039,18 @@ export default function QuickServePOSScreen() {
                             onPress={() => handleDishClick(dish)}
                             activeOpacity={0.88}
                           >
-                            <View style={styles.dishCoverWrap}>
-                              {imgUri ? (
-                                <Image
-                                  source={{ uri: imgUri }}
-                                  style={styles.dishCoverImage}
-                                  contentFit="cover"
-                                />
-                              ) : (
+                              <View style={styles.dishCoverWrap}>
+                                {imgUri ? (
+                                  <Image
+                                    source={{ uri: imgUri }}
+                                    style={styles.dishCoverImage}
+                                    contentFit="cover"
+                                    transition={0}
+                                    cachePolicy="memory-disk"
+                                    priority="high"
+                                    recyclingKey={String(rawImg || dish.DishId)}
+                                  />
+                                ) : (
                                 <View style={styles.dishCoverPlaceholder}>
                                   <Ionicons name="restaurant-outline" size={36} color="#A39E93" />
                                 </View>
@@ -1134,7 +1162,15 @@ export default function QuickServePOSScreen() {
                         <View key={item.lineItemId || idx} style={styles.cartItemRow}>
                           <View style={styles.cartItemThumb}>
                             {itemImgUri ? (
-                              <Image source={{ uri: itemImgUri }} style={styles.cartItemImage} contentFit="cover" />
+                              <Image
+                                source={{ uri: itemImgUri }}
+                                style={styles.cartItemImage}
+                                contentFit="cover"
+                                transition={0}
+                                cachePolicy="memory-disk"
+                                priority="high"
+                                recyclingKey={String((item as any).Image || item.id)}
+                              />
                             ) : (
                               <Ionicons name="restaurant-outline" size={20} color="#94A3B8" />
                             )}

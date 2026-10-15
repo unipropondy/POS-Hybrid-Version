@@ -6,8 +6,8 @@ import {
   Animated,
   FlatList,
   Modal,
-  Pressable,
   Platform,
+  Pressable,
   ScrollView,
   StatusBar,
   StyleSheet,
@@ -17,11 +17,11 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { API_URL } from "../../constants/Config";
 import { Fonts } from "../../constants/Fonts";
 import { Theme } from "../../constants/theme";
 import { OrderItem, useActiveOrdersStore } from "../../stores/activeOrdersStore";
 import { useAuthStore } from "../../stores/authStore";
-import { API_URL } from "../../constants/Config";
 import { useGeneralSettingsStore } from "../../stores/generalSettingsStore";
 
 const URGENCY_FRESH = 15;
@@ -129,7 +129,7 @@ const OrderCard = React.memo(function OrderCard({ item, cardHeight, pulseAnim, g
             <Text style={[styles.statusBadgeText, { color: ui.primary }]}>{ui.label}</Text>
           </View>
         </View>
-        
+
         {/* 🍽️ LIVE ITEM COUNT & ACTIONS ROW */}
         <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, flexWrap: 'wrap', gap: 6 }}>
           {/* Left Side: Badges */}
@@ -217,11 +217,11 @@ const OrderCard = React.memo(function OrderCard({ item, cardHeight, pulseAnim, g
                   <View style={[styles.itemTextWrap, { marginLeft: 10 }]}>
                     <View style={styles.itemTitleRow}>
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1, flexWrap: 'wrap' }}>
-                        <Text 
+                        <Text
                           style={[
-                            styles.itemName, 
+                            styles.itemName,
                             (i.status === "VOIDED" || String(i.note || "").toUpperCase().includes("VOID")) && styles.itemVoided
-                          ]} 
+                          ]}
                           numberOfLines={2}
                         >
                           {i.name}
@@ -322,14 +322,14 @@ export default function KDSScreen() {
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [kdsPrinterIp, setKdsPrinterIp] = useState("");
   const markItemReady = useActiveOrdersStore((s) => s.markItemReady);
- 
+
   const pulseAnim = useRef(new Animated.Value(1)).current;
- 
+
   useEffect(() => {
     const store = useActiveOrdersStore.getState();
     store.fetchActiveKitchenOrders();
     store.initializeSocketListeners();
-    
+
     // Fetch KDS Printer IP configuration
     const fetchKdsPrinter = async () => {
       try {
@@ -347,7 +347,7 @@ export default function KDSScreen() {
       }
     };
     fetchKdsPrinter();
-     
+
     const interval = setInterval(() => setTime(Date.now()), 1000);
     // 🔄 Periodic refresh to ensure KDS never falls out of sync
     const pollInterval = setInterval(() => {
@@ -378,7 +378,7 @@ export default function KDSScreen() {
       const secStr = String(context.section || "").trim().toUpperCase().replace(/[- ]+/g, "_");
       const normSec = secStr.startsWith("SECTION") ? secStr.replace(/SECTION[-_ ]*/i, "SECTION_") : (secStr === "1" ? "SECTION_1" : secStr);
       const tblStr = String(context.tableNo || "").trim();
-      const groupKey = context.orderType === "DINE_IN" 
+      const groupKey = context.orderType === "DINE_IN"
         ? `TABLE_${normSec}_${tblStr}`
         : `TAKEAWAY_${context.takeawayNo}`;
 
@@ -407,12 +407,12 @@ export default function KDSScreen() {
           if (existingIdx > -1) {
             const existing = tableGroups[groupKey].items[existingIdx];
             // 🛡️ SYNC SHIELD: Keep the most informative metadata
-            tableGroups[groupKey].items[existingIdx] = { 
+            tableGroups[groupKey].items[existingIdx] = {
               ...existing,
               ...i,
               note: i.note || existing.note || i.remarks || "",
               isTakeaway: i.isTakeaway ?? existing.isTakeaway,
-              parentOrderId: order.orderId 
+              parentOrderId: order.orderId
             };
           } else {
             tableGroups[groupKey].items.push({ ...i, parentOrderId: order.orderId });
@@ -464,12 +464,12 @@ export default function KDSScreen() {
         const ts = d.getTime();
         return isNaN(ts) ? 0 : (ts > 1577836800000 ? ts : 0);
       };
-      
+
       const itemTs = getSafeTs(order.createdAt);
-      const itemsMaxTs = order.items && order.items.length > 0 
+      const itemsMaxTs = order.items && order.items.length > 0
         ? Math.max(...order.items.map((i: any) => getSafeTs(i.sentAt || order.createdAt)))
         : 0;
-      
+
       const latestSent = itemsMaxTs || itemTs || time;
       const mins = Math.floor(Math.max(0, time - latestSent) / 60000);
       const u = getUrgency(mins);
@@ -963,7 +963,11 @@ const styles = StyleSheet.create({
     padding: 10,
   },
   modalBackdrop: {
-    ...StyleSheet.absoluteFillObject,
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
     backgroundColor: "rgba(0,0,0,0.3)",
   },
   modalContent: {

@@ -1,27 +1,27 @@
 import { API_URL } from "@/constants/Config";
+import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
-import React, { useEffect, useState, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   RefreshControl,
   ScrollView,
+  StatusBar,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
-  StatusBar,
-  Animated,
-  Modal,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Theme } from "../constants/theme";
 import { Fonts } from "../constants/Fonts";
+import { Theme } from "../constants/theme";
 import { formatToSingaporeDate, formatToSingaporeTime } from "../utils/timezoneHelper";
 
 export default function StaffAttendanceScreen() {
@@ -127,7 +127,7 @@ export default function StaffAttendanceScreen() {
       if (!res.ok || !data.success) {
         throw new Error(data.message || "Authentication failed");
       }
-      
+
       if (data.user.role !== "ADMIN") {
         throw new Error("Access denied. Only Admin users can view logs.");
       }
@@ -136,7 +136,7 @@ export default function StaffAttendanceScreen() {
       setShowAdminLogin(false);
       setAdminUser("");
       setAdminPin("");
-      
+
       fetchLogs(data.token);
     } catch (err: any) {
       Alert.alert("Authentication Failed", err.message);
@@ -212,7 +212,7 @@ export default function StaffAttendanceScreen() {
       const savedUserId = await AsyncStorage.getItem("lastUserId");
       if (savedUser) setUserName(savedUser);
       if (savedUserId) setUserId(savedUserId);
-    } catch (_) {}
+    } catch (_) { }
   };
 
   const fetchStaffName = async (name: string) => {
@@ -243,7 +243,7 @@ export default function StaffAttendanceScreen() {
       const response = await fetch(`${API_URL}/api/attendance/today/${id}`);
       const data = await response.json();
       if (response.ok) setTodayLogs(data);
-    } catch (_) {}
+    } catch (_) { }
   };
 
   const fetchTodaySummary = async () => {
@@ -255,7 +255,7 @@ export default function StaffAttendanceScreen() {
         setTodaySummary(data.summary);
         await fetchTodayLogs(userId);
       }
-    } catch (_) {}
+    } catch (_) { }
   };
 
   const handleAction = async (status: number) => {
@@ -314,14 +314,14 @@ export default function StaffAttendanceScreen() {
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="dark-content" />
       <View style={styles.header}>
-        <TouchableOpacity 
+        <TouchableOpacity
           onPress={() => {
             if (router.canGoBack()) {
               router.back();
             } else {
               router.replace("/(tabs)/category" as any);
             }
-          }} 
+          }}
           style={styles.backBtn}
         >
           <Ionicons name="arrow-back" size={20} color={Theme.textPrimary} />
@@ -331,7 +331,7 @@ export default function StaffAttendanceScreen() {
       </View>
 
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={{ flex: 1 }}>
-        <ScrollView 
+        <ScrollView
           contentContainerStyle={styles.content}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={fetchTodaySummary} tintColor={Theme.primary} />}
         >
@@ -391,7 +391,7 @@ export default function StaffAttendanceScreen() {
                   onPressOut={() => handlePressOut(btn.id)}
                   onPress={() => handleAction(btn.id)}
                   style={[
-                    styles.actionBtn, 
+                    styles.actionBtn,
                     { backgroundColor: btn.active ? btn.color : "#e2e8f0" }
                   ]}
                 >
@@ -408,21 +408,21 @@ export default function StaffAttendanceScreen() {
           <View style={styles.historySection}>
             <View style={styles.historyHeader}>
               <Text style={styles.sectionTitle}>RECENT RECORDS</Text>
-              <TouchableOpacity 
-                style={styles.viewLogsHeaderBtn} 
+              <TouchableOpacity
+                style={styles.viewLogsHeaderBtn}
                 onPress={() => setShowAdminLogin(true)}
               >
                 <Ionicons name="eye-outline" size={16} color={Theme.primary} style={{ marginRight: 4 }} />
                 <Text style={styles.viewLogsHeaderText}>View Time Logs</Text>
               </TouchableOpacity>
             </View>
-            
+
             {todayLogs.length > 0 ? (
               todayLogs.slice(0, 6).map((log, i) => {
                 const isClockIn = log.ActionName.toLowerCase().includes('in');
                 const isOut = log.ActionName.toLowerCase().includes('out');
                 const isBreak = log.ActionName.toLowerCase().includes('break');
-                
+
                 let iconName = "time-outline";
                 let iconColor = "#6b7280";
                 if (isClockIn) { iconName = "checkmark-circle"; iconColor = "#22c55e"; }
@@ -469,7 +469,7 @@ export default function StaffAttendanceScreen() {
                 <Ionicons name="close" size={24} color="#6b7280" />
               </TouchableOpacity>
             </View>
-            
+
             <Text style={styles.modalSubtitle}>Enter admin credentials to view history</Text>
 
             <View style={styles.modalInputBox}>
@@ -517,8 +517,8 @@ export default function StaffAttendanceScreen() {
             <View style={styles.modalHeader}>
               <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                 {selectedStaff && (
-                  <TouchableOpacity 
-                    style={{ marginRight: 8, padding: 4 }} 
+                  <TouchableOpacity
+                    style={{ marginRight: 8, padding: 4 }}
                     onPress={() => {
                       setSelectedStaff(null);
                       setDateFilter('all');
@@ -660,8 +660,8 @@ export default function StaffAttendanceScreen() {
               </View>
             )}
 
-            <TouchableOpacity 
-              style={[styles.modalSubmitBtn, { backgroundColor: "#6b7280" }]} 
+            <TouchableOpacity
+              style={[styles.modalSubmitBtn, { backgroundColor: "#6b7280" }]}
               onPress={() => {
                 setShowLogsModal(false);
                 setSelectedStaff(null);
@@ -681,12 +681,12 @@ export default function StaffAttendanceScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Theme.bgMain },
-  header: { 
-    flexDirection: "row", 
-    alignItems: "center", 
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 16, 
-    paddingVertical: 12, 
+    paddingHorizontal: 16,
+    paddingVertical: 12,
     backgroundColor: Theme.bgCard,
     borderBottomWidth: 1,
     borderBottomColor: Theme.border
@@ -694,9 +694,9 @@ const styles = StyleSheet.create({
   backBtn: { width: 32, height: 32, alignItems: "center", justifyContent: "center" },
   headerTitle: { fontSize: 18, fontFamily: Fonts.black, color: Theme.textPrimary },
   headerTime: { fontSize: 13, fontFamily: Fonts.bold, color: Theme.primary },
-  
+
   content: { padding: 16 },
-  
+
   userCard: {
     backgroundColor: Theme.bgCard,
     borderRadius: 16,
@@ -713,42 +713,42 @@ const styles = StyleSheet.create({
   statusRow: { flexDirection: "row", alignItems: "center", marginTop: 2 },
   statusText: { fontSize: 13, fontFamily: Fonts.bold },
   hoursText: { fontSize: 13, fontFamily: Fonts.medium, color: Theme.textSecondary },
-  avatar: { 
-    width: 44, 
-    height: 44, 
-    borderRadius: 12, 
-    backgroundColor: Theme.primaryLight, 
-    alignItems: "center", 
-    justifyContent: "center" 
+  avatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: Theme.primaryLight,
+    alignItems: "center",
+    justifyContent: "center"
   },
   avatarText: { fontSize: 20, fontFamily: Fonts.black, color: Theme.primary },
 
   inputRow: { flexDirection: "row", gap: 12, marginBottom: 20 },
-  inputField: { 
-    flex: 1, 
-    flexDirection: "row", 
-    alignItems: "center", 
-    backgroundColor: Theme.bgInput, 
-    height: 56, 
-    borderRadius: 14, 
+  inputField: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: Theme.bgInput,
+    height: 56,
+    borderRadius: 14,
     paddingHorizontal: 16,
     borderWidth: 1,
     borderColor: Theme.border
   },
-  textInput: { 
-    flex: 1, 
-    fontSize: 16, 
-    fontFamily: Fonts.bold, 
+  textInput: {
+    flex: 1,
+    fontSize: 16,
+    fontFamily: Fonts.bold,
     color: Theme.textPrimary,
     ...Platform.select({ web: { outlineStyle: "none" } as any })
   },
 
   grid: { flexDirection: "row", gap: 12, marginBottom: 24 },
-  actionBtn: { 
-    flex: 1, 
-    height: 100, 
-    borderRadius: 20, 
-    alignItems: "center", 
+  actionBtn: {
+    flex: 1,
+    height: 100,
+    borderRadius: 20,
+    alignItems: "center",
     justifyContent: "center",
     paddingVertical: 10,
     ...Theme.shadowMd,
@@ -756,9 +756,9 @@ const styles = StyleSheet.create({
   },
   btnText: { fontSize: 13, fontFamily: Fonts.black, textAlign: "center", includeFontPadding: false },
 
-  historySection: { 
-    backgroundColor: Theme.bgCard, 
-    borderRadius: 16, 
+  historySection: {
+    backgroundColor: Theme.bgCard,
+    borderRadius: 16,
     padding: 16,
     borderWidth: 1,
     borderColor: Theme.border,
@@ -782,9 +782,9 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.bold,
     color: Theme.primary,
   },
-  historyRow: { 
-    flexDirection: "row", 
-    justifyContent: "space-between", 
+  historyRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
     alignItems: "center",
     borderLeftWidth: 4,
     paddingLeft: 12,
@@ -805,7 +805,7 @@ const styles = StyleSheet.create({
   historyDate: { fontSize: 11, fontFamily: Fonts.medium, color: Theme.textSecondary, marginTop: 2 },
   emptyText: { textAlign: "center", color: Theme.textSecondary, fontSize: 13, fontFamily: Fonts.medium, paddingVertical: 20 },
 
-  loader: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(250,247,242,0.7)", alignItems: "center", justifyContent: "center" },
+  loader: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(250,247,242,0.7)", alignItems: "center", justifyContent: "center" },
 
   modalOverlay: {
     flex: 1,

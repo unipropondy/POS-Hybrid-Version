@@ -4,6 +4,13 @@ const sql = require("mssql");
 const { poolPromise } = require("../config/db");
 const { authenticateToken } = require("../middleware/auth");
 
+function triggerSync() {
+  try {
+    const { triggerSyncProcess } = require("../services/syncService");
+    triggerSyncProcess();
+  } catch (_) {}
+}
+
 // ─── PUBLIC PROMO ENDPOINTS (No Token Needed) ──────────────────────────────
 router.get("/promocode/:code", async (req, res) => {
   try {
@@ -230,6 +237,7 @@ router.post("/add", async (req, res) => {
         Promoamount: parseFloat(promoamount) || 0
       }
     });
+    triggerSync();
   } catch (err) {
     console.error("[MEMBERS ADD ERROR]", err);
     res.status(500).json({ error: err.message });
@@ -273,6 +281,7 @@ router.post("/update", async (req, res) => {
           Promocode = @Promocode, Promoamount = @Promoamount
         WHERE MemberId = @Id
       `);
+    triggerSync();
     res.json({ success: true });
   } catch (err) {
     console.error("[MEMBERS UPDATE ERROR]", err);
@@ -289,11 +298,13 @@ router.post("/delete", async (req, res) => {
       const request = new sql.Request(transaction);
       request.input("Id", sql.UniqueIdentifier, memberId);
 
+      await request.query("IF OBJECT_ID('SyncDeletedLog', 'U') IS NOT NULL INSERT INTO SyncDeletedLog (TableName, RecordId) VALUES ('MemberMaster', CAST(@Id AS VARCHAR(100)));");
       await request.query("IF OBJECT_ID('MemberTimeLog', 'U') IS NOT NULL DELETE FROM MemberTimeLog WHERE MemberId = @Id");
       await request.query("IF COL_LENGTH('SettlementHeader', 'MemberId') IS NOT NULL UPDATE SettlementHeader SET MemberId = NULL WHERE MemberId = @Id;");
       await request.query("DELETE FROM MemberMaster WHERE MemberId = @Id");
     }, { name: "DeleteMember" });
 
+    triggerSync();
     res.json({ success: true });
   } catch (err) {
     console.error("[MEMBERS DELETE ERROR]", err);
@@ -843,6 +854,7 @@ router.post("/pay", async (req, res) => {
       }
     });
 
+    triggerSync();
     res.json({ success: true });
   } catch (err) {
     console.error("[MEMBER PAY ERROR]", err);
@@ -904,6 +916,7 @@ router.post("/recharge", async (req, res) => {
       CurrentBalance: updated.CurrentBalance,
       LowBalanceAlertSent: updated.LowBalanceAlertSent,
     });
+    triggerSync();
   } catch (err) {
     console.error("[MEMBER RECHARGE ERROR]", err);
     res.status(500).json({ error: err.message });
@@ -982,6 +995,7 @@ router.post("/deductSale", async (req, res) => {
       newBalance: updatedBalance,
       alertFired,
     });
+    triggerSync();
   } catch (err) {
     console.error("[MEMBER DEDUCT SALE ERROR]", err);
     const status = err.message.startsWith("Insufficient") ? 400 : 500;

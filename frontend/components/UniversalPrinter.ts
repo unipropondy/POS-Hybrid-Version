@@ -23,7 +23,7 @@ const ThermalPrinter = {
 };
 
 import { API_URL } from "../constants/Config";
-import { formatToSingaporeDate, formatToSingaporeTime, formatToSingaporeDateTime, parseDatabaseDate } from "../utils/timezoneHelper";
+import { formatToSingaporeDate, formatToSingaporeTime, formatToSingaporeDateTime, formatToPrinterDate, parseDatabaseDate } from "../utils/timezoneHelper";
 import BillPDFGenerator from "./BillPDFGenerator";
 import { PrinterDetector } from "./PrinterDetector";
 import SunmiPrinterService from "./SunmiPrinterService";
@@ -594,8 +594,12 @@ class UniversalPrinter {
         }
 
         const text = this.formatKOTThermalText(orderData, "KDS_PRINT");
-        console.log(`ðŸ“¡ [Web Print Bridge] Queueing KDS print`);
-        const success = await this.queuePrintJob(4, undefined, text);
+        if (!kdsPrinterIp && Array.isArray(this.cachedPrinters)) {
+          const kdsPrinter = this.cachedPrinters.find((p: any) => p.PrinterType === 4);
+          kdsPrinterIp = kdsPrinter?.PrinterPath || kdsPrinter?.PrinterIP || "";
+        }
+        console.log(`📡 [Web Print Bridge] Queueing KDS print (Target IP: ${kdsPrinterIp || "default"})`);
+        const success = await this.queuePrintJob(4, undefined, text, true, kdsPrinterIp);
         if (success) {
           await this.logPrintJob(orderData.orderId, orderData.orderNo, "REPRINT");
           return true;
@@ -717,8 +721,14 @@ class UniversalPrinter {
         const text = this.formatKOTThermalText(orderData, type);
         // Map kitchenCode or kitchenTypeValue
         const kitchenTypeValue = orderData.kitchenCode || orderData.KitchenCode || orderData.kitchenTypeValue || orderData.KitchenTypeValue || "0";
-        console.log(`ðŸ“¡ [Web Print Bridge] Queueing KOT to Kitchen type: ${kitchenTypeValue}`);
-        const success = await this.queuePrintJob(2, kitchenTypeValue, text);
+        if (!printerIpOverride && Array.isArray(this.cachedPrinters)) {
+          const matched = this.cachedPrinters.find((p: any) => p.PrinterType === 2 && String(p.KitchenTypeValue) === String(kitchenTypeValue));
+          if (matched) {
+            printerIpOverride = matched.PrinterPath || matched.PrinterIP || "";
+          }
+        }
+        console.log(`📡 [Web Print Bridge] Queueing KOT to Kitchen type: ${kitchenTypeValue} (Target IP: ${printerIpOverride || "default"})`);
+        const success = await this.queuePrintJob(2, kitchenTypeValue, text, true, printerIpOverride);
         if (success) {
           await this.logPrintJob(orderData.orderId, orderData.orderNo, type);
           return true;
@@ -870,7 +880,7 @@ class UniversalPrinter {
     const deviceNo = data.deviceNo || "1";
     const orderNo = data.orderNo || data.orderId || "N/A";
     const waiter = data.waiterName || "Staff";
-    const kotDateStr = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Singapore', day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date());
+    const kotDateStr = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Singapore', day: '2-digit', month: '2-digit', year: '2-digit' }).format(new Date());
     const kotTimeStr = formatToSingaporeTime(new Date(), { hour: '2-digit', minute: '2-digit', hour12: false });
     const timestamp = `${kotDateStr} ${kotTimeStr}`;
     const kitchenName = data.kitchenName || "";
@@ -1485,7 +1495,7 @@ class UniversalPrinter {
               console.log(`📡 [APK Print Bridge] Queueing receipt to Print Bridge for: ${targetIp}`);
               const text = this.formatThermalTextWithDiscount(saleData, company, discountInfo);
               const pType = isTakeaway ? 3 : 1;
-              const success = await this.queuePrintJob(pType, undefined, text);
+              const success = await this.queuePrintJob(pType, undefined, text, true, targetIp);
               if (success) return;
             } catch (bridgeErr) {
               console.warn("APK Print Bridge queue failed, trying direct connection:", bridgeErr);
@@ -1777,7 +1787,7 @@ class UniversalPrinter {
     } else {
       text += `[L]<B>Bill No: ${saleData.invoiceNumber || saleData.id || ""}</B>\n`;
     }
-    const dateFormatted = formatToSingaporeDate(saleDate, { day: '2-digit', month: '2-digit', year: 'numeric' });
+    const dateFormatted = formatToPrinterDate(saleDate);
     text += `[L]<B>Date: ${dateFormatted} ${formatToSingaporeTime(saleDate)}</B>\n`;
     if (saleData.waiterName && saleData.waiterName !== "Staff") {
       text += `[L]<B>Waiter: ${saleData.waiterName}</B>\n`;
@@ -2770,7 +2780,7 @@ class UniversalPrinter {
   static generateSettlementReportHTML(settlementRows: any[], company: any, period?: string): string {
     const symbol = company.currencySymbol || "$";
     const now = new Date();
-    const printDate = now.toLocaleDateString("en-GB") + " " + now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+    const printDate = formatToPrinterDate(now) + " " + now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 
     // Aggregate totals by payment mode
     const paymentTotals: Record<string, number> = {};
@@ -2837,7 +2847,7 @@ class UniversalPrinter {
     try {
       const symbol = company.currencySymbol || "$";
       const now = new Date();
-      const printDate = now.toLocaleDateString("en-GB") + " " + now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+      const printDate = formatToPrinterDate(now) + " " + now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 
       // Aggregate totals by payment mode
       const paymentTotals: Record<string, number> = {};

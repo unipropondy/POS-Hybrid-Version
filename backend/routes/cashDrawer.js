@@ -102,8 +102,8 @@ router.post('/log', authenticateToken, async (req, res) => {
           .input('CreatedBy', sql.VarChar(100), cashierName)
           .input('startDate', sql.Date, formattedStartDate)
           .query(`
-            INSERT INTO CashInEntry (CashInNo, CashInDate, Amount, Reason, Remarks, PaymentMode, ReferenceNo, TerminalCode, CreatedBy, CreatedOn, start_date)
-            VALUES (@CashInNo, CAST(GETDATE() AS DATE), @Amount, @Reason, @Remarks, @PaymentMode, @ReferenceNo, @TerminalCode, @CreatedBy, GETDATE(), @startDate)
+            INSERT INTO CashInEntry (CashInId, CashInNo, CashInDate, Amount, Reason, Remarks, PaymentMode, ReferenceNo, TerminalCode, CreatedBy, CreatedOn, start_date)
+            VALUES (NEWID(), @CashInNo, CAST(GETDATE() AS DATE), @Amount, @Reason, @Remarks, @PaymentMode, @ReferenceNo, @TerminalCode, @CreatedBy, GETDATE(), @startDate)
           `);
       } else if (actionType === 'CASH_OUT' && amount > 0) {
         // Fetch SGT date directly from remote SQL server clock (myerpcloud.dyndns.org)
@@ -124,8 +124,8 @@ router.post('/log', authenticateToken, async (req, res) => {
           .input('CreatedBy', sql.VarChar(100), cashierName)
           .input('startDate', sql.Date, formattedStartDate)
           .query(`
-            INSERT INTO CashOutEntry (CashOutNo, CashOutDate, Amount, Reason, Remarks, PaymentMode, ReferenceNo, TerminalCode, CreatedBy, CreatedOn, start_date)
-            VALUES (@CashOutNo, CAST(GETDATE() AS DATE), @Amount, @Reason, @Remarks, @PaymentMode, @ReferenceNo, @TerminalCode, @CreatedBy, GETDATE(), @startDate)
+            INSERT INTO CashOutEntry (CashOutId, CashOutNo, CashOutDate, Amount, Reason, Remarks, PaymentMode, ReferenceNo, TerminalCode, CreatedBy, CreatedOn, start_date)
+            VALUES (NEWID(), @CashOutNo, CAST(GETDATE() AS DATE), @Amount, @Reason, @Remarks, @PaymentMode, @ReferenceNo, @TerminalCode, @CreatedBy, GETDATE(), @startDate)
           `);
       } else if (actionType === 'OPENING_FLOAT' && amount > 0) {
         // Update settlement opening totals
@@ -164,6 +164,13 @@ router.post('/log', authenticateToken, async (req, res) => {
     }
 
     await transaction.commit();
+
+    // Push cash drawer transaction to remote cloud DB
+    try {
+      const { triggerSyncProcess } = require('../services/syncService');
+      triggerSyncProcess();
+    } catch (_) {}
+
     res.json({ success: true });
   } catch (err) {
     console.error('Cash drawer log error:', err);

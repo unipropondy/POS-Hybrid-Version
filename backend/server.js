@@ -7,29 +7,127 @@ const crypto = require("crypto");
 const path = require("path");
 const sql = require("mssql");
 
-const envPath = path.resolve(__dirname, ".env");
+// 📝 LOCAL LOGGING SYSTEM: Write all logs to local .txt / .log files
+function resolveLogsDirectory() {
+  if (process.env.LOGS_DIR) {
+    try {
+      if (!fs.existsSync(process.env.LOGS_DIR)) fs.mkdirSync(process.env.LOGS_DIR, { recursive: true });
+      return process.env.LOGS_DIR;
+    } catch { }
+  }
 
-// 1. Ensure the .env file exists
-if (!fs.existsSync(envPath)) {
-  fs.writeFileSync(envPath, "");
+  // Check if running inside Electron packaged resources/backend
+  if (__dirname.includes("resources") && __dirname.includes("backend")) {
+    const electronAppRootLogs = path.resolve(__dirname, "..", "..", "logs");
+    try {
+      if (!fs.existsSync(electronAppRootLogs)) fs.mkdirSync(electronAppRootLogs, { recursive: true });
+      return electronAppRootLogs;
+    } catch { }
+  }
+
+  const adjacentDir = path.resolve(__dirname, "..", "logs");
+  try {
+    if (!fs.existsSync(adjacentDir)) {
+      fs.mkdirSync(adjacentDir, { recursive: true });
+    }
+    const testFile = path.join(adjacentDir, ".write_test");
+    fs.writeFileSync(testFile, "test");
+    fs.unlinkSync(testFile);
+    return adjacentDir;
+  } catch (err) {
+    // If adjacent directory is read-only (e.g. C:\Program Files\UniPro POS), fallback to LocalAppData or ProgramData
+    const fallbackBase = process.env.LOCALAPPDATA || process.env.APPDATA || "C:\\ProgramData";
+    const userLogDir = path.join(fallbackBase, "UniPro POS", "logs");
+    try {
+      if (!fs.existsSync(userLogDir)) {
+        fs.mkdirSync(userLogDir, { recursive: true });
+      }
+      return userLogDir;
+    } catch {
+      return adjacentDir;
+    }
+  }
 }
 
+const logsDir = resolveLogsDirectory();
+const backendLogPath = path.join(logsDir, "backend.log");
+const frontendLogPath = path.join(logsDir, "frontend.log");
+
+const MAX_LOG_SIZE = 20 * 1024 * 1024; // 20 MB max
+function rotateLogIfNeeded(filePath) {
+  try {
+    if (fs.existsSync(filePath)) {
+      const stats = fs.statSync(filePath);
+      if (stats.size > MAX_LOG_SIZE) {
+        const backup = `${filePath}.1`;
+        if (fs.existsSync(backup)) {
+          try { fs.unlinkSync(backup); } catch { }
+        }
+        try { fs.renameSync(filePath, backup); } catch { }
+      }
+    }
+  } catch { }
+}
+
+const logToFile = (filePath, message) => {
+  const timestamp = new Date().toISOString();
+  const line = `[${timestamp}] ${message}\n`;
+  try {
+    rotateLogIfNeeded(filePath);
+    fs.appendFileSync(filePath, line);
+  } catch { }
+};
+
+// Mirror console.log, console.warn and console.error to logs/backend.log
+const origLog = console.log;
+const origError = console.error;
+const origWarn = console.warn;
+
+console.log = (...args) => {
+  origLog(...args);
+  logToFile(backendLogPath, args.map(a => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" "));
+};
+
+console.error = (...args) => {
+  origError(...args);
+  logToFile(backendLogPath, "[ERROR] " + args.map(a => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" "));
+};
+
+console.warn = (...args) => {
+  origWarn(...args);
+  logToFile(backendLogPath, "[WARN] " + args.map(a => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" "));
+};
+
+const envPath = path.resolve(__dirname, ".env");
+
+// 1. Ensure the .env file exists (safely)
+try {
+  if (!fs.existsSync(envPath)) {
+    fs.writeFileSync(envPath, "");
+  }
+} catch { }
+
 // 2. Read current .env content
-let envContent = fs.readFileSync(envPath, "utf8");
+let envContent = "";
+try {
+  envContent = fs.readFileSync(envPath, "utf8");
+} catch { }
 
 // 3. If JWT_SECRET is not defined in .env, generate a unique one and save it
 if (!envContent.includes("JWT_SECRET=")) {
-  const secureSecret = crypto.randomBytes(32).toString("hex");
-  const prefix = envContent.endsWith("\n") || envContent.trim() === "" ? "" : "\n";
-  fs.appendFileSync(envPath, `${prefix}JWT_SECRET=${secureSecret}\n`);
-  console.log("🔒 [Security] JWT_SECRET was missing! A brand-new unique key has been automatically generated and saved to .env.");
+  try {
+    const secureSecret = crypto.randomBytes(32).toString("hex");
+    const prefix = envContent.endsWith("\n") || envContent.trim() === "" ? "" : "\n";
+    fs.appendFileSync(envPath, `${prefix}JWT_SECRET=${secureSecret}\n`);
+    console.log("🔒 [Security] JWT_SECRET generated and saved to .env.");
+  } catch { }
 }
 
 // 4. Load env variables
 require("dotenv").config({ path: envPath });
 
 if (!process.env.JWT_SECRET) {
-  throw new Error("FATAL: JWT_SECRET environment variable is not set!");
+  process.env.JWT_SECRET = "unipro_pos_secure_default_secret_key_2026";
 }
 
 const { poolPromise } = require("./config/db");
@@ -38,6 +136,7 @@ const dbCheck = require("./middleware/dbCheck");
 const idempotencyMiddleware = require("./middleware/idempotency");
 const { getHoldOvertimeMinutes } = require("./utils/settingsCache");
 const { rollbackAllActive } = require("./utils/transactionHelper");
+const { startPrintQueueWorker } = require("./services/printQueueWorker");
 
 // Import Routes
 const authRoutes = require("./routes/auth");
@@ -93,7 +192,7 @@ io.on("connection", (socket) => {
     io.emit("new_order", data);
   });
 
-  // 🚀 INSTANT SYNC: Relay cart changes between tablets in the same table room without DB lag
+  // 🚀 INSTANT SYNC: Relay cart changes globally between all tablets & devices without DB lag
   socket.on("join_table", ({ tableId }) => {
     if (!tableId) return;
     const cleanTableId = String(tableId).replace(/^\{|\}$/g, "").trim().toLowerCase();
@@ -103,15 +202,19 @@ io.on("connection", (socket) => {
   });
 
   socket.on("cart_change", (data) => {
-    if (data.tableId) {
-      const cleanTableId = String(data.tableId).replace(/^\{|\}$/g, "").trim().toLowerCase();
-      const room = `table_${cleanTableId}`;
-      console.log(`🛒 [Server] Cart change relay for room ${room}`);
-      socket.to(room).emit("cart_change", data);
-    } else {
-      console.log("🛒 [Server] Cart change relay (no tableId):", data.tableId);
-      io.emit("cart_change", data);
-    }
+    console.log(`🛒 [Server] Cart change relay for Table: ${data?.tableId || "global"} (items: ${data?.items?.length || 0})`);
+    // Broadcast to all other devices/tablets on LAN/Wi-Fi immediately
+    socket.broadcast.emit("cart_change", data);
+  });
+
+  socket.on("cart_updated", (data) => {
+    console.log(`🛒 [Server] Cart updated relay for Table: ${data?.tableId || "global"}`);
+    socket.broadcast.emit("cart_updated", data);
+  });
+
+  socket.on("table_status_updated", (data) => {
+    console.log(`🪑 [Server] Table status updated relay: ${data?.tableId || "global"}`);
+    socket.broadcast.emit("table_status_updated", data);
   });
 
   // Broadcast status updates (e.g. order completed, items voided)
@@ -168,6 +271,17 @@ io.on("connection", (socket) => {
     socket.broadcast.emit("terminal_split_rows_sync", data);
   });
 
+  // Relay live table & layout configuration updates to other devices on LAN/Wi-Fi
+  socket.on("table_config_updated", (data) => {
+    console.log(`🔌 [Server] Relay table_config_updated:`, data);
+    socket.broadcast.emit("table_config_updated", data || {});
+  });
+
+  socket.on("section_layout_updated", (data) => {
+    console.log(`🔌 [Server] Relay section_layout_updated:`, data);
+    socket.broadcast.emit("section_layout_updated", data || {});
+  });
+
   // 🍽️ MENU PUBLISH & UPDATES SYNC: Broadcast menu published status changes to all QR menus and POS apps
   socket.on("menu_updated", (data) => {
     console.log("🍽️ [Server] Socket menu_updated event received:", data);
@@ -196,6 +310,12 @@ async function pollMenuPublishStatus() {
   try {
     const pool = await poolPromise;
     if (pool && pool.connected) {
+      // Check if DishMaster exists before querying
+      const checkTable = await pool.request().query("SELECT OBJECT_ID('DishMaster', 'U') AS id").catch(() => ({ recordset: [] }));
+      if (!checkTable.recordset[0]?.id) {
+        return; // Table not ready yet, skip quietly
+      }
+
       const result = await pool.request().query(`
         SELECT 
           (SELECT CHECKSUM_AGG(CHECKSUM(DishId, ISNULL(IsPublished, 0))) FROM DishMaster WITH (NOLOCK)) AS dishHash,
@@ -228,6 +348,12 @@ async function pollTables() {
   try {
     const pool = await poolPromise;
     if (pool && pool.connected) {
+      // Check if TableMaster exists before querying
+      const checkTable = await pool.request().query("SELECT OBJECT_ID('TableMaster', 'U') AS id").catch(() => ({ recordset: [] }));
+      if (!checkTable.recordset[0]?.id) {
+        return; // Table not ready yet, skip quietly
+      }
+
       const holdMinutes = await getHoldOvertimeMinutes();
 
       const result = await pool.request()
@@ -266,8 +392,8 @@ async function pollTables() {
         const tableId = String(table.id || "").replace(/^\{|\}$/g, "").trim().toLowerCase();
         const prevState = previousTablesState.get(tableId);
 
-        const hasChanged = !prevState || 
-          prevState.status !== table.Status || 
+        const hasChanged = !prevState ||
+          prevState.status !== table.Status ||
           prevState.entryStatus !== table.entryStatus ||
           prevState.totalAmount !== table.totalAmount ||
           prevState.lockedByName !== table.lockedByName ||
@@ -317,9 +443,7 @@ async function pollTables() {
   }
 }
 
-// Start the pollers
-setTimeout(pollTables, 5000);
-setTimeout(pollMenuPublishStatus, 3000);
+// Pollers will be started after initial DB setup completes in httpServer.listen
 
 // ✅ Global Middleware
 app.use((req, res, next) => {
@@ -339,11 +463,141 @@ app.use(
 );
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
-app.use("/uploads", express.static(path.join(__dirname, "uploads"), {
-  maxAge: '1d', 
-  immutable: true
-}));
-app.use(express.static(path.join(__dirname, "dist")));
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+app.use("/uploads", express.static(path.join(__dirname, "public/uploads")));
+app.use(express.static(path.join(__dirname, "dist"), { extensions: ["html"] }));
+
+// 🩺 Health check endpoint for frontend warmup ping
+// 🩺 Health check endpoint for frontend warmup ping
+app.get("/health", (req, res) => res.json({ status: "ok", timestamp: new Date() }));
+
+// 📥 CLIENT LOGS ENDPOINT: Allows frontend to stream logs directly to local frontend.log file
+app.post("/api/logs/client", express.json(), (req, res) => {
+  const { level, message, details } = req.body || {};
+  if (message) {
+    const detailStr = details ? ` | ${typeof details === "object" ? JSON.stringify(details) : details}` : "";
+    logToFile(frontendLogPath, `[${(level || "INFO").toUpperCase()}] ${message}${detailStr}`);
+  }
+  res.status(204).end();
+});
+
+// 🔍 SYSTEM LOGS DIAGNOSTICS & VIEWER (Available even if database is offline)
+app.get("/api/logs/info", (req, res) => {
+  let backendSize = 0;
+  let frontendSize = 0;
+  try { if (fs.existsSync(backendLogPath)) backendSize = fs.statSync(backendLogPath).size; } catch { }
+  try { if (fs.existsSync(frontendLogPath)) frontendSize = fs.statSync(frontendLogPath).size; } catch { }
+
+  res.json({
+    status: "ok",
+    logsDir,
+    backendLogPath,
+    backendLogSizeBytes: backendSize,
+    backendLogSizeMB: (backendSize / (1024 * 1024)).toFixed(2),
+    frontendLogPath,
+    frontendLogSizeBytes: frontendSize,
+    frontendLogSizeMB: (frontendSize / (1024 * 1024)).toFixed(2),
+  });
+});
+
+app.all("/api/logs/open-folder", (req, res) => {
+  const { exec } = require("child_process");
+  if (process.platform === "win32") {
+    exec(`explorer.exe "${logsDir}"`, (err) => {
+      if (err) return res.status(500).json({ error: err.message, logsDir });
+      res.json({ success: true, message: `Opened logs folder: ${logsDir}`, logsDir });
+    });
+  } else {
+    res.json({ success: false, message: "Not running on Windows", logsDir });
+  }
+});
+
+app.get("/api/logs/download/backend", (req, res) => {
+  if (fs.existsSync(backendLogPath)) {
+    res.download(backendLogPath, "backend.log");
+  } else {
+    res.status(404).send("backend.log does not exist yet.");
+  }
+});
+
+app.get("/api/logs/download/frontend", (req, res) => {
+  if (fs.existsSync(frontendLogPath)) {
+    res.download(frontendLogPath, "frontend.log");
+  } else {
+    res.status(404).send("frontend.log does not exist yet.");
+  }
+});
+
+app.get("/api/logs/view", (req, res) => {
+  const getTail = (filePath, linesCount = 200) => {
+    try {
+      if (!fs.existsSync(filePath)) return "(No log entries yet)";
+      const content = fs.readFileSync(filePath, "utf8");
+      const lines = content.trim().split("\n");
+      return lines.slice(-linesCount).join("\n");
+    } catch (e) {
+      return `Error reading log: ${e.message}`;
+    }
+  };
+
+  const backendTail = getTail(backendLogPath);
+  const frontendTail = getTail(frontendLogPath);
+
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(`<!DOCTYPE html>
+<html>
+<head>
+  <title>UniPro POS - System Logs</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 20px; }
+    h1 { font-size: 20px; margin-bottom: 8px; color: #38bdf8; display: flex; align-items: center; justify-content: space-between; }
+    .path-box { background: #1e293b; border: 1px solid #334155; padding: 12px 16px; border-radius: 8px; font-size: 13px; font-family: monospace; color: #a5f3fc; margin-bottom: 20px; line-height: 1.6; }
+    .actions { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
+    .btn { background: #2563eb; color: #fff; padding: 8px 16px; border-radius: 6px; text-decoration: none; font-size: 13px; font-weight: 600; border: none; cursor: pointer; transition: 0.15s; }
+    .btn:hover { background: #1d4ed8; }
+    .btn-secondary { background: #334155; }
+    .btn-secondary:hover { background: #475569; }
+    .tab-bar { display: flex; gap: 8px; margin-bottom: 12px; }
+    .tab { padding: 8px 16px; background: #1e293b; color: #94a3b8; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 13px; border: 1px solid #334155; }
+    .tab.active { background: #38bdf8; color: #0f172a; border-color: #38bdf8; }
+    pre { background: #020617; border: 1px solid #1e293b; border-radius: 8px; padding: 16px; font-family: 'Consolas', monospace; font-size: 12px; line-height: 1.5; color: #cbd5e1; overflow-x: auto; max-height: 70vh; white-space: pre-wrap; word-break: break-all; }
+  </style>
+</head>
+<body>
+  <h1>
+    <span>UniPro POS Live Diagnostics & Logs</span>
+    <span style="font-size: 12px; color: #94a3b8; font-weight: normal;">Updated: ${new Date().toLocaleTimeString()}</span>
+  </h1>
+  <div class="path-box">
+    <strong>📁 Local Logs Folder:</strong> ${logsDir}<br>
+    <strong>⚙️ Backend Log:</strong> ${backendLogPath}<br>
+    <strong>💻 Frontend Log:</strong> ${frontendLogPath}
+  </div>
+  <div class="actions">
+    <button class="btn" onclick="fetch('/api/logs/open-folder').then(r=>r.json()).then(d=>alert(d.message || 'Folder opened'))">📂 Open Logs Folder in Explorer</button>
+    <a class="btn btn-secondary" href="/api/logs/download/backend">⬇️ Download backend.log</a>
+    <a class="btn btn-secondary" href="/api/logs/download/frontend">⬇️ Download frontend.log</a>
+    <button class="btn btn-secondary" onclick="location.reload()">🔄 Refresh Logs</button>
+  </div>
+  <div class="tab-bar">
+    <div id="tab-backend" class="tab active" onclick="showTab('backend')">Backend Log (Latest 200 lines)</div>
+    <div id="tab-frontend" class="tab" onclick="showTab('frontend')">Frontend Log (Latest 200 lines)</div>
+  </div>
+  <pre id="pre-backend">${backendTail.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</pre>
+  <pre id="pre-frontend" style="display: none;">${frontendTail.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</pre>
+
+  <script>
+    function showTab(type) {
+      document.getElementById('pre-backend').style.display = type === 'backend' ? 'block' : 'none';
+      document.getElementById('pre-frontend').style.display = type === 'frontend' ? 'block' : 'none';
+      document.getElementById('tab-backend').className = type === 'backend' ? 'tab active' : 'tab';
+      document.getElementById('tab-frontend').className = type === 'frontend' ? 'tab active' : 'tab';
+    }
+  </script>
+</body>
+</html>`);
+});
 
 // 🔄 Database Connection Check (for all API routes)
 app.use("/api", dbCheck);
@@ -396,7 +650,7 @@ const aiApiLimiter = rateLimit({
 const authenticateAiToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
-  
+
   if (!token) {
     req.user = { shop_id: 1, role: 'ADMIN', username: 'TestOwner', user_id: 1 };
     return next();
@@ -433,7 +687,25 @@ app.get(["/", /^\/customer.*/], (req, res) => {
 });
 
 app.get("/health", (req, res) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() });
+  const os = require("os");
+  const interfaces = os.networkInterfaces();
+  const localIps = [];
+  for (const name of Object.keys(interfaces)) {
+    for (const net of interfaces[name]) {
+      if (net.family === "IPv4" && !net.internal) {
+        localIps.push(net.address);
+      }
+    }
+  }
+
+  res.json({
+    status: "ok",
+    server: "Smart POS",
+    version: "3.0.0",
+    localIps,
+    port: process.env.PORT || 3000,
+    timestamp: new Date().toISOString()
+  });
 });
 
 // Legacy support (redirects to ensure existing frontend calls don't break)
@@ -468,7 +740,7 @@ setInterval(async () => {
   try {
     const pool = await poolPromise;
     if (!pool || !pool.connected) return;
-    
+
     // Close only true stale orphan orders where table is 0 and no active items exist
     const result = await pool.request().query(`
       UPDATE RestaurantOrderCur 
@@ -484,7 +756,7 @@ setInterval(async () => {
       )
       AND CreatedOn < DATEADD(MINUTE, -30, GETDATE());
     `);
-    
+
     if (result.recordset || result.rowsAffected[0] > 0) {
       const affected = result.rowsAffected[0] || 0;
       if (affected > 0) {
@@ -504,7 +776,7 @@ function logDiagnostics(label = "Interval") {
     const mem = process.memoryUsage();
     const { activeTransactions } = require("./utils/transactionHelper");
     const { getPool } = require("./config/db");
-    
+
     const pool = getPool();
     const poolStats = pool && pool.pool ? {
       used: pool.pool.used.length,
@@ -579,9 +851,30 @@ setInterval(() => {
   logDiagnostics("Interval");
 }, 5 * 60 * 1000);
 
-/* ================= START SERVER ================= */
-httpServer.listen(PORT, async () => {
-  console.log(`🚀 Modular Server running on port ${PORT}`);
+function getLocalNetworkIp() {
+  try {
+    const interfaces = require('os').networkInterfaces();
+    for (const name of Object.keys(interfaces)) {
+      for (const iface of interfaces[name]) {
+        if (iface.family === 'IPv4' && !iface.internal) {
+          return iface.address;
+        }
+      }
+    }
+  } catch (_) { }
+  return 'localhost';
+}
+
+httpServer.listen(PORT, "0.0.0.0", async () => {
+  const localIp = getLocalNetworkIp();
+  console.log("\n===========================================================");
+  console.log("  📡 LOCAL SERVER ACTIVE FOR ALL NETWORK DEVICES & TABLETS");
+  console.log("===========================================================");
+  console.log(`  Backend Server API : http://${localIp}:${PORT}`);
+  console.log(`  Local Database     : ${process.env.LOCAL_DB_NAME || 'UCSPONDY_HYBRID'} (Local MS SQL Server)`);
+  console.log(`  Web Client Connect : http://${localIp}:8081`);
+  console.log("===========================================================\n");
+  startPrintQueueWorker();
 
   try {
     // 1. Auto-create local database if it doesn't exist on Local SQL Server
@@ -589,18 +882,37 @@ httpServer.listen(PORT, async () => {
 
     const pool = await poolPromise;
     if (pool) {
+      // 2. Auto-clone and sync all missing tables and master data from Remote Cloud DB FIRST!
+      console.log("🔄 [Startup] Auto-replicating schema and master data from Remote Cloud DB...");
+      await syncSchemaFromRemoteToLocal(pool);
+
+      // 3. Run schema check and POS-specific additions/indexes
       await initDB(pool);
-      // ✅ One-time migration: Fix any active tables with NULL StartTime
-      await pool.request().query("UPDATE TableMaster SET StartTime = GETDATE() WHERE StartTime IS NULL AND Status IN (1, 2, 3, 4)");
+
+      // 4. Safe one-time migration: Fix any active tables with NULL StartTime
+      try {
+        await pool.request().query(`
+          IF OBJECT_ID('TableMaster', 'U') IS NOT NULL
+          BEGIN
+            UPDATE TableMaster SET StartTime = GETDATE() WHERE StartTime IS NULL AND Status IN (1, 2, 3, 4);
+          END
+        `);
+      } catch (tableErr) {
+        console.warn("⚠️ Could not update TableMaster start times:", tableErr.message);
+      }
       console.log("✅ Local Database initialized and ready.");
-      
-      // 2. Auto-clone and sync all missing tables and master data from Remote Cloud DB
-      await syncSchemaFromRemoteToLocal();
     }
     // Start Hybrid Offline & Online Database Sync Worker (syncs every 5s)
     startSyncWorker(5000);
+
+    // 🚀 Start real-time table & menu pollers now that DB is fully ready
+    setTimeout(pollTables, 1000);
+    setTimeout(pollMenuPublishStatus, 2000);
   } catch (err) {
     console.error("⚠️ Initial DB setup failed:", err.message);
+    startSyncWorker(5000);
+    setTimeout(pollTables, 5000);
+    setTimeout(pollMenuPublishStatus, 5000);
   }
 
   // 🔄 KITCHEN AUTO-SYNC: Detect new kitchens from backoffice every 3 minutes

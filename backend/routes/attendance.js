@@ -1,5 +1,6 @@
 const express = require("express");
 const router = express.Router();
+const bcrypt = require("bcryptjs");
 const { sql, poolPromise } = require("../config/db");
 const { getActiveOrganization } = require("../utils/organizationHelper");
 const { authenticateToken } = require("../middleware/auth");
@@ -232,15 +233,39 @@ router.post("/save", async (req, res) => {
 
     const user = userCheck.recordset[0];
 
-    // Decode base64 password (same as auth.js)
-    let storedPassword = user.UserPassword;
+    // Verify password matching auth.js logic (bcrypt, plain text, or base64)
+    const dbPassword = (user.UserPassword || "").trim();
+    const inputPassword = (password || "").trim();
+    let isValidPassword = false;
+
+    // 1. Try bcrypt check
     try {
-      storedPassword = Buffer.from(user.UserPassword, "base64").toString("utf8");
-    } catch (e) {
-      storedPassword = user.UserPassword;
+      if (dbPassword.startsWith("$2a$") || dbPassword.startsWith("$2b$")) {
+        isValidPassword = await bcrypt.compare(inputPassword, dbPassword);
+      }
+    } catch (e) {}
+
+    // 2. Legacy & base64 check fallback
+    if (!isValidPassword) {
+      const parts = dbPassword.split("-");
+      const candidates = [dbPassword, parts[0]].filter((c) => c && c.length > 0);
+
+      for (const cand of candidates) {
+        if (cand === inputPassword) {
+          isValidPassword = true;
+          break;
+        }
+        try {
+          const decoded = Buffer.from(cand, "base64").toString("utf-8").trim();
+          if (decoded === inputPassword) {
+            isValidPassword = true;
+            break;
+          }
+        } catch (e) {}
+      }
     }
 
-    if (storedPassword !== password) {
+    if (!isValidPassword) {
       return res.status(401).json({ message: "Invalid password" });
     }
 

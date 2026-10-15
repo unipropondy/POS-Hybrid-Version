@@ -530,7 +530,22 @@ export default function CompanySettingsScreen() {
 
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
           <TouchableOpacity 
-            style={[styles.saveButton, { backgroundColor: '#F1F5F9', borderWidth: 1, borderColor: '#CBD5E1', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, height: 38, paddingHorizontal: 16 }]} 
+            style={[styles.saveButton, { backgroundColor: '#F1F5F9', borderWidth: 1, borderColor: '#CBD5E1', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, height: 38, paddingHorizontal: 14 }]} 
+            onPress={() => {
+              if (Platform.OS === 'web' && typeof window !== 'undefined') {
+                window.open(`${API_URL}/api/logs/view`, '_blank');
+              } else {
+                fetch(`${API_URL}/api/logs/open-folder`).catch(() => {});
+              }
+            }}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="document-text-outline" size={16} color={Theme.textPrimary} />
+            <Text style={[styles.saveButtonText, { color: Theme.textPrimary }]}>System Logs</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity 
+            style={[styles.saveButton, { backgroundColor: '#F1F5F9', borderWidth: 1, borderColor: '#CBD5E1', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, height: 38, paddingHorizontal: 14 }]} 
             onPress={() => setShowAuditModal(true)}
             activeOpacity={0.7}
           >

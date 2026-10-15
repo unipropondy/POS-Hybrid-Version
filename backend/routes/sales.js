@@ -2196,17 +2196,34 @@ router.post("/save", async (req, res) => {
       .input("startDate", sql.Date, formattedStartDate)
       .query(`
         -- 1. Insert into SettlementHeader
-        INSERT INTO SettlementHeader (
-          SettlementID, LastSettlementDate, LastDayEndDate, SubTotal, TotalTax, DiscountAmount, DiscountType, 
-          BillNo, OrderType, TableNo, Section, MemberId, CashierID, BusinessUnitId, 
-          SysAmount, ManualAmount, CreatedBy, CreatedOn, SER_NAME, MobileNo, 
-          VoidItemQty, VoidItemAmount, RoundedBy, ServiceCharge, GuestName, Pax, TotalPax, TakeawayCharge, start_date
-        ) VALUES (
-          @SettlementID, GETDATE(), GETDATE(), @SubTotal, @TotalTax, @DiscountAmount, @DiscountType, 
-          @BillNo, @OrderType, @TableNo, @Section, @MemberId, @CashierID, @BusinessUnitId, 
-          @SysAmount, @ManualAmount, @CreatedBy, GETDATE(), @SER_NAME, @MobileNo, 
-          @VoidItemQty, @VoidItemAmount, @RoundedBy, @ServiceCharge, @GuestName, @Pax, @Pax, @TakeawayCharge, @startDate
-        );
+        IF EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('SettlementHeader') AND name = 'OrderId' AND is_identity = 0)
+        BEGIN
+          INSERT INTO SettlementHeader (
+            SettlementID, LastSettlementDate, LastDayEndDate, SubTotal, TotalTax, DiscountAmount, DiscountType, 
+            BillNo, OrderType, TableNo, Section, MemberId, CashierID, BusinessUnitId, 
+            SysAmount, ManualAmount, CreatedBy, CreatedOn, SER_NAME, MobileNo, 
+            VoidItemQty, VoidItemAmount, RoundedBy, ServiceCharge, GuestName, Pax, TotalPax, TakeawayCharge, start_date, OrderId
+          ) VALUES (
+            @SettlementID, GETDATE(), GETDATE(), @SubTotal, @TotalTax, @DiscountAmount, @DiscountType, 
+            @BillNo, @OrderType, @TableNo, @Section, @MemberId, @CashierID, @BusinessUnitId, 
+            @SysAmount, @ManualAmount, @CreatedBy, GETDATE(), @SER_NAME, @MobileNo, 
+            @VoidItemQty, @VoidItemAmount, @RoundedBy, @ServiceCharge, @GuestName, @Pax, @Pax, @TakeawayCharge, @startDate, @DailySeq
+          );
+        END
+        ELSE
+        BEGIN
+          INSERT INTO SettlementHeader (
+            SettlementID, LastSettlementDate, LastDayEndDate, SubTotal, TotalTax, DiscountAmount, DiscountType, 
+            BillNo, OrderType, TableNo, Section, MemberId, CashierID, BusinessUnitId, 
+            SysAmount, ManualAmount, CreatedBy, CreatedOn, SER_NAME, MobileNo, 
+            VoidItemQty, VoidItemAmount, RoundedBy, ServiceCharge, GuestName, Pax, TotalPax, TakeawayCharge, start_date
+          ) VALUES (
+            @SettlementID, GETDATE(), GETDATE(), @SubTotal, @TotalTax, @DiscountAmount, @DiscountType, 
+            @BillNo, @OrderType, @TableNo, @Section, @MemberId, @CashierID, @BusinessUnitId, 
+            @SysAmount, @ManualAmount, @CreatedBy, GETDATE(), @SER_NAME, @MobileNo, 
+            @VoidItemQty, @VoidItemAmount, @RoundedBy, @ServiceCharge, @GuestName, @Pax, @Pax, @TakeawayCharge, @startDate
+          );
+        END
 
         -- 2. Insert into RestaurantInvoice (Perfect Sync)
         INSERT INTO RestaurantInvoice (
@@ -2661,7 +2678,7 @@ router.post("/save", async (req, res) => {
                 OrderDetailId, OrderId, DishId, Description, DishName, Quantity, PricePerUnit, 
                 ActualAmount, TotalDetailLineAmount, BaseAmount, StatusCode, CreatedBy, CreatedOn, 
                 BusinessUnitId, OrderDateTime, Spicy, Salt, Oil, Sugar, Remarks, 
-                OrderConfirmQty, VoidReason, DiscountAmount, DiscountType, isTakeAway, ManualDiscountAmount, ServiceCharge, ComboDetailsJSON, start_date
+                OrderConfirmQty, VoidReason, DiscountAmount, DiscountType, isTakeAway, ManualDiscountAmount, ServiceCharge, ComboDetailsJSON, start_date, isSettlement
               )
               SELECT 
                 @NewDetailId, cur.OrderId, cur.DishId, cur.Description, cur.DishName, @QtyPaid, cur.PricePerUnit, 
@@ -2670,7 +2687,8 @@ router.post("/save", async (req, res) => {
                 cur.BusinessUnitId, cur.OrderDateTime, cur.Spicy, cur.Salt, cur.Oil, cur.Sugar, cur.Remarks, 
                 @QtyPaid, cur.VoidReason, 
                 ISNULL(cur.DiscountAmount, 0), ISNULL(cur.DiscountType, 'fixed'),
-                cur.isTakeAway, ISNULL(cur.DiscountAmount, 0), cur.ServiceCharge, cur.ComboDetailsJSON, cur.start_date
+                cur.isTakeAway, ISNULL(cur.DiscountAmount, 0), cur.ServiceCharge, cur.ComboDetailsJSON, cur.start_date,
+                ISNULL(cur.isSettlement, 1)
               FROM RestaurantOrderDetailCur cur
               WHERE cur.OrderDetailId = @OldDetailId;
             `);
@@ -2875,7 +2893,7 @@ router.post("/save", async (req, res) => {
                   OrderDetailId, OrderId, DishId, Description, DishName, Quantity, PricePerUnit, 
                   ActualAmount, TotalDetailLineAmount, BaseAmount, StatusCode, CreatedBy, CreatedOn, 
                   BusinessUnitId, OrderDateTime, Spicy, Salt, Oil, Sugar, Remarks, 
-                  OrderConfirmQty, VoidReason, DiscountAmount, DiscountType, isTakeAway, ManualDiscountAmount, ServiceCharge, ComboDetailsJSON, start_date
+                  OrderConfirmQty, VoidReason, DiscountAmount, DiscountType, isTakeAway, ManualDiscountAmount, ServiceCharge, ComboDetailsJSON, start_date, isSettlement
                 )
                 SELECT 
                   d.OrderDetailId, d.OrderId, d.DishId, d.Description, d.DishName, d.Quantity, d.PricePerUnit, 
@@ -2886,7 +2904,8 @@ router.post("/save", async (req, res) => {
                   d.OrderConfirmQty, d.VoidReason, 
                   ISNULL(d.DiscountAmount, 0), ISNULL(d.DiscountType, 'fixed'),
                   ISNULL(h.IsTakeAway, ISNULL(d.isTakeAway, 0)),
-                  ISNULL(d.DiscountAmount, 0), d.ServiceCharge, d.ComboDetailsJSON, d.start_date
+                  ISNULL(d.DiscountAmount, 0), d.ServiceCharge, d.ComboDetailsJSON, d.start_date,
+                  ISNULL(d.isSettlement, 1)
                 FROM RestaurantOrderDetailCur d
                 INNER JOIN RestaurantOrderCur h ON d.OrderId = h.OrderId
                 WHERE h.OrderNumber = @orderNo;
@@ -2944,7 +2963,7 @@ router.post("/save", async (req, res) => {
 
           const io = req.app.get("io");
           if (io) {
-            io.emit("table_status_updated", { tableId: cleanTableId.toLowerCase(), tableNo: targetTableNo, status: 0, totalAmount: 0, customerName: null, pax: null });
+            io.emit("table_status_updated", { tableId: cleanTableId.toLowerCase(), tableNo: targetTableNo, status: 0, totalAmount: 0, startTime: null, entryStatus: null, customerName: null, pax: null });
             io.emit("cart_updated", { tableId: cleanTableId.toLowerCase(), tableNo: targetTableNo });
             io.emit("order_closed", { tableId: cleanTableId.toLowerCase(), tableNo: targetTableNo, orderId: displayOrderId });
           }
@@ -3041,6 +3060,11 @@ router.post("/save", async (req, res) => {
           const stats = check.recordset[0];
           const isHealthy = stats.PaymentMasterCount > 0 && stats.InvoiceMasterMatch > 0 && stats.OrderMasterCount > 0;
           console.log(`[INTEGRITY ${isHealthy ? 'OK' : 'FAIL'}] Order: ${displayOrderId} | MasterOrder: ${stats.OrderMasterCount} | Invoice: ${stats.InvoiceMasterMatch} | Payments: ${stats.PaymentMasterCount} | Bill: ${stats.FinalBillNo}`);
+          // 🚀 Non-blocking background push to remote cloud DB if online
+          try {
+            const { triggerSyncProcess } = require("../services/syncService");
+            triggerSyncProcess();
+          } catch (_) {}
         } catch (vErr) {
           console.error("[INTEGRITY ERROR] Verification failed:", vErr.message);
         }
@@ -4065,6 +4089,13 @@ router.post("/settlement/:id/change-payment", async (req, res) => {
       }
 
       await transaction.commit();
+
+      // 🚀 Non-blocking background push to remote cloud DB if online
+      try {
+        const { triggerSyncProcess } = require("../services/syncService");
+        triggerSyncProcess();
+      } catch (_) {}
+
       res.json({ success: true, message: "Payment mode updated successfully" });
     } catch (txErr) {
       await transaction.rollback();
@@ -4181,6 +4212,13 @@ router.post("/settlement/:id/void-item", async (req, res) => {
         `);
 
       await transaction.commit();
+
+      // 🚀 Non-blocking background push to remote cloud DB if online
+      try {
+        const { triggerSyncProcess } = require("../services/syncService");
+        triggerSyncProcess();
+      } catch (_) {}
+
       res.json({ success: true, message: "Items voided successfully" });
     } catch (txErr) {
       await transaction.rollback();
@@ -4256,6 +4294,13 @@ router.post("/settlement/:id/cancel", async (req, res) => {
         .query("DELETE FROM LoyaltyVisit WHERE SettlementId = @Sid");
 
       await transaction.commit();
+
+      // 🚀 Non-blocking background push to remote cloud DB if online
+      try {
+        const { triggerSyncProcess } = require("../services/syncService");
+        triggerSyncProcess();
+      } catch (_) {}
+
       res.json({ success: true, message: "Order cancelled successfully" });
     } catch (txErr) {
       await transaction.rollback();

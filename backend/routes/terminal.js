@@ -252,4 +252,76 @@ router.put("/:terminalCode", async (req, res) => {
   }
 });
 
+// 🔹 POST Register or update client mobile/tablet device in database
+router.post("/register-client", async (req, res) => {
+  try {
+    const { deviceName, deviceIp, deviceType, platform, model } = req.body;
+    const pool = await poolPromise;
+    if (!pool || !pool.connected) {
+      return res.status(503).json({ error: "Database not connected" });
+    }
+
+    // TerminalCode is CHAR(10), TerminalName is VARCHAR(50), TerminalType is VARCHAR(10)
+    const suffix = Math.floor(Math.random() * 900000 + 100000).toString(); // 6 digits
+    const prefix = ((deviceType || "TAB").toUpperCase().startsWith("M") ? "MOB_" : "TAB_"); // 4 chars
+    const cleanCode = (deviceName && deviceName.length <= 10)
+      ? deviceName.trim().toUpperCase()
+      : `${prefix}${suffix}`; // Exactly 10 chars
+
+    const cleanName = (deviceName || `Tablet/Mobile (${deviceIp || "LAN"})`).slice(0, 50);
+    const cleanComp = (deviceIp || platform || "Android").slice(0, 50);
+    const cleanType = (deviceType || "TABLET").toUpperCase().slice(0, 10);
+
+    // Upsert into TerminalMaster
+    const check = await pool.request()
+      .input("TerminalCode", sql.Char(10), cleanCode)
+      .query("SELECT COUNT(*) as cnt FROM TerminalMaster WHERE RTRIM(LTRIM(TerminalCode)) = RTRIM(LTRIM(@TerminalCode))");
+
+    if (check.recordset[0].cnt > 0) {
+      await pool.request()
+        .input("TerminalCode", sql.Char(10), cleanCode)
+        .input("TerminalName", sql.VarChar(50), cleanName)
+        .input("ComputerName", sql.Char(50), cleanComp)
+        .input("TerminalType", sql.VarChar(10), cleanType)
+        .query(`
+          UPDATE TerminalMaster
+          SET TerminalName = @TerminalName,
+              ComputerName = @ComputerName,
+              TerminalType = @TerminalType
+          WHERE RTRIM(LTRIM(TerminalCode)) = RTRIM(LTRIM(@TerminalCode))
+        `);
+    } else {
+      const defaultGuid = "00000000-0000-0000-0000-000000000000";
+      await pool.request()
+        .input("TerminalCode", sql.Char(10), cleanCode)
+        .input("TerminalName", sql.VarChar(50), cleanName)
+        .input("LocationCode", sql.Char(10), "ROUTER")
+        .input("ComputerName", sql.Char(50), cleanComp)
+        .input("TillAmount", sql.Decimal(18, 2), 0)
+        .input("TerminalType", sql.VarChar(10), cleanType)
+        .input("PrintType", sql.Char(20), "T")
+        .input("DisplayType", sql.VarChar(50), "SOCKET")
+        .input("PrinterRequired", sql.Bit, 0)
+        .input("CreateUser", sql.UniqueIdentifier, defaultGuid)
+        .query(`
+          INSERT INTO TerminalMaster
+          (TerminalId, TerminalCode, TerminalName, LocationCode, ComputerName, TillAmount, TerminalType, PrintType, DisplayType, PrinterRequired, CreateUser, CreateDate)
+          VALUES
+          (NEWID(), @TerminalCode, @TerminalName, @LocationCode, @ComputerName, @TillAmount, @TerminalType, @PrintType, @DisplayType, @PrinterRequired, @CreateUser, GETDATE())
+        `);
+    }
+
+    res.json({
+      success: true,
+      message: "Device registered to local server database",
+      terminalCode: cleanCode,
+      terminalName: cleanName
+    });
+  } catch (err) {
+    console.error("Error registering client:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
+

@@ -40,34 +40,42 @@ async function getHoldOvertimeMinutes() {
   return cachedHoldOvertimeMinutes;
 }
 
+const { saveLogoToDisk } = require("./logoStorage");
+
 async function getCompanySettings() {
   const now = Date.now();
   if (cachedCompanySettings !== null && (now - companySettingsFetchTime < CACHE_TTL_MS)) {
-    console.log("⚡ [SettingsCache] Cache HIT: CompanySettings");
     return cachedCompanySettings;
   }
 
-  console.log("⚡ [SettingsCache] Cache MISS: CompanySettings");
   try {
     const pool = await poolPromise;
     if (pool && pool.connected) {
-      // 1. Try to get specific Master Settings (ID 1)
+      // 1. Fetch latest active restaurant company settings
       let result = await pool.request()
-        .query("SELECT * FROM CompanySettings WHERE Id = '1'");
+        .query("SELECT TOP 1 * FROM CompanySettings WHERE CompanyName IS NOT NULL AND CompanyName <> '' AND CompanyName <> 'UCS POS' ORDER BY UpdatedOn DESC");
       
-      // 2. Fallback: If not found OR if the found record has NO NAME (empty shell)
-      if (result.recordset.length === 0 || !result.recordset[0].CompanyName || result.recordset[0].CompanyName.trim() === '') {
-        const fallbackResult = await pool.request()
-          .query("SELECT TOP 1 * FROM CompanySettings WHERE CompanyName IS NOT NULL AND CompanyName <> '' ORDER BY UpdatedOn DESC");
-        
-        if (fallbackResult.recordset.length > 0) {
-          result = fallbackResult;
-        }
+      // 2. Fallback if no specific record found
+      if (result.recordset.length === 0) {
+        result = await pool.request()
+          .query("SELECT TOP 1 * FROM CompanySettings ORDER BY UpdatedOn DESC");
       }
 
       if (result.recordset.length > 0) {
-        cachedCompanySettings = result.recordset[0];
+        const row = result.recordset[0];
+        const logoUrl = await saveLogoToDisk(row.CompanyLogoUrl);
+        row.CompanyLogoUrl = logoUrl;
+        cachedCompanySettings = row;
         companySettingsFetchTime = now;
+
+        // Auto-persist local logo path into CompanySettings table if missing
+        if (!row.CompanyLogoUrl || row.CompanyLogoUrl === "/uploads/company_logo.png") {
+          pool.request()
+            .input("logoUrl", logoUrl)
+            .input("id", row.Id)
+            .query("UPDATE CompanySettings SET CompanyLogoUrl = @logoUrl WHERE Id = @id")
+            .catch(() => {});
+        }
       }
     }
   } catch (err) {

@@ -484,6 +484,7 @@ const TableItemComponent = React.memo(
     isAbsoluteLayout,
     layoutScale = 1,
     backgroundTheme = "wood",
+    showChairs = true,
   }: {
     tableId: string;
     item: TableItem;
@@ -496,6 +497,7 @@ const TableItemComponent = React.memo(
     isAbsoluteLayout?: boolean;
     layoutScale?: number;
     backgroundTheme?: string;
+    showChairs?: boolean;
   }) => {
     // 🚀 O(1) Store Subscription: Only re-renders when THIS table changes
     const tableData = useTableStatusStore((state) => state.tableMap[tableId]);
@@ -1012,6 +1014,7 @@ const TableItemComponent = React.memo(
           smallFont={smallFont}
           numberFont={numberFont}
           itemSize={itemSize}
+          showChairs={showChairs}
         />
 
 
@@ -1185,22 +1188,38 @@ export default function Category() {
     return "1";
   };
 
-  const loadBackgroundTheme = async () => {
+  const [showChairs, setShowChairs] = useState(true);
+
+  const loadSectionSettings = async (sectionKey: string) => {
     try {
-      const sectionNum = getSectionNum(activeTab);
-      const savedTheme = await AsyncStorage.getItem(`layout_background_theme_${sectionNum}`);
-      if (savedTheme === "champagne" || savedTheme === "champagne_fizz" || savedTheme === "citrine" || savedTheme === "champagne_glass" || savedTheme === "cloud_nine") {
-        setBackgroundTheme(savedTheme);
-      } else {
-        setBackgroundTheme("champagne_fizz");
+      // 1. Instant local cache fallback
+      const savedTheme = await AsyncStorage.getItem(`layout_background_theme_${sectionKey}`);
+      if (savedTheme) setBackgroundTheme(savedTheme);
+      const savedChairs = await AsyncStorage.getItem(`layout_show_chairs_${sectionKey}`);
+      if (savedChairs !== null) setShowChairs(savedChairs === "true");
+
+      // 2. Fetch live settings from central server
+      const res = await fetch(`${API_URL}/api/tables/section-layout?section=${sectionKey}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.backgroundTheme) {
+          setBackgroundTheme(data.backgroundTheme);
+          await AsyncStorage.setItem(`layout_background_theme_${sectionKey}`, data.backgroundTheme);
+        }
+        if (data.showChairs !== undefined) {
+          const chairsBool = Boolean(data.showChairs);
+          setShowChairs(chairsBool);
+          await AsyncStorage.setItem(`layout_show_chairs_${sectionKey}`, String(chairsBool));
+        }
       }
     } catch (e) {
-      console.error(e);
+      console.warn("⚠️ [Category] Could not load section settings from backend:", e);
     }
   };
 
   useEffect(() => {
-    loadBackgroundTheme();
+    const secNum = getSectionNum(activeTab);
+    loadSectionSettings(secNum);
   }, [activeTab]);
 
   const { showToast } = useToast();
@@ -1609,14 +1628,28 @@ export default function Category() {
   }, []);
 
   useEffect(() => {
-    socket.on("table_config_updated", () => {
+    const handleTableConfigUpdated = () => {
       fetchTables();
-      loadBackgroundTheme();
-    });
-    return () => {
-      socket.off("table_config_updated");
+      const secNum = getSectionNum(activeTab);
+      loadSectionSettings(secNum);
     };
-  }, []);
+
+    const handleSectionLayoutUpdated = (data: any) => {
+      const secNum = getSectionNum(activeTab);
+      if (data && String(data.section) === String(secNum)) {
+        if (data.backgroundTheme) setBackgroundTheme(data.backgroundTheme);
+        if (data.showChairs !== undefined) setShowChairs(Boolean(data.showChairs));
+      }
+    };
+
+    socket.on("table_config_updated", handleTableConfigUpdated);
+    socket.on("section_layout_updated", handleSectionLayoutUpdated);
+
+    return () => {
+      socket.off("table_config_updated", handleTableConfigUpdated);
+      socket.off("section_layout_updated", handleSectionLayoutUpdated);
+    };
+  }, [activeTab]);
 
   // fetchLockedTables consolidated into fetchTables
 
@@ -2024,6 +2057,7 @@ export default function Category() {
 
   const handleTablePress = React.useCallback(
     async (item: TableItem, tableData: any, isCheckoutAction?: boolean) => {
+      useCartStore.getState().cancelPendingSync();
       // Check if user license is expired
       const userLicenseToDate = user?.licenseToDate || companyInfo?.LicenseToDate;
       if (userLicenseToDate) {
@@ -2272,6 +2306,10 @@ export default function Category() {
       setCurrentContext(contextId);
       // 🚀 BUG FIX: If table is empty, clear local cart immediately to prevent "popping" stale data
       if (status === 0) {
+        if (newContext.tableId) {
+          useCartStore.getState().clearTableSession(newContext.tableId);
+          useCartStore.getState().setTableOrderId(newContext.tableId, null);
+        }
         setCartItemsGlobal(contextId, [], true); // skipSync=true to avoid double sync
         try {
           const { useTableNavigationStore } = require("../../stores/tableNavigationStore");
@@ -2284,7 +2322,7 @@ export default function Category() {
       }
     }
 
-    if (newContext.tableId) {
+    if (newContext.tableId && status !== 0) {
       try {
         await fetchCartFromDBGlobal(newContext.tableId, true);
       } catch (err) {
@@ -2547,6 +2585,7 @@ export default function Category() {
           smallFont={smallFont}
           isTabletPortrait={!isLandscape && isTablet}
           backgroundTheme={backgroundTheme}
+          showChairs={showChairs}
         />
       );
     },
@@ -2559,6 +2598,7 @@ export default function Category() {
       width,
       height,
       backgroundTheme,
+      showChairs,
     ],
   );
 
@@ -2657,7 +2697,11 @@ export default function Category() {
               elevation: 1,
             }}>
               <Image
-                source={{ uri: companyInfo.CompanyLogoUrl }}
+                source={{
+                  uri: companyInfo.CompanyLogoUrl.startsWith("http") || companyInfo.CompanyLogoUrl.startsWith("data:")
+                    ? companyInfo.CompanyLogoUrl
+                    : `${API_URL}${companyInfo.CompanyLogoUrl.startsWith("/") ? "" : "/"}${companyInfo.CompanyLogoUrl}`
+                }}
                 style={{ width: 46, height: 46, borderRadius: 8 }}
                 contentFit="contain"
               />
@@ -4811,6 +4855,7 @@ export default function Category() {
                             isAbsoluteLayout={true}
                             layoutScale={layoutScale}
                             backgroundTheme={backgroundTheme}
+                            showChairs={showChairs}
                           />
                         </View>
                       );

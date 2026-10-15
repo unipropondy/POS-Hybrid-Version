@@ -13,7 +13,8 @@ console.log('=== Starting Build and Distribution Process ===');
 // 1. Run the build in the frontend directory
 console.log('\nStep 1: Building frontend...');
 try {
-  execSync('npm run build:web', {
+  const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  execSync(`${npmCmd} run build:web`, {
     cwd: frontendDir,
     stdio: 'inherit',
     env: { ...process.env, NODE_OPTIONS: '--max-old-space-size=4096' }

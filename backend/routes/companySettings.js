@@ -4,6 +4,7 @@ const sql = require("mssql");
 const { poolPromise } = require("../config/db");
 const { getCompanySettings, invalidateCache } = require("../utils/settingsCache");
 const { logSettingsDiff } = require("../utils/auditLogger");
+const { saveLogoToDisk } = require("../utils/logoStorage");
 
 // 🔹 GET Settings
 router.get("/:id", async (req, res) => {
@@ -14,10 +15,12 @@ router.get("/:id", async (req, res) => {
     const license = licenseRes.recordset[0] || { FromDate: null, ToDate: null };
 
     if (settings) {
+      const processedLogoUrl = await saveLogoToDisk(settings.CompanyLogoUrl);
       res.json({ 
         success: true, 
         settings: { 
           ...settings, 
+          CompanyLogoUrl: processedLogoUrl,
           LicenseFromDate: license.FromDate, 
           LicenseToDate: license.ToDate 
         } 
@@ -46,6 +49,8 @@ router.post("/:id", async (req, res) => {
     };
 
 
+    const savedLogoUrl = await saveLogoToDisk(s.CompanyLogoUrl);
+
     try {
       await pool.request()
         .input("CompanyName", sql.NVarChar, s.CompanyName || "My Restaurant")
@@ -57,7 +62,7 @@ router.post("/:id", async (req, res) => {
         .input("CashierName", sql.NVarChar, s.CashierName || "")
         .input("Currency", sql.NVarChar, s.Currency || "SGD")
         .input("CurrencySymbol", sql.NVarChar, s.CurrencySymbol || "$")
-        .input("CompanyLogoUrl", sql.NVarChar(sql.MAX), s.CompanyLogoUrl || "")
+        .input("CompanyLogoUrl", sql.NVarChar(sql.MAX), savedLogoUrl)
         .input("HalalLogoUrl", sql.NVarChar(sql.MAX), s.HalalLogoUrl || "")
         .input("PrinterIP", sql.NVarChar, s.PrinterIP || "")
         .input("ShowCompanyLogo", sql.Bit, s.ShowCompanyLogo ? 1 : 0)
@@ -116,7 +121,7 @@ router.post("/:id", async (req, res) => {
         .input("Email", sql.NVarChar, s.Email || "")
         .input("Currency", sql.NVarChar, s.Currency || "SGD")
         .input("CurrencySymbol", sql.NVarChar, s.CurrencySymbol || "$")
-        .input("CompanyLogoUrl", sql.NVarChar(sql.MAX), s.CompanyLogoUrl || "")
+        .input("CompanyLogoUrl", sql.NVarChar(sql.MAX), savedLogoUrl)
         .input("HalalLogoUrl", sql.NVarChar(sql.MAX), s.HalalLogoUrl || "")
         .input("ShowCompanyLogo", sql.Bit, s.ShowCompanyLogo ? 1 : 0)
         .input("ShowHalalLogo", sql.Bit, s.ShowHalalLogo ? 1 : 0)

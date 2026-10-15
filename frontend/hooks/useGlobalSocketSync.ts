@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { Platform, Alert } from "react-native";
 import { socket } from "../constants/socket";
 import { useActiveOrdersStore } from "../stores/activeOrdersStore";
-import { useCartStore } from "../stores/cartStore";
+import { useCartStore, getContextId } from "../stores/cartStore";
 import { useOrderContextStore } from "../stores/orderContextStore";
 import { useTableStatusStore } from "../stores/tableStatusStore";
 import { API_URL } from "../constants/Config";
@@ -146,7 +146,7 @@ export function useGlobalSocketSync() {
       const currentOrderId = data.currentOrderId || data.CurrentOrderId;
       const isHoldOvertime = data.isHoldOvertime !== undefined ? data.isHoldOvertime : data.IsHoldOvertime;
       const lockedByName = data.lockedByName;
-      const entryStatus = data.entryStatus || data.EntryStatus;
+      const entryStatus = data.entryStatus !== undefined ? data.entryStatus : data.EntryStatus;
       
       const customerName = data.customerName !== undefined ? data.customerName : data.CustomerName;
       const pax = data.pax !== undefined ? data.pax : data.Pax;
@@ -173,8 +173,9 @@ export function useGlobalSocketSync() {
         const cleanTableNo = existingTable?.tableNo || (data.tableNo ? String(data.tableNo).trim() : "");
 
         const computedStatus = (status === 5 ? "LOCKED" : (status === 1 || status === 4) ? "SENT" : status === 2 ? "BILL_REQUESTED" : status === 3 ? "HOLD" : "EMPTY");
+        const computedEntryStatus = computedStatus === "EMPTY" ? null : (entryStatus !== undefined ? entryStatus : existingTable?.entryStatus);
         store.updateTableStatus(
-          tableId,
+          cleanTableId,
           normalizedSection,
           cleanTableNo,
           currentOrderId || "SYNC",
@@ -185,7 +186,7 @@ export function useGlobalSocketSync() {
           true, 
           isHoldOvertime,
           data.modifiedOn || data.ModifiedOn,
-          entryStatus,
+          computedEntryStatus,
           customerName,
           pax
         );
@@ -259,15 +260,20 @@ export function useGlobalSocketSync() {
       if (__DEV__) {
         console.log("🛒 [Socket-Global] Cart updated (DB Sync) for Table:", cleanTarget);
       }
-      // 🛡️ BACKEND SIDE SAFEGUARD: If update is from POS auto-save, ignore it to prevent vanishing items
-      if (data.source === "pos_auto_save") {
-        if (__DEV__) console.log("🛡️ [Socket-Global] Ignored POS auto-save cart sync to prevent vanishing items");
-        return;
-      }
       const currentOrder = useOrderContextStore.getState().currentOrder;
-      if (cleanTarget && currentOrder?.tableId) {
-        const cleanCurrent = String(currentOrder.tableId).replace(/^\{|\}$/g, "").trim().toLowerCase();
-        if (cleanTarget === cleanCurrent) {
+      if (cleanTarget && currentOrder) {
+        const cleanTableId = String(currentOrder.tableId || "").replace(/^\{|\}$/g, "").trim().toLowerCase();
+        const cleanTableNo = String(currentOrder.tableNo || "").trim().toLowerCase();
+        const { tableMap } = useTableStatusStore.getState();
+        const targetTable = tableMap[cleanTarget];
+        const isMatch = cleanTarget === cleanTableId ||
+                        cleanTarget === cleanTableNo ||
+                        (targetTable && (
+                          String(targetTable.tableId || "").toLowerCase() === cleanTableId ||
+                          String(targetTable.tableNo || "").toLowerCase() === cleanTableNo
+                        ));
+
+        if (isMatch && currentOrder.tableId) {
           if (__DEV__) {
             console.log(`[Socket-Global] Active table cart updated on server. Forcing immediate fetch...`);
           }
@@ -347,20 +353,37 @@ export function useGlobalSocketSync() {
       }
 
       const store = useCartStore.getState();
-      const currentLastUpdate = store.lastLocalUpdate[payload.contextId] || 0;
+      let targetContextId = payload.contextId;
 
-      // 🛡️ SYNC SHIELD: Only update if the socket data is NEWER than our last local edit
-      if (payload.lastUpdate <= currentLastUpdate) {
+      // Match against active order if for the same table
+      const currentOrder = useOrderContextStore.getState().currentOrder;
+      if (currentOrder && payload.tableId) {
+        const cleanPayloadTbl = String(payload.tableId).replace(/^\{|\}$/g, "").trim().toLowerCase();
+        const cleanCurrentTblId = String(currentOrder.tableId || "").replace(/^\{|\}$/g, "").trim().toLowerCase();
+        const cleanCurrentTblNo = String(currentOrder.tableNo || "").trim().toLowerCase();
+        if (cleanPayloadTbl === cleanCurrentTblId || cleanPayloadTbl === cleanCurrentTblNo) {
+          const activeContextId = getContextId(currentOrder);
+          if (activeContextId) {
+            targetContextId = activeContextId;
+          }
+        }
+      }
+
+      const currentLastUpdate = store.lastLocalUpdate[targetContextId] || 0;
+      const hasPendingLocalEdit = store.pendingSync || (store._isSyncing && store._isSyncing[targetContextId]) || (store._queuedSync && store._queuedSync[targetContextId]);
+
+      // 🛡️ SYNC SHIELD: If this device is actively syncing its own local tap, reject stale echoes
+      if (hasPendingLocalEdit && payload.lastUpdate <= currentLastUpdate) {
         if (__DEV__) {
-          console.log(`🛡️ [TRACE] [${now}] [${payload.contextId}] socket.on: cart_change | ABORTED (Stale: ${payload.lastUpdate} <= ${currentLastUpdate})`);
+          console.log(`🛡️ [TRACE] [${now}] [${targetContextId}] socket.on: cart_change | ABORTED (Local edit in flight)`);
         }
         return;
       }
 
       if (__DEV__) {
-        console.log(`⚡ [TRACE] [${now}] [${payload.contextId}] socket.on: cart_change | APPLYING`);
+        console.log(`⚡ [TRACE] [${now}] [${targetContextId}] socket.on: cart_change | APPLYING`);
       }
-      store.setCartItems(payload.contextId, payload.items, true, "SOCKET_CHANGE");
+      store.setCartItems(targetContextId, payload.items, true, "SOCKET_CHANGE");
     };
 
     const handlePrintJobsAvailable = (payload: any) => {

@@ -107,9 +107,10 @@ export const useTableStatusStore = create<TableStatusState>((set, get) => ({
         totalAmount: totalAmount !== undefined ? totalAmount : (existingTable?.totalAmount ?? 0),
         isHoldOvertime: isHoldOvertime !== undefined ? isHoldOvertime : (existingTable?.isHoldOvertime ?? false),
         lastModified: modifiedOn || existingTable?.lastModified || "",
-        entryStatus: entryStatus !== undefined ? entryStatus : existingTable?.entryStatus,
-        customerName: customerName !== undefined ? customerName : existingTable?.customerName,
-        pax: pax !== undefined ? pax : existingTable?.pax,
+        entryStatus: status === 'EMPTY' ? undefined : (entryStatus !== undefined ? (entryStatus || undefined) : existingTable?.entryStatus),
+        paymentStatus: status === 'EMPTY' ? undefined : existingTable?.paymentStatus,
+        customerName: status === 'EMPTY' && customerName === undefined ? undefined : (customerName !== undefined ? customerName : existingTable?.customerName),
+        pax: status === 'EMPTY' && pax === undefined ? undefined : (pax !== undefined ? pax : existingTable?.pax),
       };
 
       const newTables = [...state.tables];
@@ -136,7 +137,7 @@ export const useTableStatusStore = create<TableStatusState>((set, get) => ({
       const { [tableNo]: _, ...rest } = state.lockedTableNames;
       const newTables = state.tables.map((t) => {
         if (t.section === section && t.tableNo === tableNo) {
-          return { ...t, status: 'EMPTY' as TableStatusType, totalAmount: 0, startTime: 0, orderId: '', customerName: undefined, pax: undefined };
+          return { ...t, status: 'EMPTY' as TableStatusType, totalAmount: 0, startTime: 0, orderId: '', customerName: undefined, pax: undefined, entryStatus: undefined, paymentStatus: undefined };
         }
         return t;
       });

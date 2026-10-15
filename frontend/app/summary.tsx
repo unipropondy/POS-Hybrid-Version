@@ -40,7 +40,7 @@ import {
   useActiveOrdersStore,
   voidOrderItem,
 } from "../stores/activeOrdersStore";
-import { useCartStore } from "../stores/cartStore";
+import { useCartStore, getContextId } from "../stores/cartStore";
 import { CustomerDisplaySync } from "../utils/CustomerDisplaySync";
 import { useCompanySettingsStore } from "../stores/companySettingsStore";
 import { useGeneralSettingsStore } from "../stores/generalSettingsStore";
@@ -427,9 +427,14 @@ export default function SummaryScreen() {
   const showPromoCode = useGeneralSettingsStore((s: any) => s.settings.showPromoCode !== false);
 
   const currentContextId = useCartStore((s: any) => s.currentContextId);
-  const cart = useCartStore((s: any) => (currentContextId ? s.carts[currentContextId] : undefined) || EMPTY_ARRAY);
+  const effectiveContextId = (context ? getContextId(context) : null) || currentContextId;
+  const cart = useCartStore((s: any) => (effectiveContextId ? s.carts[effectiveContextId] : undefined) || EMPTY_ARRAY);
   
-  const currentTableOrderId = useCartStore((s: any) => context?.tableId ? s.tableOrderIds[context.tableId] : undefined);
+  const currentTableOrderId = useCartStore((s: any) => {
+    if (!context?.tableId) return undefined;
+    const cleanId = String(context.tableId).replace(/^\{|\}$/g, "").trim().toLowerCase();
+    return s.tableOrderIds[context.tableId] || s.tableOrderIds[cleanId];
+  });
   const displayOrderId = currentTableOrderId || activeOrder?.orderId;
 
   const hasHydrated = useActiveOrdersStore((s: any) => s._hasHydrated);
@@ -558,7 +563,7 @@ export default function SummaryScreen() {
   };
 
   const discountInfo = useCartStore((s: any) => {
-    const id = s.currentContextId;
+    const id = (context ? getContextId(context) : null) || s.currentContextId;
     return id ? s.discounts[id] : null;
   });
 
@@ -2684,7 +2689,9 @@ export default function SummaryScreen() {
                       router.replace("/(tabs)/category");
                       return;
                     }
-                    const canPay = permissions["OPRSET"]?.canAdd;
+                    const userRole = (user?.role || user?.roleName || "").toUpperCase();
+                    const isStaffOrAdmin = ["ADMIN", "MANAGER", "CASHIER", "ADMINISTRATOR", "SUPERADMIN"].includes(userRole);
+                    const canPay = isStaffOrAdmin || permissions["OPRSET"]?.canAdd !== false;
                     if (!canPay) {
                       if (Platform.OS === 'web') {
                         router.replace("/(tabs)/category");
@@ -3821,7 +3828,9 @@ export default function SummaryScreen() {
                       router.replace("/(tabs)/category");
                       return;
                     }
-                    const canPay = permissions["OPRSET"]?.canAdd;
+                    const userRole = (user?.role || user?.roleName || "").toUpperCase();
+                    const isStaffOrAdmin = ["ADMIN", "MANAGER", "CASHIER", "ADMINISTRATOR", "SUPERADMIN"].includes(userRole);
+                    const canPay = isStaffOrAdmin || permissions["OPRSET"]?.canAdd !== false;
                     if (!canPay) {
                       if (Platform.OS === 'web') {
                         router.replace("/(tabs)/category");

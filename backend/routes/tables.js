@@ -161,6 +161,15 @@ router.post("/lock-persistent", async (req, res) => {
       });
     }
 
+    // ⚡ Background 2-way table & order push to Remote DB
+    try {
+      const { getPool, getRemotePool, isRemoteOnline } = require("../config/db");
+      const { syncOperationalStateFromRemote } = require("../services/autoProvisionLocalDb");
+      if (isRemoteOnline()) {
+        syncOperationalStateFromRemote(getRemotePool(), getPool()).catch(() => {});
+      }
+    } catch (_) {}
+
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -182,7 +191,7 @@ router.post("/unlock-persistent", async (req, res) => {
         DECLARE @temp TABLE (TableNumber NVARCHAR(50), DiningSection VARCHAR(10), ModifiedOn VARCHAR(50));
 
         UPDATE TableMaster 
-        SET Status = 0, entry_status = NULL, LockedByName = NULL, TotalAmount = 0, StartTime = NULL, ModifiedBy = @ModifiedBy, ModifiedOn = GETDATE(), CustomerName = NULL, Pax = NULL
+        SET Status = 0, entry_status = NULL, LockedByName = NULL, CurrentOrderId = NULL, TotalAmount = 0, StartTime = NULL, ModifiedBy = @ModifiedBy, ModifiedOn = GETDATE(), CustomerName = NULL, Pax = NULL
         OUTPUT INSERTED.TableNumber, INSERTED.DiningSection, CONVERT(VARCHAR, INSERTED.ModifiedOn, 126) AS ModifiedOn
         INTO @temp
         WHERE TableId = @tableId;
@@ -254,9 +263,6 @@ router.post("/save-guest", async (req, res) => {
       UPDATE TableMaster
       SET CustomerName = @customerName,
           Pax = @pax,
-          Status = CASE WHEN Status = 0 THEN 1 ELSE Status END,
-          StartTime = CASE WHEN StartTime IS NULL THEN GETDATE() ELSE StartTime END,
-          entry_status = CASE WHEN entry_status IS NULL THEN 'q' ELSE entry_status END,
           ModifiedBy = @ModifiedBy,
           ModifiedOn = GETDATE()
       OUTPUT 
@@ -490,6 +496,7 @@ router.put("/status", async (req, res) => {
       SET Status = @status,
           ModifiedBy = @ModifiedBy,
           entry_status = CASE WHEN @status = 0 OR @status = 5 THEN NULL ELSE entry_status END,
+          CurrentOrderId = CASE WHEN @status = 0 OR @status = 5 THEN NULL ELSE CurrentOrderId END,
           StartTime = CASE 
             WHEN (@status = 1 OR @status = 2 OR @status = 3) AND (StartTime IS NULL OR StartTime < '2000-01-01') THEN GETDATE() 
             WHEN @status = 0 OR @status = 5 THEN NULL 
@@ -533,11 +540,23 @@ router.put("/status", async (req, res) => {
     
     const row = updateResult.recordset[0];
 
-    // ✅ Clear CartItems if status is 0 (Available) or 5 (Locked)
+    // ✅ Clear CartItems & close open orders if status is 0 (Available) or 5 (Locked)
     if (Number(status) === 0 || Number(status) === 5) {
       await pool.request()
         .input("tableId", sql.VarChar(50), cleanTableId)
         .query("DELETE FROM [dbo].[CartItems] WHERE [CartId] = @tableId");
+
+      if (Number(status) === 0 && row?.TableNumber) {
+        await pool.request()
+          .input("tableNo", sql.VarChar(20), String(row.TableNumber))
+          .input("tableId", sql.VarChar(50), cleanTableId)
+          .query(`
+            UPDATE RestaurantOrderCur 
+            SET isOrderClosed = 1, ModifiedOn = GETDATE()
+            WHERE (RTRIM(LTRIM(Tableno)) = RTRIM(LTRIM(@tableNo)) OR RTRIM(LTRIM(Tableno)) = RTRIM(LTRIM(@tableId)))
+              AND (isOrderClosed = 0 OR isOrderClosed IS NULL)
+          `).catch(() => {});
+      }
     }
     const currentTotal = row?.TotalAmount || 0;
     const currentStartTime = row?.StartTime || null;
@@ -570,7 +589,123 @@ router.put("/status", async (req, res) => {
   }
 });
 
-// Unused duplicate PUT /:tableId/status removed
+/* ================= SECTION LAYOUT SETTINGS (THEME & CHAIRS) ================= */
+router.get("/section-layout", async (req, res) => {
+  try {
+    const pool = await poolPromise;
+    const { section } = req.query;
+    if (section) {
+      try {
+        const result = await pool.request()
+          .input("sectionKey", sql.NVarChar(50), String(section))
+          .query("SELECT SectionKey, BackgroundTheme, ShowChairs FROM POS_SectionLayoutSettings WHERE SectionKey = @sectionKey");
+        if (result.recordset.length > 0) {
+          const row = result.recordset[0];
+          return res.json({
+            sectionKey: row.SectionKey,
+            backgroundTheme: row.BackgroundTheme || "champagne_fizz",
+            showChairs: row.ShowChairs !== false && row.ShowChairs !== 0,
+          });
+        }
+      } catch (queryErr) {
+        // Auto-create table if missing
+        if (queryErr.message && queryErr.message.includes("POS_SectionLayoutSettings")) {
+          await pool.request().query(`
+            IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[POS_SectionLayoutSettings]') AND type in (N'U'))
+            BEGIN
+                CREATE TABLE [dbo].[POS_SectionLayoutSettings](
+                    [ID] [int] IDENTITY(1,1) NOT NULL PRIMARY KEY,
+                    [SectionKey] [nvarchar](50) NOT NULL UNIQUE,
+                    [BackgroundTheme] [nvarchar](50) NULL DEFAULT 'champagne_fizz',
+                    [ShowChairs] [bit] NULL DEFAULT 1,
+                    [UpdatedOn] [datetime] NULL DEFAULT GETDATE()
+                );
+            END
+          `).catch(() => {});
+        }
+      }
+      return res.json({
+        sectionKey: String(section),
+        backgroundTheme: "champagne_fizz",
+        showChairs: true,
+      });
+    }
+
+    try {
+      const allResult = await pool.request().query("SELECT SectionKey, BackgroundTheme, ShowChairs FROM POS_SectionLayoutSettings");
+      res.json(allResult.recordset);
+    } catch {
+      res.json([]);
+    }
+  } catch (err) {
+    console.error("GET SECTION LAYOUT SETTINGS ERROR:", err);
+    res.json({
+      sectionKey: String(req.query.section || "1"),
+      backgroundTheme: "champagne_fizz",
+      showChairs: true,
+    });
+  }
+});
+
+router.post("/section-layout", async (req, res) => {
+  try {
+    const { section, backgroundTheme, showChairs } = req.body;
+    if (!section) return res.status(400).json({ error: "section is required" });
+
+    const pool = await poolPromise;
+    const sectionKey = String(section);
+
+    // Auto-create table if missing before UPSERT
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[POS_SectionLayoutSettings]') AND type in (N'U'))
+      BEGIN
+          CREATE TABLE [dbo].[POS_SectionLayoutSettings](
+              [ID] [int] IDENTITY(1,1) NOT NULL PRIMARY KEY,
+              [SectionKey] [nvarchar](50) NOT NULL UNIQUE,
+              [BackgroundTheme] [nvarchar](50) NULL DEFAULT 'champagne_fizz',
+              [ShowChairs] [bit] NULL DEFAULT 1,
+              [UpdatedOn] [datetime] NULL DEFAULT GETDATE()
+          );
+      END
+    `).catch(() => {});
+
+    await pool.request()
+      .input("sectionKey", sql.NVarChar(50), sectionKey)
+      .input("theme", sql.NVarChar(50), backgroundTheme || null)
+      .input("chairs", sql.Bit, showChairs !== undefined ? (showChairs ? 1 : 0) : null)
+      .query(`
+        IF EXISTS (SELECT 1 FROM POS_SectionLayoutSettings WHERE SectionKey = @sectionKey)
+        BEGIN
+          UPDATE POS_SectionLayoutSettings
+          SET BackgroundTheme = ISNULL(@theme, BackgroundTheme),
+              ShowChairs = ISNULL(@chairs, ShowChairs),
+              UpdatedOn = GETDATE()
+          WHERE SectionKey = @sectionKey;
+        END
+        ELSE
+        BEGIN
+          INSERT INTO POS_SectionLayoutSettings (SectionKey, BackgroundTheme, ShowChairs, UpdatedOn)
+          VALUES (@sectionKey, ISNULL(@theme, 'champagne_fizz'), ISNULL(@chairs, 1), GETDATE());
+        END
+      `);
+
+    // Broadcast live to all connected LAN and Wi-Fi devices
+    const io = req.app.get("io");
+    if (io) {
+      io.emit("section_layout_updated", {
+        section: sectionKey,
+        backgroundTheme: backgroundTheme,
+        showChairs: showChairs,
+      });
+      io.emit("table_config_updated", {});
+    }
+
+    res.json({ success: true, section: sectionKey, backgroundTheme, showChairs });
+  } catch (err) {
+    console.error("POST SECTION LAYOUT SETTINGS ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ✅ GET Single Table by ID
 router.get("/:tableId", async (req, res) => {

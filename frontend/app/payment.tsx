@@ -37,7 +37,7 @@ import {
   useActiveOrdersStore,
 } from "../stores/activeOrdersStore";
 import { useAuthStore } from "../stores/authStore";
-import { useCartStore } from "../stores/cartStore";
+import { useCartStore, getContextId } from "../stores/cartStore";
 import type { CompanySettings } from "../stores/companySettingsStore";
 import { useCompanySettingsStore } from "../stores/companySettingsStore";
 import { useGeneralSettingsStore } from "../stores/generalSettingsStore";
@@ -246,18 +246,21 @@ export default function PaymentScreen() {
   const activeOrder = context ? findActiveOrder(context) : undefined;
 
   const currentContextId = useCartStore((s: any) => s.currentContextId);
+  const effectiveContextId = (context ? getContextId(context) : null) || currentContextId;
   const cart = useCartStore(
     (s: any) =>
-      (currentContextId ? s.carts[currentContextId] : undefined) || EMPTY_ARRAY,
+      (effectiveContextId ? s.carts[effectiveContextId] : undefined) || EMPTY_ARRAY,
   );
 
-  const currentTableOrderId = useCartStore((s: any) =>
-    context?.tableId ? s.tableOrderIds[context.tableId] : undefined,
-  );
+  const currentTableOrderId = useCartStore((s: any) => {
+    if (!context?.tableId) return undefined;
+    const cleanId = String(context.tableId).replace(/^\{|\}$/g, "").trim().toLowerCase();
+    return s.tableOrderIds[context.tableId] || s.tableOrderIds[cleanId];
+  });
   const displayOrderId = currentTableOrderId || activeOrder?.orderId;
 
   const discount = useCartStore((s: any) =>
-    s.currentContextId ? s.discounts[s.currentContextId] : null,
+    effectiveContextId ? s.discounts[effectiveContextId] : null,
   );
 
   const [method, setMethod] = useState("CAS");
@@ -712,7 +715,7 @@ export default function PaymentScreen() {
   };
 
   const finalItemsRaw = useMemo(() => {
-    const baseItems = splitItems || cart;
+    const baseItems = (splitItems && splitItems.length > 0) ? splitItems : cart;
     return baseItems.filter((i: any) => i.status !== "VOIDED" && i.isVoided !== true && i.StatusCode !== 0 && i.statusCode !== 0);
   }, [splitItems, cart]);
 
@@ -803,8 +806,10 @@ export default function PaymentScreen() {
                 useCartStore.getState().setTableOrderId(context.tableId!, oid);
               }
               // Fetch the cart items from the database to ensure they are loaded on direct routing
-              if (cart.length === 0) {
-                await useCartStore.getState().fetchCartFromDB(context.tableId!);
+              const curCtx = (context ? getContextId(context) : null) || useCartStore.getState().currentContextId;
+              const curItems = curCtx ? (useCartStore.getState().carts[curCtx] || []) : [];
+              if (curItems.length === 0) {
+                await useCartStore.getState().fetchCartFromDB(context.tableId!, true);
               }
             } catch (err) {
               console.error("Failed to sync official Order ID and Cart:", err);

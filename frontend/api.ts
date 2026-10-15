@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { API_URL } from '@/constants/Config';
+import { API_URL, onServerUrlChange } from '@/constants/Config';
 import { useAuthStore } from './stores/authStore';
 
 const API = axios.create({
@@ -7,6 +7,12 @@ const API = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
+});
+
+// Dynamically update baseURL when user changes server IP/router config
+onServerUrlChange((newUrl) => {
+  API.defaults.baseURL = `${newUrl}/api`;
+  console.log(`🔄 [API Client] Updated Axios baseURL to: ${API.defaults.baseURL}`);
 });
 
 // Automatically attach the JWT token to every outgoing request

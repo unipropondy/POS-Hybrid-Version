@@ -109,8 +109,8 @@ export const useGeneralSettingsStore = create<GeneralSettingsState>()(
               },
             }));
           }
-        } catch (error) {
-          console.error("❌ [GeneralSettingsStore] Fetch Error:", error);
+        } catch (error: any) {
+          console.warn("⚠️ [GeneralSettingsStore] Backend settings fetch warning (using defaults):", error.message || error);
         } finally {
           set({ loading: false });
         }
@@ -168,7 +168,10 @@ export const useGeneralSettingsStore = create<GeneralSettingsState>()(
             body: JSON.stringify(payload)
           });
           
-          if (!res.ok) throw new Error("Failed to update settings");
+          if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            throw new Error(errData.error || errData.message || "Failed to update settings");
+          }
           
           set({ loading: false });
           return true;
