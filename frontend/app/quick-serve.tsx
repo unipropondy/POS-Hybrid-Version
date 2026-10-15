@@ -80,6 +80,7 @@ export default function QuickServePOSScreen() {
   const [tableModalVisible, setTableModalVisible] = useState<boolean>(false);
   const [tableFilterTab, setTableFilterTab] = useState<"free" | "all">("free");
   const [tableSearchQuery, setTableSearchQuery] = useState<string>("");
+  const [isTableSearchOpen, setIsTableSearchOpen] = useState<boolean>(false);
 
   // Modifiers Cache for Instant (0ms) Dish Adding
   const [modifiersCache, setModifiersCache] = useState<Record<string, any[]>>({});
@@ -2089,6 +2090,8 @@ export default function QuickServePOSScreen() {
           <TouchableOpacity
             style={styles.tableNoPill}
             onPress={() => {
+              setIsTableSearchOpen(false);
+              setTableSearchQuery("");
               fetchMasterTablesAndAutoSelectFree(true);
               setTableModalVisible(true);
             }}
@@ -3150,6 +3153,7 @@ export default function QuickServePOSScreen() {
         transparent
         animationType="fade"
         onRequestClose={() => {
+          setIsTableSearchOpen(false);
           setTableSearchQuery("");
           setTableModalVisible(false);
         }}
@@ -3158,23 +3162,70 @@ export default function QuickServePOSScreen() {
           style={styles.modalOverlay}
           activeOpacity={1}
           onPress={() => {
+            setIsTableSearchOpen(false);
             setTableSearchQuery("");
             setTableModalVisible(false);
           }}
         >
           <TouchableOpacity activeOpacity={1} style={styles.tableModalContent}>
-            <View style={styles.tableModalHeader}>
-              <View style={{ flexDirection: "row", alignItems: "center" }}>
-                <Ionicons name="restaurant-outline" size={20} color="#FF5A16" style={{ marginRight: 8 }} />
-                <Text style={styles.tableModalTitle}>Select Table (Table Master)</Text>
+            {isTableSearchOpen ? (
+              <View style={styles.tableHeaderSearchContainer}>
+                <Ionicons name="search" size={16} color="#FF5A16" style={{ marginRight: 8 }} />
+                <TextInput
+                  style={styles.tableHeaderSearchInput}
+                  placeholder="Search table # or name..."
+                  placeholderTextColor="#94A3B8"
+                  value={tableSearchQuery}
+                  onChangeText={setTableSearchQuery}
+                  autoFocus
+                  autoCorrect={false}
+                  autoCapitalize="none"
+                />
+                {tableSearchQuery.length > 0 && (
+                  <TouchableOpacity onPress={() => setTableSearchQuery("")} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                    <Ionicons name="close-circle" size={16} color="#94A3B8" style={{ marginRight: 6 }} />
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity
+                  style={styles.tableSearchHeaderCloseBtn}
+                  onPress={() => {
+                    setIsTableSearchOpen(false);
+                    setTableSearchQuery("");
+                  }}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Ionicons name="close" size={20} color="#64748B" />
+                </TouchableOpacity>
               </View>
-              <TouchableOpacity onPress={() => {
-                setTableSearchQuery("");
-                setTableModalVisible(false);
-              }}>
-                <Ionicons name="close" size={22} color="#64748B" />
-              </TouchableOpacity>
-            </View>
+            ) : (
+              <View style={styles.tableModalHeader}>
+                <View style={{ flexDirection: "row", alignItems: "center" }}>
+                  <Ionicons name="restaurant-outline" size={20} color="#FF5A16" style={{ marginRight: 8 }} />
+                  <Text style={styles.tableModalTitle}>Select Table (Table Master)</Text>
+                </View>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                  <TouchableOpacity
+                    style={styles.tableSearchSmallBtn}
+                    onPress={() => setIsTableSearchOpen(true)}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons name="search" size={15} color="#475569" />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => {
+                      setIsTableSearchOpen(false);
+                      setTableSearchQuery("");
+                      setTableModalVisible(false);
+                    }}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons name="close" size={22} color="#64748B" />
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
 
             <View style={styles.tableModalTabs}>
               <TouchableOpacity
@@ -3195,25 +3246,6 @@ export default function QuickServePOSScreen() {
               </TouchableOpacity>
             </View>
 
-            {/* TABLE SEARCH BAR */}
-            <View style={styles.tableSearchBar}>
-              <Ionicons name="search" size={16} color="#94A3B8" style={{ marginRight: 8 }} />
-              <TextInput
-                style={styles.tableSearchInput}
-                placeholder="Search table number or name..."
-                placeholderTextColor="#94A3B8"
-                value={tableSearchQuery}
-                onChangeText={setTableSearchQuery}
-                autoCorrect={false}
-                autoCapitalize="none"
-              />
-              {tableSearchQuery.length > 0 && (
-                <TouchableOpacity onPress={() => setTableSearchQuery("")} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                  <Ionicons name="close-circle" size={16} color="#94A3B8" />
-                </TouchableOpacity>
-              )}
-            </View>
-
             <ScrollView style={{ maxHeight: 360, marginVertical: 10 }} showsVerticalScrollIndicator={false}>
               {filteredMasterTables.length === 0 ? (
                 <View style={styles.tableSearchEmptyState}>
@@ -3223,7 +3255,10 @@ export default function QuickServePOSScreen() {
                   </Text>
                   <TouchableOpacity
                     style={styles.tableSearchClearBtn}
-                    onPress={() => setTableSearchQuery("")}
+                    onPress={() => {
+                      setIsTableSearchOpen(false);
+                      setTableSearchQuery("");
+                    }}
                   >
                     <Text style={styles.tableSearchClearText}>Clear Search</Text>
                   </TouchableOpacity>
@@ -3247,6 +3282,7 @@ export default function QuickServePOSScreen() {
                         ]}
                         onPress={async () => {
                           await selectQuickServeTable(t, true);
+                          setIsTableSearchOpen(false);
                           setTableSearchQuery("");
                           setTableModalVisible(false);
                         }}
@@ -3275,6 +3311,7 @@ export default function QuickServePOSScreen() {
                 style={styles.autoSelectFreeBtn}
                 onPress={async () => {
                   await fetchMasterTablesAndAutoSelectFree();
+                  setIsTableSearchOpen(false);
                   setTableSearchQuery("");
                   setTableModalVisible(false);
                 }}
@@ -6127,23 +6164,37 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.bold,
     color: "#FF5A16",
   },
-  tableSearchBar: {
+  tableSearchSmallBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: "#F1F5F9",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+  tableHeaderSearchContainer: {
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: "#F8FAFC",
-    borderRadius: 12,
+    borderRadius: 10,
     borderWidth: 1.5,
-    borderColor: "#E2E8F0",
-    paddingHorizontal: 12,
-    height: 42,
-    marginBottom: 6,
+    borderColor: "#FF5A16",
+    paddingHorizontal: 10,
+    height: 38,
+    marginBottom: 14,
   },
-  tableSearchInput: {
+  tableHeaderSearchInput: {
     flex: 1,
     fontSize: 13,
     fontFamily: Fonts.medium,
     color: "#0F172A",
     ...Platform.select({ web: { outlineStyle: "none" } as any }),
+  },
+  tableSearchHeaderCloseBtn: {
+    padding: 4,
+    marginLeft: 4,
   },
   tableSearchEmptyState: {
     alignItems: "center",
