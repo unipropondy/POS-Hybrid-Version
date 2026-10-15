@@ -23,7 +23,7 @@ const ThermalPrinter = {
 };
 
 import { API_URL } from "../constants/Config";
-import { formatToSingaporeDate, formatToSingaporeTime, formatToSingaporeDateTime, formatToPrinterDate, parseDatabaseDate } from "../utils/timezoneHelper";
+import { formatToSingaporeDate, formatToSingaporeTime, formatToSingaporeDateTime, parseDatabaseDate } from "../utils/timezoneHelper";
 import BillPDFGenerator from "./BillPDFGenerator";
 import { PrinterDetector } from "./PrinterDetector";
 import SunmiPrinterService from "./SunmiPrinterService";
@@ -594,12 +594,8 @@ class UniversalPrinter {
         }
 
         const text = this.formatKOTThermalText(orderData, "KDS_PRINT");
-        if (!kdsPrinterIp && Array.isArray(this.cachedPrinters)) {
-          const kdsPrinter = this.cachedPrinters.find((p: any) => p.PrinterType === 4);
-          kdsPrinterIp = kdsPrinter?.PrinterPath || kdsPrinter?.PrinterIP || "";
-        }
-        console.log(`📡 [Web Print Bridge] Queueing KDS print (Target IP: ${kdsPrinterIp || "default"})`);
-        const success = await this.queuePrintJob(4, undefined, text, true, kdsPrinterIp);
+        console.log(`ðŸ“¡ [Web Print Bridge] Queueing KDS print`);
+        const success = await this.queuePrintJob(4, undefined, text);
         if (success) {
           await this.logPrintJob(orderData.orderId, orderData.orderNo, "REPRINT");
           return true;
@@ -721,14 +717,8 @@ class UniversalPrinter {
         const text = this.formatKOTThermalText(orderData, type);
         // Map kitchenCode or kitchenTypeValue
         const kitchenTypeValue = orderData.kitchenCode || orderData.KitchenCode || orderData.kitchenTypeValue || orderData.KitchenTypeValue || "0";
-        if (!printerIpOverride && Array.isArray(this.cachedPrinters)) {
-          const matched = this.cachedPrinters.find((p: any) => p.PrinterType === 2 && String(p.KitchenTypeValue) === String(kitchenTypeValue));
-          if (matched) {
-            printerIpOverride = matched.PrinterPath || matched.PrinterIP || "";
-          }
-        }
-        console.log(`📡 [Web Print Bridge] Queueing KOT to Kitchen type: ${kitchenTypeValue} (Target IP: ${printerIpOverride || "default"})`);
-        const success = await this.queuePrintJob(2, kitchenTypeValue, text, true, printerIpOverride);
+        console.log(`ðŸ“¡ [Web Print Bridge] Queueing KOT to Kitchen type: ${kitchenTypeValue}`);
+        const success = await this.queuePrintJob(2, kitchenTypeValue, text);
         if (success) {
           await this.logPrintJob(orderData.orderId, orderData.orderNo, type);
           return true;
@@ -876,11 +866,38 @@ class UniversalPrinter {
     title = title.replace(/\s*KOT\s*/gi, "").trim();
 
     const items = (data.items || []).filter((item: any) => (item.status || item.Status || "").toUpperCase() !== "VOIDED");
-    const tableNo = data.tableNo || "N/A";
+    const rawTableNo = data.tableNo || "";
     const deviceNo = data.deviceNo || "1";
     const orderNo = data.orderNo || data.orderId || "N/A";
-    const waiter = data.waiterName || "Staff";
-    const kotDateStr = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Singapore', day: '2-digit', month: '2-digit', year: '2-digit' }).format(new Date());
+    const rawWaiter = data.waiterName || "Staff";
+    
+    const isTakeaway =
+      data.orderType === "TAKEAWAY" ||
+      data.orderContext?.orderType === "TAKEAWAY" ||
+      data.context?.orderType === "TAKEAWAY" ||
+      data.isTakeaway ||
+      data.IsTakeaway ||
+      String(rawTableNo).toUpperCase().includes("TAKEAWAY") ||
+      String(rawTableNo).toUpperCase().startsWith("TW");
+
+    let displayTable = "";
+    if (isTakeaway) {
+      const rawTw = data.takeawayNo || data.orderContext?.takeawayNo || data.context?.takeawayNo;
+      const cleanTw = (rawTw && String(rawTw) !== "undefined" && String(rawTw).trim() !== "")
+        ? String(rawTw).replace(/^TW-?/i, "").trim()
+        : (orderNo && orderNo !== "N/A" ? String(orderNo).slice(-4) : "");
+      const qsSuffix = (data.isQuickServe || data.orderContext?.isQuickServe) ? " (QS)" : "";
+      displayTable = cleanTw ? `TAKEAWAY #${cleanTw}${qsSuffix}` : `TAKEAWAY${qsSuffix}`;
+    } else {
+      const cleanTableNo = String(rawTableNo || "1")
+        .replace(/\s*\(quick serve\)/gi, "")
+        .replace(/^table\s+/gi, "")
+        .trim() || "1";
+      displayTable = cleanTableNo;
+    }
+
+    const waiter = (typeof rawWaiter === "string") ? rawWaiter.replace(/\s*\(quick serve\)/gi, "").trim() || "Staff" : "Staff";
+    const kotDateStr = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Singapore', day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date());
     const kotTimeStr = formatToSingaporeTime(new Date(), { hour: '2-digit', minute: '2-digit', hour12: false });
     const timestamp = `${kotDateStr} ${kotTimeStr}`;
     const kitchenName = data.kitchenName || "";
@@ -1025,8 +1042,8 @@ class UniversalPrinter {
           <div class="header-box">${title}</div>
           <div class="timestamp">${timestamp}</div>
           
-          <div class="table-info">
-            <span>Table:${tableNo}</span>
+          <div class="table-info" style="font-size: 18px; font-weight: 900; white-space: nowrap;">
+            <span>${isTakeaway ? displayTable : `TABLE: ${displayTable}`}</span>
           </div>
           
           <div class="headers">
@@ -1051,11 +1068,12 @@ class UniversalPrinter {
                     </div>
                     ${groupItems.map((item: any) => {
                       const noteText = item.note || item.notes || item.Remarks || item.remarks;
-                      const comboSels = item.comboSelections || 
+                      const rawCombo = item.comboSelections || item.selectedCombos || item.combos ||
                         (typeof item.ComboDetailsJSON === 'string' && item.ComboDetailsJSON 
-                          ? (() => { try { const p = JSON.parse(item.ComboDetailsJSON); return Array.isArray(p) ? p : p.groups; } catch { return undefined; } })() 
-                          : (Array.isArray(item.ComboDetailsJSON) ? item.ComboDetailsJSON : undefined)) || [];
-                      const hasCombo = Array.isArray(comboSels) && comboSels.length > 0;
+                          ? (() => { try { const p = JSON.parse(item.ComboDetailsJSON); return Array.isArray(p) ? p : (p.groups || p.items || p.selections || []); } catch { return undefined; } })() 
+                          : (Array.isArray(item.ComboDetailsJSON) ? item.ComboDetailsJSON : (typeof item.ComboDetailsJSON === 'object' && item.ComboDetailsJSON ? (item.ComboDetailsJSON.groups || item.ComboDetailsJSON.items || []) : undefined)));
+                      const comboSels = Array.isArray(rawCombo) ? rawCombo : [];
+                      const hasCombo = comboSels.length > 0;
 
                       return `
                         <div class="item-row">
@@ -1077,11 +1095,14 @@ class UniversalPrinter {
                               : ""
                           }
                           ${
-                            hasCombo && !data.disableComboPrint
+                            hasCombo
                               ? `<div class="modifier-list">${comboSels.map((g: any) => {
-                                  const choices = g.items || g.dishes || (Array.isArray(g) ? g : [g]);
+                                  const choices = g.items || g.dishes || g.selections || g.selectedDishes || (Array.isArray(g) ? g : (g.name || g.DishName || g.itemName ? [g] : []));
                                   if (Array.isArray(choices)) {
-                                    return choices.map((opt: any) => `<span class="modifier-item">- ${opt.name}</span>`).join("");
+                                    return choices.map((opt: any) => {
+                                      const optName = opt.name || opt.DishName || opt.itemName || "";
+                                      return optName ? `<span class="modifier-item">- ${optName}</span>` : "";
+                                    }).join("");
                                   }
                                   return "";
                                 }).join("")}</div>`
@@ -1097,11 +1118,12 @@ class UniversalPrinter {
 
               return items.map((item: any) => {
                 const noteText = item.note || item.notes || item.Remarks || item.remarks;
-                const comboSels = item.comboSelections || 
+                const rawCombo = item.comboSelections || item.selectedCombos || item.combos || 
                   (typeof item.ComboDetailsJSON === 'string' && item.ComboDetailsJSON 
-                    ? (() => { try { const p = JSON.parse(item.ComboDetailsJSON); return Array.isArray(p) ? p : p.groups; } catch { return undefined; } })() 
-                    : (Array.isArray(item.ComboDetailsJSON) ? item.ComboDetailsJSON : undefined)) || [];
-                const hasCombo = Array.isArray(comboSels) && comboSels.length > 0;
+                    ? (() => { try { const p = JSON.parse(item.ComboDetailsJSON); return Array.isArray(p) ? p : (p.groups || p.items || p.selections || []); } catch { return undefined; } })() 
+                    : (Array.isArray(item.ComboDetailsJSON) ? item.ComboDetailsJSON : (typeof item.ComboDetailsJSON === 'object' && item.ComboDetailsJSON ? (item.ComboDetailsJSON.groups || item.ComboDetailsJSON.items || []) : undefined)));
+                const comboSels = Array.isArray(rawCombo) ? rawCombo : [];
+                const hasCombo = comboSels.length > 0;
 
                 return `
                   <div class="item-row">
@@ -1140,14 +1162,17 @@ class UniversalPrinter {
                         : ""
                     }
                     ${
-                      hasCombo && !data.disableComboPrint
+                      hasCombo
                         ? `
                       <div class="modifier-list">
                         ${comboSels
                           .map((g: any) => {
-                            const choices = g.items || g.dishes || (Array.isArray(g) ? g : [g]);
+                            const choices = g.items || g.dishes || g.selections || g.selectedDishes || (Array.isArray(g) ? g : (g.name || g.DishName || g.itemName ? [g] : []));
                             if (Array.isArray(choices)) {
-                              return choices.map((opt: any) => `<span class="modifier-item">- ${opt.name}</span>`).join("");
+                              return choices.map((opt: any) => {
+                                const optName = opt.name || opt.DishName || opt.itemName || "";
+                                return optName ? `<span class="modifier-item">- ${optName}</span>` : "";
+                              }).join("");
                             }
                             return "";
                           })
@@ -1175,7 +1200,7 @@ class UniversalPrinter {
             Order By : ${waiter} #OR-${orderNo}
           </div>
 
-          ${kitchenName && kitchenName !== "KDS" ? `<div class="kitchen-name">${kitchenName.toUpperCase()}${tableNo && tableNo !== "N/A" ? `  /  T.NO: ${tableNo}` : ""}</div>` : ""}
+          ${kitchenName && kitchenName !== "KDS" ? `<div class="kitchen-name">${kitchenName.toUpperCase()}  /  ${isTakeaway ? displayTable : `T.NO: ${displayTable}`}</div>` : ""}
         </div>
       </body>
       </html>
@@ -1190,13 +1215,40 @@ class UniversalPrinter {
       : "NEW ORDER";
 
     const items       = (data.items || []).filter((i: any) => (i.status || i.Status || "").toUpperCase() !== "VOIDED");
-    const tableNo     = data.tableNo || "N/A";
-    const waiter      = data.waiterName || "Staff";
+    const rawTableNo  = data.tableNo || "";
+    const rawWaiter   = data.waiterName || "Staff";
     const orderNo     = data.orderNo || data.orderId || "";
     const kitchenName = data.kitchenName || "";
 
-    const kotDateStr = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Singapore", day: "2-digit", month: "2-digit", year: "2-digit" }).format(new Date());
-    const kotTimeStr = formatToSingaporeTime(new Date(), { hour: "2-digit", minute: "2-digit", hour12: false });
+    const isTakeaway =
+      data.orderType === "TAKEAWAY" ||
+      data.orderContext?.orderType === "TAKEAWAY" ||
+      data.context?.orderType === "TAKEAWAY" ||
+      data.isTakeaway ||
+      data.IsTakeaway ||
+      String(rawTableNo).toUpperCase().includes("TAKEAWAY") ||
+      String(rawTableNo).toUpperCase().startsWith("TW");
+
+    let displayTable = "";
+    if (isTakeaway) {
+      const rawTw = data.takeawayNo || data.orderContext?.takeawayNo || data.context?.takeawayNo;
+      const cleanTw = (rawTw && String(rawTw) !== "undefined" && String(rawTw).trim() !== "")
+        ? String(rawTw).replace(/^TW-?/i, "").trim()
+        : (orderNo ? String(orderNo).slice(-4) : "");
+      const qsSuffix = (data.isQuickServe || data.orderContext?.isQuickServe) ? " (QS)" : "";
+      displayTable = cleanTw ? `TAKEAWAY #${cleanTw}${qsSuffix}` : `TAKEAWAY${qsSuffix}`;
+    } else {
+      const cleanTableNo = String(rawTableNo || "1")
+        .replace(/\s*\(quick serve\)/gi, "")
+        .replace(/^table\s+/gi, "")
+        .trim() || "1";
+      displayTable = cleanTableNo;
+    }
+
+    const waiter = (typeof rawWaiter === "string") ? rawWaiter.replace(/\s*\(quick serve\)/gi, "").trim() || "Staff" : "Staff";
+
+    const kotDateStr = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Singapore", day: "2-digit", month: "2-digit", year: "numeric" }).format(new Date()).replace(/[\u202F\u00A0\uFEFF]/g, ' ');
+    const kotTimeStr = formatToSingaporeTime(new Date(), { hour: "2-digit", minute: "2-digit", hour12: false }).replace(/[\u202F\u00A0\uFEFF]/g, ' ');
 
     const DIV = "[L]------------------------------------------------\n";
 
@@ -1249,30 +1301,28 @@ class UniversalPrinter {
         });
       }
 
-      let comboSels = item.comboSelections;
+      let comboSels = item.comboSelections || item.selectedCombos || item.combos;
       if (!comboSels || (Array.isArray(comboSels) && comboSels.length === 0)) {
         const rawCombo = item.ComboDetailsJSON || item.comboDetailsJSON || item.ComboDetails || item.comboDetails;
         if (rawCombo) {
           if (typeof rawCombo === 'string') {
             try {
               const parsed = JSON.parse(rawCombo);
-              comboSels = Array.isArray(parsed) ? parsed : (parsed.groups || parsed.items || []);
+              comboSels = Array.isArray(parsed) ? parsed : (parsed.groups || parsed.items || parsed.selections || []);
             } catch (e) {
               comboSels = [];
             }
           } else if (Array.isArray(rawCombo)) {
             comboSels = rawCombo;
           } else if (typeof rawCombo === 'object') {
-            comboSels = rawCombo.groups || rawCombo.items || [];
+            comboSels = rawCombo.groups || rawCombo.items || rawCombo.selections || [];
           }
         }
       }
 
-      // Respect "Disable Combo Print" setting: skip sub-items when flag is true
-      const disableComboPrint = !!(data as any).disableComboPrint;
-      if (!disableComboPrint && Array.isArray(comboSels) && comboSels.length > 0) {
+      if (Array.isArray(comboSels) && comboSels.length > 0) {
         comboSels.forEach((g: any) => {
-          const choices = g.items || g.dishes || (Array.isArray(g) ? g : [g]);
+          const choices = g.items || g.dishes || g.selections || g.selectedDishes || (Array.isArray(g) ? g : (g.name || g.DishName || g.itemName ? [g] : []));
           if (Array.isArray(choices)) {
             choices.forEach((opt: any) => {
               const optName = opt.name || opt.DishName || opt.itemName || "";
@@ -1302,13 +1352,12 @@ class UniversalPrinter {
     text += `[C]<B>${kotDateStr}  ${kotTimeStr}</B>\n`;
     text += DIV;
 
-    if (type === "KDS_PRINT") {
-      text += `[C]<font size='big'><B>TABLE NO : ${tableNo}</B></font>\n`;
-      text += DIV;
+    if (isTakeaway) {
+      text += `[C]<font size='big'><B>${displayTable}</B></font>\n`;
     } else {
-      text += `[C]<font size='big'><B>TABLE : ${tableNo}</B></font>\n`;
-      text += DIV;
+      text += `[C]<font size='big'><B>TABLE: ${displayTable}</B></font>\n`;
     }
+    text += DIV;
 
     text += "[L]<B>QTY  ITEM</B>\n";
     text += DIV;
@@ -1356,13 +1405,16 @@ class UniversalPrinter {
     text += `[L]<B>Order No : ${orderNo}</B>\n`;
 
     if (type !== "KDS_PRINT") {
-      const kotLabel = kitchenName && kitchenName !== "KDS"
-        ? (tableNo && tableNo !== "N/A"
-            ? `${kitchenName.toUpperCase()}  /  T.NO : ${tableNo}`
-            : kitchenName.toUpperCase())
-        : (tableNo && tableNo !== "N/A"
-            ? `T.NO : ${tableNo}`
-            : "");
+      let kotLabel = "";
+      if (isTakeaway) {
+        kotLabel = kitchenName && kitchenName !== "KDS"
+          ? `${kitchenName.toUpperCase()}  /  ${displayTable}`
+          : displayTable;
+      } else {
+        kotLabel = kitchenName && kitchenName !== "KDS"
+          ? `${kitchenName.toUpperCase()}  /  T.NO : ${displayTable}`
+          : `T.NO : ${displayTable}`;
+      }
       if (kotLabel) {
         text += DIV;
         text += `[C]<B>${kotLabel}</B>\n`;
@@ -1495,7 +1547,7 @@ class UniversalPrinter {
               console.log(`📡 [APK Print Bridge] Queueing receipt to Print Bridge for: ${targetIp}`);
               const text = this.formatThermalTextWithDiscount(saleData, company, discountInfo);
               const pType = isTakeaway ? 3 : 1;
-              const success = await this.queuePrintJob(pType, undefined, text, true, targetIp);
+              const success = await this.queuePrintJob(pType, undefined, text);
               if (success) return;
             } catch (bridgeErr) {
               console.warn("APK Print Bridge queue failed, trying direct connection:", bridgeErr);
@@ -1574,6 +1626,14 @@ class UniversalPrinter {
     discountInfo?: DiscountInfo,
   ): Promise<boolean> {
     try {
+      // Check General Settings: Print Receipt & Checkout Bill
+      const { useGeneralSettingsStore } = await import("../stores/generalSettingsStore");
+      const { enableReceiptPrint, enableCheckoutBill } = useGeneralSettingsStore.getState().settings;
+      if (enableReceiptPrint === false || enableCheckoutBill === false) {
+        if (__DEV__) console.log("🧾 [UniversalPrinter] Checkout bill receipt printing is disabled in General Settings.");
+        return false;
+      }
+
       // ✅ FIX: Match the logic in PaymentSuccess by ensuring we have a valid ID
       const targetUserId = outletId || "1";
       const company = await BillPDFGenerator.loadSettings(targetUserId);
@@ -1779,18 +1839,30 @@ class UniversalPrinter {
                      saleData.date ? parseDatabaseDate(saleData.date) : 
                      new Date();
 
-    if (saleData.tableNo) {
-      const cleanTableNo = /^\d+$/.test(String(saleData.tableNo).trim()) 
-        ? String(saleData.tableNo).trim().padStart(2, '0') 
-        : saleData.tableNo;
+    const isReceiptTW =
+      saleData.orderType === "TAKEAWAY" ||
+      saleData.isTakeaway ||
+      saleData.IsTakeaway ||
+      String(saleData.tableNo || "").toUpperCase().includes("TAKEAWAY") ||
+      String(saleData.tableNo || "").toUpperCase().startsWith("TW");
+
+    if (isReceiptTW) {
+      const rawTw = saleData.takeawayNo || (saleData.invoiceNumber || saleData.id ? String(saleData.invoiceNumber || saleData.id).slice(-4) : "");
+      const twLabel = (rawTw && String(rawTw) !== "undefined" && String(rawTw).trim() !== "")
+        ? `TAKEAWAY #${String(rawTw).replace(/^TW-?/i, "").trim()}`
+        : "TAKEAWAY";
+      text += this.formatTwoCols48(`<B>Bill No: ${saleData.invoiceNumber || saleData.id || ""}</B>`, `<B>${twLabel}</B>`);
+    } else if (saleData.tableNo) {
+      const cleanTableNo = String(saleData.tableNo).replace(/\s*\(quick serve\)/gi, "").replace(/^table\s+/gi, "").trim();
       text += this.formatTwoCols48(`<B>Bill No: ${saleData.invoiceNumber || saleData.id || ""}</B>`, `<B>TABLE: ${cleanTableNo}</B>`);
     } else {
       text += `[L]<B>Bill No: ${saleData.invoiceNumber || saleData.id || ""}</B>\n`;
     }
-    const dateFormatted = formatToPrinterDate(saleDate);
+    const dateFormatted = formatToSingaporeDate(saleDate, { day: '2-digit', month: '2-digit', year: 'numeric' });
     text += `[L]<B>Date: ${dateFormatted} ${formatToSingaporeTime(saleDate)}</B>\n`;
     if (saleData.waiterName && saleData.waiterName !== "Staff") {
-      text += `[L]<B>Waiter: ${saleData.waiterName}</B>\n`;
+      const displayWaiter = String(saleData.waiterName).replace(/\s*\(quick serve\)/gi, "").trim() || "Staff";
+      text += `[L]<B>Waiter: ${displayWaiter}</B>\n`;
     }
     // Print Member Mobile Number on receipt
     if (saleData.mobileNo) {
@@ -2130,7 +2202,7 @@ class UniversalPrinter {
     text += "[C]<B>THANK YOU! COME AGAIN!</B>\n";
     text += "[C]SMART-CAFE BY UNIPROSG\n";
 
-    return text;
+    return text.replace(/[\u202F\u00A0\uFEFF]/g, ' ');
   }
 
   // ==================== PDF FALLBACK WITH DISCOUNT ====================
@@ -2232,7 +2304,7 @@ class UniversalPrinter {
 
   static async routeAndPrintOrderKOT(
     orderId: string,
-    orderContext: { orderType?: string; tableNo?: string; takeawayNo?: string; section?: string },
+    orderContext: { orderType?: string; tableNo?: string; takeawayNo?: string; section?: string; isQuickServe?: boolean; isQuick?: boolean; isQuickServeMode?: boolean },
     items: any[],
     isAdditional: boolean = false,
     waiterName: string = "Staff",
@@ -2245,22 +2317,37 @@ class UniversalPrinter {
         return false;
       }
 
-      // 2. Check enableKOT & enableKDSPrint settings
+      // 2. Check enableKOT & enableKDS / enableKDSPrint settings
       const { useGeneralSettingsStore } = await import("../stores/generalSettingsStore");
-      const { enableKOT, enableKDSPrint, enableComboPrint } = useGeneralSettingsStore.getState().settings;
+      const { enableKOT, enableKDS, enableKDSPrint, enableComboPrint } = useGeneralSettingsStore.getState().settings;
 
       const shouldPrintKOT = enableKOT !== false;
-      const shouldPrintKDS = enableKDSPrint !== false;
+      const shouldPrintKDS = enableKDS !== false && enableKDSPrint !== false;
 
       if (!shouldPrintKOT && !shouldPrintKDS) {
         if (__DEV__) console.log("🖨️ [UniversalPrinter] Both KOT and KDS printing are disabled in General Settings.");
         return false;
       }
 
-      const tableNo =
-        orderContext.orderType === "DINE_IN"
-          ? orderContext.tableNo
-          : `TW-${orderContext.takeawayNo}`;
+      const isTakeaway =
+        orderContext.orderType === "TAKEAWAY" ||
+        orderContext.tableNo?.toUpperCase?.() === "TAKEAWAY" ||
+        orderContext.section?.toUpperCase?.() === "TAKEAWAY" ||
+        String(orderContext.tableNo || "").toUpperCase().startsWith("TW");
+
+      let tableNo = "";
+      let takeawayNo = orderContext.takeawayNo;
+      if (isTakeaway) {
+        if (!takeawayNo || String(takeawayNo) === "undefined") {
+          takeawayNo = orderId ? String(orderId).slice(-4) : "1";
+        }
+        tableNo = `TAKEAWAY #${takeawayNo}`;
+      } else {
+        const cleanT = (orderContext.tableNo || "Table 1").replace(/\s*\(quick serve\)/gi, "").trim();
+        const baseTableNo = cleanT.toLowerCase().startsWith("table") ? cleanT : `Table ${cleanT}`;
+        const isQS = !!(orderContext.isQuickServe || orderContext.isQuick || orderContext.isQuickServeMode);
+        tableNo = isQS ? `${baseTableNo} (QS)` : baseTableNo;
+      }
 
       // 3 & 4 & 5. Print one KOT per kitchen group if KOT printing is enabled
       if (shouldPrintKOT) {
@@ -2308,12 +2395,16 @@ class UniversalPrinter {
             orderId,
             orderNo: orderId,
             tableNo,
+            takeawayNo,
+            orderType: isTakeaway ? "TAKEAWAY" : "DINE_IN",
+            isTakeaway,
             waiterName,
+            isQuickServe: !!(orderContext.isQuickServe || orderContext.isQuick || orderContext.isQuickServeMode),
             items: groupItems,
             kitchenCode: kCode,
             kitchenName:
               groupItems[0].KitchenTypeName || (kCode === "0" ? "KITCHEN" : kCode),
-            disableComboPrint: !!enableComboPrint,
+            disableComboPrint: false,
           };
           try {
             console.log(`🖨️ [UniversalPrinter] Printing KOT for kitchen ${kotData.kitchenName} to ${printerIp}`);
@@ -2352,7 +2443,11 @@ class UniversalPrinter {
             orderId,
             orderNo: orderId,
             tableNo,
+            takeawayNo,
+            orderType: isTakeaway ? "TAKEAWAY" : "DINE_IN",
+            isTakeaway,
             waiterName,
+            isQuickServe: !!(orderContext.isQuickServe || orderContext.isQuick || orderContext.isQuickServeMode),
             items,
             kitchenName: "KDS",
           };
@@ -2372,6 +2467,14 @@ class UniversalPrinter {
 
   static async printReceiptAuto(settlementData: any): Promise<boolean> {
     try {
+      // Check General Settings: Print Receipt
+      const { useGeneralSettingsStore } = await import("../stores/generalSettingsStore");
+      const { enableReceiptPrint } = useGeneralSettingsStore.getState().settings;
+      if (enableReceiptPrint === false) {
+        if (__DEV__) console.log("🧾 [UniversalPrinter] Automatic receipt printing is disabled in General Settings.");
+        return false;
+      }
+
       const header = settlementData?.header || {};
       const orderId = header.OrderId || header.SettlementID || "";
       if (orderId && this.isDuplicateReceiptPrint(orderId)) {
@@ -2416,7 +2519,8 @@ class UniversalPrinter {
           referenceNo: p.ReferenceNo || ""
         })),
         roundOff: Number(header.RoundedBy ?? 0),
-        date: header.LastSettlementDate || new Date(),
+        date: header.SettlementDate || header.LastSettlementDate || new Date(),
+        originalDate: header.SettlementDate || header.LastSettlementDate || null,
         discountAmount: Number(header.DiscountAmount ?? 0),
         discountType: header.DiscountType || null,
         discountValue: discountValue,
@@ -2780,7 +2884,7 @@ class UniversalPrinter {
   static generateSettlementReportHTML(settlementRows: any[], company: any, period?: string): string {
     const symbol = company.currencySymbol || "$";
     const now = new Date();
-    const printDate = formatToPrinterDate(now) + " " + now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+    const printDate = (now.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "numeric" }) + " " + now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })).replace(/[\u202F\u00A0\uFEFF]/g, ' ');
 
     // Aggregate totals by payment mode
     const paymentTotals: Record<string, number> = {};
@@ -2847,7 +2951,7 @@ class UniversalPrinter {
     try {
       const symbol = company.currencySymbol || "$";
       const now = new Date();
-      const printDate = formatToPrinterDate(now) + " " + now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+      const printDate = (now.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "numeric" }) + " " + now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })).replace(/[\u202F\u00A0\uFEFF]/g, ' ');
 
       // Aggregate totals by payment mode
       const paymentTotals: Record<string, number> = {};

@@ -72,11 +72,13 @@ export type DiscountInfo = {
 
 const getModifierKey = (mods?: any[]) => {
   if (!mods || mods.length === 0) return "";
-  // 🚀 OPTIMIZATION: Avoid sorting/joining for single modifiers
-  if (mods.length === 1) return String(mods[0].ModifierId || mods[0].ModifierID || "");
+  if (mods.length === 1) {
+    const m = mods[0];
+    return `${m?.ModifierId || m?.ModifierID || ""}_${m?.ModifierName || m?.name || ""}_${m?.Price || m?.price || 0}`;
+  }
 
   return mods
-    .map((m) => String(m?.ModifierId || m?.ModifierID || ""))
+    .map((m) => `${m?.ModifierId || m?.ModifierID || ""}_${m?.ModifierName || m?.name || ""}_${m?.Price || m?.price || 0}`)
     .sort()
     .join("|");
 };
@@ -316,6 +318,7 @@ const normalizeCartItem = (item: any, fallback: Partial<CartItem> = {}): CartIte
 
 const canMergeCartItems = (left: CartItem, right: CartItem) => {
   if (left.id !== right.id) return false;
+  if (Number(left.price || 0) !== Number(right.price || 0)) return false;
   if (isOpenPriceItem(left) || isOpenPriceItem(right)) {
     if (left.price !== right.price) return false;
   }

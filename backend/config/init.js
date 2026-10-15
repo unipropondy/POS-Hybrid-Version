@@ -1487,6 +1487,7 @@ async function initDB(pool) {
     `);
 
     // 27. Combo Meal Schema Migration
+    await runQuery("DishMaster - isFavourite", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[DishMaster]') AND name = 'isFavourite') ALTER TABLE [dbo].[DishMaster] ADD isFavourite BIT NOT NULL DEFAULT 0");
     await runQuery("DishMaster - IsCombo", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[DishMaster]') AND name = 'IsCombo') ALTER TABLE [dbo].[DishMaster] ADD IsCombo BIT NOT NULL DEFAULT 0");
     await runQuery("PrintMaster - IsEnabled", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[PrintMaster]') AND name = 'IsEnabled') ALTER TABLE [dbo].[PrintMaster] ADD IsEnabled BIT NOT NULL DEFAULT 1");
     await runQuery("RestaurantOrderDetailCur - ComboDetailsJSON", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[RestaurantOrderDetailCur]') AND name = 'ComboDetailsJSON') ALTER TABLE [dbo].[RestaurantOrderDetailCur] ADD ComboDetailsJSON NVARCHAR(MAX) NULL");
@@ -1541,6 +1542,286 @@ async function initDB(pool) {
               [UpdatedOn] [datetime] NULL DEFAULT GETDATE()
           );
       END
+    `);
+
+    // 📦 Stored Procedure: proc_RestaurantOrder (Daily Archiving for Day End)
+    await runQuery("Create proc_RestaurantOrder stored procedure", `
+      EXEC('
+        CREATE OR ALTER PROCEDURE [dbo].[proc_RestaurantOrder]
+        AS
+        BEGIN
+            SET NOCOUNT ON;
+            BEGIN TRY
+                BEGIN TRANSACTION;
+
+                -- Step 1 : Delete old records with NULL OrderNumber
+                DELETE D
+                FROM RestaurantOrderDetail D
+                INNER JOIN RestaurantOrderDetailCur C
+                    ON D.OrderDetailId = C.OrderDetailId
+                WHERE D.OrderNumber IS NULL
+                  AND C.start_date IN (SELECT StartDate FROM DateEntry);
+
+                -- Step 2 : Insert records from RestaurantOrderDetailCur -> RestaurantOrderDetail (dedup protected)
+                ;WITH RankedDetails AS (
+                    SELECT C.*,
+                           ROW_NUMBER() OVER (PARTITION BY C.OrderDetailId ORDER BY C.CreatedOn DESC) AS rn
+                    FROM RestaurantOrderDetailCur C
+                    WHERE C.start_date IN (SELECT StartDate FROM DateEntry)
+                      AND NOT EXISTS
+                      (
+                          SELECT 1
+                          FROM RestaurantOrderDetail D
+                          WHERE D.OrderDetailId = C.OrderDetailId
+                      )
+                )
+                INSERT INTO RestaurantOrderDetail
+                (
+                    OrderDetailId,
+                    OrderId,
+                    DishId,
+                    Description,
+                    Quantity,
+                    PricePerUnit,
+                    BaseAmount,
+                    ManualDiscountAmount,
+                    TotalDetailLineAmount,
+                    AssociatedDishId,
+                    OrderDateTime,
+                    StatusCode,
+                    BusinessUnitId,
+                    CreatedBy,
+                    CreatedOn,
+                    ModifiedBy,
+                    ModifiedOn,
+                    SeqNo,
+                    isTakeAway,
+                    DishName,
+                    ActualAmount,
+                    Tax,
+                    ServiceCharge,
+                    PFlag,
+                    ModifierDescription,
+                    Remarks,
+                    ExFlag,
+                    IsODFOC,
+                    IsODItemDiscount,
+                    isstandardMenu,
+                    Pcs,
+                    isProcesse,
+                    isReady,
+                    isDelivered,
+                    Spicy,
+                    Salt,
+                    Oil,
+                    Sugar,
+                    OrderConfirmQty,
+                    VoidReason,
+                    DiscountAmount,
+                    DiscountType,
+                    ModifiersJSON,
+                    OrderNumber,
+                    isSettlement,
+                    CustomerName,
+                    SongName,
+                    ComboDetailsJSON,
+                    start_date
+                )
+                SELECT
+                    C.OrderDetailId,
+                    C.OrderId,
+                    C.DishId,
+                    C.Description,
+                    C.Quantity,
+                    C.PricePerUnit,
+                    C.BaseAmount,
+                    C.ManualDiscountAmount,
+                    C.TotalDetailLineAmount,
+                    C.AssociatedDishId,
+                    C.OrderDateTime,
+                    C.StatusCode,
+                    C.BusinessUnitId,
+                    C.CreatedBy,
+                    C.CreatedOn,
+                    C.ModifiedBy,
+                    C.ModifiedOn,
+                    C.SeqNo,
+                    C.isTakeAway,
+                    C.DishName,
+                    C.ActualAmount,
+                    C.Tax,
+                    C.ServiceCharge,
+                    C.PFlag,
+                    C.ModifierDescription,
+                    C.Remarks,
+                    C.ExFlag,
+                    C.IsODFOC,
+                    C.IsODItemDiscount,
+                    C.isstandardMenu,
+                    C.Pcs,
+                    C.isProcesse,
+                    C.isReady,
+                    C.isDelivered,
+                    C.Spicy,
+                    C.Salt,
+                    C.Oil,
+                    C.Sugar,
+                    C.OrderConfirmQty,
+                    C.VoidReason,
+                    C.DiscountAmount,
+                    C.DiscountType,
+                    C.ModifiersJSON,
+                    C.OrderNumber,
+                    ISNULL(C.isSettlement, 0) AS isSettlement,
+                    C.CustomerName,
+                    C.SongName,
+                    C.ComboDetailsJSON,
+                    C.start_date
+                FROM RankedDetails C
+                WHERE C.rn = 1;
+
+                -- Step 3 : Insert RestaurantOrderCur -> RestaurantOrder (dedup protected)
+                ;WITH RankedOrders AS (
+                    SELECT C.*,
+                           ROW_NUMBER() OVER (PARTITION BY C.OrderId ORDER BY C.CreatedOn DESC) AS rn
+                    FROM RestaurantOrderCur C
+                    WHERE C.start_date IN (SELECT StartDate FROM DateEntry)
+                      AND NOT EXISTS
+                      (
+                          SELECT 1
+                          FROM RestaurantOrder R
+                          WHERE R.OrderId = C.OrderId
+                      )
+                )
+                INSERT INTO RestaurantOrder
+                (
+                    BusinessUnitId,
+                    OrderEntryUnit,
+                    OrderId,
+                    OrderNumber,
+                    CustomerId,
+                    OrderDateTime,
+                    Tableno,
+                    Persons,
+                    PriceListId,
+                    Description,
+                    DailyOrderSequenceNumber,
+                    InformedKitchen,
+                    IsTakeAway,
+                    TotalLineItemAmount,
+                    TotalLineItemDiscountAmount,
+                    DiscountAmount,
+                    DiscountPercentage,
+                    TotalDiscountAmount,
+                    FreightAmount,
+                    TotalAmountLessFreight,
+                    TotalTax,
+                    RoundedBy,
+                    TotalAmount,
+                    PriorityCode,
+                    StatusCode,
+                    CreatedBy,
+                    CreatedOn,
+                    ModifiedBy,
+                    ModifiedOn,
+                    TerminalCode,
+                    ServiceCharge,
+                    isOrderClosed,
+                    isCourse1Fired,
+                    isCourse2Fired,
+                    isMainCourseFired,
+                    isDessertsFired,
+                    isGuestMeal,
+                    isUploadHQ,
+                    DiscountId,
+                    SourceTable,
+                    DiscountRemarks,
+                    AdditionalServiceCharge,
+                    MobileNo,
+                    TakeawayCharge,
+                    start_date,
+                    TakeawayChargeOverride
+                )
+                SELECT
+                    C.BusinessUnitId,
+                    C.OrderEntryUnit,
+                    C.OrderId,
+                    C.OrderNumber,
+                    C.CustomerId,
+                    C.OrderDateTime,
+                    C.Tableno,
+                    C.Persons,
+                    C.PriceListId,
+                    C.Description,
+                    C.DailyOrderSequenceNumber,
+                    C.InformedKitchen,
+                    C.IsTakeAway,
+                    C.TotalLineItemAmount,
+                    C.TotalLineItemDiscountAmount,
+                    C.DiscountAmount,
+                    C.DiscountPercentage,
+                    C.TotalDiscountAmount,
+                    C.FreightAmount,
+                    C.TotalAmountLessFreight,
+                    C.TotalTax,
+                    C.RoundedBy,
+                    C.TotalAmount,
+                    C.PriorityCode,
+                    C.StatusCode,
+                    C.CreatedBy,
+                    C.CreatedOn,
+                    C.ModifiedBy,
+                    C.ModifiedOn,
+                    C.TerminalCode,
+                    C.ServiceCharge,
+                    C.isOrderClosed,
+                    C.isCourse1Fired,
+                    C.isCourse2Fired,
+                    C.isMainCourseFired,
+                    C.isDessertsFired,
+                    C.isGuestMeal,
+                    C.isUploadHQ,
+                    C.DiscountId,
+                    C.SourceTable,
+                    C.DiscountRemarks,
+                    C.AdditionalServiceCharge,
+                    C.MobileNo,
+                    C.TakeawayCharge,
+                    C.start_date,
+                    C.TakeawayChargeOverride
+                FROM RankedOrders C
+                WHERE C.rn = 1;
+
+                -- Step 4 : Delete RestaurantOrderCur
+                DELETE C
+                FROM RestaurantOrderCur C
+                WHERE EXISTS
+                (
+                    SELECT 1
+                    FROM RestaurantOrder R
+                    WHERE R.OrderId = C.OrderId
+                )
+                AND C.start_date IN (SELECT StartDate FROM DateEntry);
+
+                -- Step 5 : Delete RestaurantOrderDetailCur
+                DELETE C
+                FROM RestaurantOrderDetailCur C
+                WHERE EXISTS
+                (
+                    SELECT 1
+                    FROM RestaurantOrderDetail D
+                    WHERE D.OrderDetailId = C.OrderDetailId
+                )
+                AND C.start_date IN (SELECT StartDate FROM DateEntry);
+
+                COMMIT TRANSACTION;
+            END TRY
+            BEGIN CATCH
+                ROLLBACK TRANSACTION;
+                THROW;
+            END CATCH
+        END
+      ');
     `);
 
     console.log("✅ Database schema and performance indexes are up to date. (Rewards system active)");

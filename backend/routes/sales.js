@@ -2970,13 +2970,23 @@ router.post("/save", async (req, res) => {
 
           // 🚀 CLEANUP MERGED SOURCE TABLES AS WELL (Bullet 5)
           try {
+            const targetTableNoVal = targetTableNo || cleanTableId;
             const childTablesRes = await transaction.request()
               .input("orderNo", sql.NVarChar(50), displayOrderId)
+              .input("guidOid", sql.UniqueIdentifier, guidOrderId || DEFAULT_GUID)
+              .input("targetTno", sql.NVarChar(50), String(targetTableNoVal))
               .query(`
                 SELECT tm.TableId, tm.TableNumber, tm.DiningSection
                 FROM OrderMergeHistory omh
-                JOIN TableMaster tm ON omh.ChildTableNo = tm.TableNumber
-                WHERE omh.ParentOrderId = (SELECT TOP 1 OrderId FROM RestaurantOrderCur WHERE OrderNumber = @orderNo)
+                JOIN TableMaster tm ON (
+                  omh.ChildTableNo = tm.TableNumber 
+                  OR TRY_CAST(omh.ChildOrderId AS NVARCHAR(100)) = TRY_CAST(tm.CurrentOrderId AS NVARCHAR(100))
+                  OR TRY_CAST(omh.ChildOrderId AS NVARCHAR(100)) = TRY_CAST(tm.TableId AS NVARCHAR(100))
+                )
+                WHERE omh.ParentOrderId = @guidOid 
+                   OR omh.ParentTableNo = @targetTno
+                   OR omh.ParentOrderId IN (SELECT OrderId FROM RestaurantOrderCur WHERE OrderNumber = @orderNo)
+                   OR omh.ParentOrderId IN (SELECT OrderId FROM RestaurantOrder WHERE OrderNumber = @orderNo)
               `);
 
             if (childTablesRes.recordset && childTablesRes.recordset.length > 0) {
@@ -2992,9 +3002,17 @@ router.post("/save", async (req, res) => {
                   .input("cartId", sql.NVarChar(128), childTableId)
                   .query("DELETE FROM [dbo].[CartItems] WHERE [CartId] = @cartId");
 
-                await transaction.request()
-                  .input("tid", sql.NVarChar(128), childTableId)
-                  .query("UPDATE [dbo].[TableMaster] SET Status = 0, entry_status = NULL, TotalAmount = 0, StartTime = NULL, CurrentOrderId = NULL, CustomerName = NULL, Pax = NULL WHERE TableId = @tid");
+                const validChildGuid = toGuidOrNull(childTableId);
+                if (validChildGuid) {
+                  await transaction.request()
+                    .input("tid", sql.UniqueIdentifier, validChildGuid)
+                    .input("tno", sql.NVarChar(50), String(childTableNo))
+                    .query("UPDATE [dbo].[TableMaster] SET Status = 0, entry_status = NULL, TotalAmount = 0, StartTime = NULL, CurrentOrderId = NULL, CustomerName = NULL, Pax = NULL WHERE TableId = @tid OR TableNumber = @tno");
+                } else {
+                  await transaction.request()
+                    .input("tno", sql.NVarChar(50), String(childTableNo))
+                    .query("UPDATE [dbo].[TableMaster] SET Status = 0, entry_status = NULL, TotalAmount = 0, StartTime = NULL, CurrentOrderId = NULL, CustomerName = NULL, Pax = NULL WHERE TableNumber = @tno OR TableId = @tno");
+                }
 
                 if (io) {
                   io.emit("table_status_updated", { 
@@ -3003,9 +3021,11 @@ router.post("/save", async (req, res) => {
                     totalAmount: 0,
                     startTime: null,
                     tableNo: childTableNo,
-                    section: childSection
+                    section: childSection,
+                    customerName: null,
+                    pax: null
                   });
-                  io.emit("cart_updated", { tableId: childTableId.toLowerCase() });
+                  io.emit("cart_updated", { tableId: childTableId.toLowerCase(), tableNo: childTableNo });
                   io.emit("order_closed", { tableId: childTableId.toLowerCase(), tableNo: childTableNo, orderId: displayOrderId });
                 }
               }
@@ -3014,10 +3034,24 @@ router.post("/save", async (req, res) => {
             console.error("⚠️ [SAVE SALE] Merged tables cleanup failed:", childErr.message);
           }
 
-          // 🚀 GLOBAL KDS SYNC: Mark order as closed in professional tables
+          // 🚀 GLOBAL KDS SYNC: Mark parent order and all child merged orders as closed in professional tables
           await transaction.request()
             .input("orderNo", sql.NVarChar(50), displayOrderId)
-            .query("UPDATE RestaurantOrderCur SET isOrderClosed = 1, ModifiedOn = GETDATE() WHERE OrderNumber = @orderNo");
+            .input("guidOid", sql.UniqueIdentifier, guidOrderId || DEFAULT_GUID)
+            .input("targetTno", sql.NVarChar(50), String(tableNo || cleanTableId))
+            .query(`
+              UPDATE RestaurantOrderCur 
+              SET isOrderClosed = 1, ModifiedOn = GETDATE() 
+              WHERE OrderNumber = @orderNo 
+                 OR OrderId IN (
+                   SELECT omh.ChildOrderId 
+                   FROM OrderMergeHistory omh
+                   WHERE omh.ParentOrderId = @guidOid 
+                      OR omh.ParentTableNo = @targetTno
+                      OR omh.ParentOrderId IN (SELECT OrderId FROM RestaurantOrderCur WHERE OrderNumber = @orderNo)
+                      OR omh.ParentOrderId IN (SELECT OrderId FROM RestaurantOrder WHERE OrderNumber = @orderNo)
+                 )
+            `);
         }
       }
 

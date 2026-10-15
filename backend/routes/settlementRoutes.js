@@ -134,7 +134,27 @@ router.post("/day-end", async (req, res) => {
       console.error('[DayEnd] Artist bonus finalization error (non-fatal):', bonusErr.message);
     }
 
-    // 2. Clear active business day — this officially ends the day
+    // 2. Archive active restaurant orders into historical tables (proc_RestaurantOrder)
+    //    CRITICAL: Must execute BEFORE DateEntry is cleared, because proc_RestaurantOrder filters by (SELECT StartDate FROM DateEntry)
+    try {
+      console.log('[DayEnd] Executing proc_RestaurantOrder to archive active day orders...');
+      await pool.request().execute("proc_RestaurantOrder");
+      console.log('[DayEnd] ✅ proc_RestaurantOrder executed successfully');
+    } catch (procErr) {
+      console.warn('[DayEnd] ⚠️ proc_RestaurantOrder warning:', procErr.message);
+    }
+
+    // Also execute proc_RestaurantOrder on remote cloud DB if connected and online (before DateEntry is cleared)
+    try {
+      const { connectRemote } = require("../config/db");
+      const remotePool = await connectRemote();
+      if (remotePool && remotePool.connected) {
+        await remotePool.request().execute("proc_RestaurantOrder").catch(() => {});
+        console.log('[DayEnd] ✅ proc_RestaurantOrder executed on Remote Cloud DB');
+      }
+    } catch (_) {}
+
+    // 3. Clear active business day — this officially ends the day
     await pool.request().query("DELETE FROM DateEntry");
 
     // Notify all connected clients to refresh settlement data
