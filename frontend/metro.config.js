@@ -19,6 +19,9 @@ config.resolver.extraNodeModules = {
   cors: STUB,
   dotenv: STUB,
   tedious: STUB,
+  'react-native-thermal-printer': path.resolve(__dirname, 'shims/react-native-thermal-printer.js'),
+  'sunmi-printer-expo': path.resolve(__dirname, 'shims/sunmi-printer-expo.js'),
+  'expo-av': path.resolve(__dirname, 'shims/expo-av.js'),
   '@unipro/customer-display': path.resolve(__dirname, '../packages/customer-display'),
   // Monorepo peer dependency mappings
   react: path.resolve(__dirname, 'node_modules/react'),

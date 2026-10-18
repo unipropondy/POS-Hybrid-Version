@@ -1,3 +1,5 @@
+import "../shims/initShield";
+import "react-native-gesture-handler";
 import "../shims/displayMock";
 import "react-native-get-random-values";
 import "react-native-reanimated";
@@ -22,7 +24,7 @@ import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import * as React from "react";
 import { useEffect } from "react";
-import { useWindowDimensions, Alert } from "react-native";
+import { useWindowDimensions, Alert, View, Text, TouchableOpacity } from "react-native";
 import * as ScreenOrientation from "expo-screen-orientation";
 import { ToastProvider, useToast } from "../components/Toast";
 import { CustomerDisplayManager } from "../components/CustomerDisplayManager";
@@ -226,11 +228,6 @@ LogBox.ignoreLogs([
   "setLayoutAnimationEnabledExperimental is currently a no-op",
 ]);
 
-// Set root background immediately to match theme
-SystemUI.setBackgroundColorAsync(Theme.bgMain);
-
-// Keep the splash screen visible while fonts load
-SplashScreen.preventAutoHideAsync();
 
 import { useGlobalSocketSync } from "@/hooks/useGlobalSocketSync";
 import { API_URL, initServerConfig, onServerUrlChange } from "@/constants/Config";
@@ -288,10 +285,18 @@ const TERMINAL_POLICY: NetworkPolicy = {
   budget: 170000,
 };
 
+const POLLING_POLICY: NetworkPolicy = {
+  timeout: 4000,
+  maxRetries: 0,
+  initialDelay: 300,
+  budget: 5000,
+};
+
 const classifyRequest = (url: string): NetworkPolicy => {
   if (!url) return NORMAL_POLICY;
   if (url.includes("/health")) return HEALTH_POLICY;
   if (url.includes("/yeahpay") || url.includes("yeahpay")) return TERMINAL_POLICY;
+  if (url.includes("/api/print-jobs/status") || url.includes("/api/print-jobs/bridge-status")) return POLLING_POLICY;
 
   const criticalKeywords = [
     "checkout",
@@ -300,13 +305,12 @@ const classifyRequest = (url: string): NetworkPolicy => {
     "hold",
     "complete",
     "/save",
-    "print",
     "update-item-status",
     "log-visit",
     "settings"
   ];
 
-  const isCritical = criticalKeywords.some((keyword) => url.includes(keyword));
+  const isCritical = criticalKeywords.some((keyword) => url.includes(keyword)) || (url.includes("print") && !url.includes("status"));
   return isCritical ? CRITICAL_POLICY : NORMAL_POLICY;
 };
 
@@ -318,6 +322,11 @@ const getJitteredDelay = (baseDelay: number): number => {
 
 global.fetch = async function (input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const url = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as any).url);
+
+  // 🛡️ Bypasses: Internal logger pings & health checks must NEVER trigger fetch retry logging loops
+  if (url && (url.includes('/api/logs/client') || url.includes('/health'))) {
+    return originalFetch(input, init);
+  }
 
   if (url && url.includes(API_URL)) {
     const policy = classifyRequest(url);
@@ -444,19 +453,92 @@ global.fetch = async function (input: RequestInfo | URL, init?: RequestInit): Pr
   return originalFetch(input, init);
 };
 
-export default function RootLayout() {
-  const [authHydrated, setAuthHydrated] = React.useState(useAuthStore.persist.hasHydrated());
+class SafeRootErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; error: any }
+> {
+  constructor(props: any) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: any) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: any, errorInfo: any) {
+    try {
+      console.warn("🛡️ [SafeRootErrorBoundary] Caught error:", error?.message || error, errorInfo);
+    } catch {}
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <SafeAreaProvider>
+          <View style={{ flex: 1, backgroundColor: Theme.bgMain || "#FAF7F2", justifyContent: "center", alignItems: "center", padding: 24 }}>
+            <Text style={{ fontSize: 22, fontWeight: "bold", color: "#FF5E1A", marginBottom: 8 }}>Smart POS</Text>
+            <Text style={{ fontSize: 14, color: "#666", textAlign: "center", marginBottom: 20 }}>
+              The application recovered from an unexpected error.
+            </Text>
+            <TouchableOpacity
+              onPress={() => this.setState({ hasError: false, error: null })}
+              style={{ backgroundColor: "#FF5E1A", paddingHorizontal: 24, paddingVertical: 12, borderRadius: 8 }}
+            >
+              <Text style={{ color: "#FFF", fontWeight: "600", fontSize: 16 }}>Reload Application</Text>
+            </TouchableOpacity>
+          </View>
+        </SafeAreaProvider>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function RootLayoutContent() {
+  const [authHydrated, setAuthHydrated] = React.useState(() => {
+    try {
+      return useAuthStore?.persist?.hasHydrated?.() ?? false;
+    } catch {
+      return true;
+    }
+  });
+
+  // 🛡️ Watchdog: Render within 2s even if fonts or AsyncStorage are slow
+  const [startupTimeout, setStartupTimeout] = React.useState(false);
 
   React.useEffect(() => {
-    if (authHydrated) return;
-
-    // Subscribe to completion of hydration in Zustand
-    const unsubFinish = useAuthStore.persist.onFinishHydration(() => {
+    const watchdog = setTimeout(() => {
+      setStartupTimeout(true);
       setAuthHydrated(true);
-    });
+    }, 2000);
 
-    return unsubFinish;
+    let unsubFinish: (() => void) | undefined;
+    try {
+      if (!authHydrated && useAuthStore?.persist?.onFinishHydration) {
+        unsubFinish = useAuthStore.persist.onFinishHydration(() => {
+          setAuthHydrated(true);
+        });
+      }
+    } catch {
+      setAuthHydrated(true);
+    }
+
+    return () => {
+      clearTimeout(watchdog);
+      if (typeof unsubFinish === "function") unsubFinish();
+    };
   }, [authHydrated]);
+
+  // Set root background & splash screen safely once Activity window is attached
+  useEffect(() => {
+    try {
+      SystemUI.setBackgroundColorAsync(Theme.bgMain).catch(() => {});
+    } catch {}
+    try {
+      SplashScreen.preventAutoHideAsync().catch(() => {});
+    } catch {}
+  }, []);
 
   useGlobalSocketSync();
   const colorScheme = useColorScheme();
@@ -464,53 +546,38 @@ export default function RootLayout() {
   const segments = useSegments();
   const user = useAuthStore((s) => s.user);
 
-
   // 🌐 SILENT API WAKE-UP & CONNECTION PRE-WARM
   useEffect(() => {
     const warmupAPI = async () => {
-      if (__DEV__) {
-        console.log(`🌐 [App Startup] Warming up connection to ${API_URL}...`);
-      }
       try {
         const start = Date.now();
-        // Trigger DNS lookup, TCP/SSL handshake, and backend container spin-up
         const res = await fetch(`${API_URL}/health`);
         const duration = Date.now() - start;
         if (__DEV__) {
-          console.log(`🌐 [App Startup] API warmed up successfully in ${duration}ms. Status: ${res.status}`);
+          console.log(`🌐 [App Startup] API warmed up in ${duration}ms. Status: ${res.status}`);
         }
 
-        // 🚀 PARALLEL PREFETCH: Load static payment config immediately after connection
-        // is confirmed. This ensures the Payment screen reads from cache instead of
-        // making sequential network requests on every open.
         const token = useAuthStore.getState().token;
         if (token) {
           import("@/stores/paymentSettingsStore").then((m) => {
             Promise.all([
               m.usePaymentSettingsStore.getState().fetchSettings(),
               m.usePaymentSettingsStore.getState().fetchPaymentMethods(),
-            ]).catch(() => {/* Non-fatal — payment screen still works on miss */});
+            ]).catch(() => {});
           });
         }
       } catch (err: any) {
-        if (__DEV__) {
-          console.warn(`🌐 [App Startup] API warmup ping failed (expected if backend container is booting up):`, err.message || err);
-        }
+        // Non-fatal if offline
       }
     };
     warmupAPI();
   }, []);
 
   const [fontsLoaded, fontError] = useFonts({
-    "Ionicons": require("../assets/fonts/Ionicons.ttf"),
-    "ionicons": require("../assets/fonts/Ionicons.ttf"),
-    "Material Community Icons": require("../assets/fonts/MaterialCommunityIcons.ttf"),
-    "material-community": require("../assets/fonts/MaterialCommunityIcons.ttf"),
-    "FontAwesome5Free-Solid": require("../assets/fonts/FontAwesome5_Solid.ttf"),
-    "FontAwesome5Free-Regular": require("../assets/fonts/FontAwesome5_Regular.ttf"),
-    "FontAwesome5Brands-Regular": require("../assets/fonts/FontAwesome5_Brands.ttf"),
-    "Feather": require("../assets/fonts/Feather.ttf"),
-    "feather": require("../assets/fonts/Feather.ttf"),
+    ...Ionicons.font,
+    ...MaterialCommunityIcons.font,
+    ...FontAwesome5.font,
+    ...Feather.font,
     Inter_400Regular,
     Inter_500Medium,
     Inter_600SemiBold,
@@ -519,21 +586,19 @@ export default function RootLayout() {
     Inter_900Black,
   });
 
-
-
   // 🖥️ CUSTOMER DISPLAY: Gate resolves once fonts + settings + socket are ready
-  const isPOSReady = usePOSReadyGate(fontsLoaded || !!fontError);
+  const isPOSReady = usePOSReadyGate(fontsLoaded || !!fontError || startupTimeout);
 
   // 🌐 Initialize saved Server Router IP on startup
   useEffect(() => {
     initServerConfig().then((cfg) => {
       setApiUrl(cfg.fullUrl);
-    });
+    }).catch(() => {});
   }, []);
 
   // ✅ AUTH GUARD: Redirect based on auth state and role
   useEffect(() => {
-    if (!fontsLoaded || !authHydrated) return;
+    if ((!fontsLoaded && !fontError && !startupTimeout) || !authHydrated) return;
 
     const rootSegment = segments[0];
     if (rootSegment && (rootSegment.startsWith("customer-display") || rootSegment === "customer")) return;
@@ -550,9 +615,7 @@ export default function RootLayout() {
         }
       } else if (!rootSegment || rootSegment === "login") {
         // 2. Already logged in -> Go to Role-Specific Dashboard
-        const role = user.role;
         const userName = (user.userName || "").trim().toUpperCase();
-
         if (userName === "KDS") {
           router.replace("/kds" as any);
         } else {
@@ -560,15 +623,23 @@ export default function RootLayout() {
         }
       }
     }
-  }, [user, segments, fontsLoaded, authHydrated]);
+  }, [user, segments, fontsLoaded, fontError, startupTimeout, authHydrated]);
 
   useEffect(() => {
-    if ((fontsLoaded || fontError) && authHydrated) {
-      SplashScreen.hideAsync();
+    if ((fontsLoaded || fontError || startupTimeout) && authHydrated) {
+      SplashScreen.hideAsync().catch(() => {});
     }
-  }, [fontsLoaded, fontError, authHydrated]);
+  }, [fontsLoaded, fontError, startupTimeout, authHydrated]);
 
-  if ((!fontsLoaded && !fontError) || !authHydrated) {
+  // 🛡️ Failsafe: Ensure splash screen always hides within 3s
+  useEffect(() => {
+    const fallbackTimer = setTimeout(() => {
+      SplashScreen.hideAsync().catch(() => {});
+    }, 3000);
+    return () => clearTimeout(fallbackTimer);
+  }, []);
+
+  if ((!fontsLoaded && !fontError && !startupTimeout) || (!authHydrated && !startupTimeout)) {
     return null;
   }
 
@@ -582,37 +653,19 @@ export default function RootLayout() {
         {/* 🖥️ Customer Display: auto-projects onto Sunmi D3 secondary screen */}
         <CustomerDisplayManager isPOSReady={isPOSReady} />
         <Stack screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="index" />
           <Stack.Screen name="login" options={{ gestureEnabled: false }} />
-          <Stack.Screen name="order-type" />
-          <Stack.Screen name="table-selection" />
-          <Stack.Screen name="(tabs)" />
-          <Stack.Screen name="menu" />
-          <Stack.Screen name="sales-report" />
-          <Stack.Screen name="ai-chat" />
-          <Stack.Screen name="day-end" />
-          <Stack.Screen name="company-settings" />
-          <Stack.Screen name="waiters" />
-          <Stack.Screen name="members" />
-          <Stack.Screen name="receivables" />
-          <Stack.Screen name="waiter-history" />
-          <Stack.Screen name="locked-tables" />
-          <Stack.Screen name="kitchen-status" />
-          <Stack.Screen name="heldOrders" />
-          <Stack.Screen name="summary" />
-          <Stack.Screen name="payment" />
-          <Stack.Screen name="payment_success" />
-          <Stack.Screen name="cart" />
-          <Stack.Screen name="cash-drawer" />
-          <Stack.Screen name="cash-drawer-report" />
-          <Stack.Screen name="StaffAttendance" />
-          <Stack.Screen name="loyalty" />
-          <Stack.Screen name="loyaltyConfig" />
-          <Stack.Screen name="terminal-settings" />
-          <Stack.Screen name="customer-display" />
-          <Stack.Screen name="table-master" />
         </Stack>
         <StatusBar style="light" />
       </ToastProvider>
     </SafeAreaProvider>
+  );
+}
+
+export default function RootLayout() {
+  return (
+    <SafeRootErrorBoundary>
+      <RootLayoutContent />
+    </SafeRootErrorBoundary>
   );
 }

@@ -12,6 +12,24 @@ function fixJcenter(filePath) {
   }
 }
 
+function fixThermalPrinterGradle(filePath) {
+  if (fs.existsSync(filePath)) {
+    let content = fs.readFileSync(filePath, 'utf8');
+    if (content.includes('jcenter()')) {
+      content = content.replace(/jcenter\(\)/g, 'mavenCentral()');
+    }
+    // Prevent Gradle from pulling obsolete com.facebook.react:react-native:0.71.0 from Maven Central
+    if (content.includes('implementation "com.facebook.react:react-native:+"')) {
+      content = content.replace(
+        'implementation "com.facebook.react:react-native:+"',
+        'compileOnly "com.facebook.react:react-android"'
+      );
+      console.log(`✅ Replaced legacy react-native with react-android compileOnly in ${filePath}`);
+    }
+    fs.writeFileSync(filePath, content, 'utf8');
+  }
+}
+
 // 1. Fix react-native-thermal-printer build.gradle
 const thermalPrinterGradle = path.join(
   __dirname,
@@ -21,7 +39,7 @@ const thermalPrinterGradle = path.join(
   'android',
   'build.gradle'
 );
-fixJcenter(thermalPrinterGradle);
+fixThermalPrinterGradle(thermalPrinterGradle);
 
 // 2. Scan node_modules for any other build.gradle files containing jcenter()
 function scanDir(dir) {

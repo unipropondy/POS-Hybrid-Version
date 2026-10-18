@@ -1612,12 +1612,20 @@ export default function Category() {
         lastGuestOpenedTable = null;
       }
 
-      // Re-fetch only if data is likely stale (older than 30s)
-      if (Date.now() - lastTablesFetchTime > 30000) {
+      // Re-fetch if tables are empty or data is likely stale (older than 30s)
+      if (allTables.length === 0 || Date.now() - lastTablesFetchTime > 30000) {
         fetchTables();
       }
-    }, []),
+    }, [allTables.length]),
   );
+
+  // --- Safety Watchdog: Ensure skeleton never freezes UI indefinitely ---
+  useEffect(() => {
+    const watchdog = setTimeout(() => {
+      setLoading(false);
+    }, 4000);
+    return () => clearTimeout(watchdog);
+  }, []);
 
   // --- Real-time Sync (Polling every 120s as backup) ---
   useEffect(() => {

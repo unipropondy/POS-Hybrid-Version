@@ -134,9 +134,11 @@ export async function playNotificationSound() {
       // High double chime pop (E5 -> B5)
       playNote(now, 659.25, 0.15);
       playNote(now + 0.08, 987.77, 0.25);
-    } else {
       // 📱 Native Android/iOS: Use local file generation for 100% offline-first reliable playback
-      const { Audio } = require("expo-av");
+      let Audio: any = null;
+      try {
+        Audio = require("expo-av").Audio;
+      } catch {}
 
       if (!isAudioModeSet) {
         try {

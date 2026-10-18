@@ -1160,7 +1160,7 @@ export default React.memo(function CartSidebar({ width = 400 }: CartSidebarProps
         })
         .catch((err) => console.error("Sidebar ID sync error:", err));
     }
-  }, [orderContext?.tableId, currentTableStatus]);
+  }, [orderContext?.tableId]);
 
 
   // 🖥️ CUSTOMER DISPLAY — JOIN TERMINAL ROOM (POS device side)

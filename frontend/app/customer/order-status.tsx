@@ -25,7 +25,10 @@ import { Ionicons } from "@expo/vector-icons";
 import { API_URL } from "../../constants/Config";
 
 const LogoutButtonWeb = ({ onConfirm }: { onConfirm: () => void }) => {
-  const containerRef = useRef<HTMLDivElement>(null);
+  if (Platform.OS !== "web" || typeof document === "undefined") {
+    return null;
+  }
+  const containerRef = useRef<any>(null);
 
   useEffect(() => {
     const styleId = "animated-logout-style";

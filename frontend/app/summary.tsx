@@ -398,7 +398,7 @@ export default function SummaryScreen() {
     if (name && name.trim() !== "") {
       setLoyaltyName(name);
     }
-  }, [activeOrder, tableState]);
+  }, [activeOrder?.orderId, (activeOrder as any)?.mobileNo, (tableState as any)?.mobileNo, (activeOrder as any)?.customerName, (tableState as any)?.customerName]);
 
   useEffect(() => {
     if (params.autoPay === "true" && context) {
@@ -466,7 +466,7 @@ export default function SummaryScreen() {
         })
         .catch((err) => console.error("Summary ID sync error:", err));
     }
-  }, [activeOrder]);
+  }, [context?.tableId]);
 
   // Load saved SC override and takeaway charge for this order whenever focused
   useEffect(() => {
@@ -506,7 +506,7 @@ export default function SummaryScreen() {
         })
         .catch(() => {});
     }
-  }, [displayOrderId, isFocused, context]);
+  }, [displayOrderId, isFocused, context?.tableId]);
 
   // Synchronize activeSplitItems dynamically based on current cart and splitPartsCount
   useEffect(() => {
@@ -522,28 +522,29 @@ export default function SummaryScreen() {
         setActiveSplitItems(null);
       }
     }
-  }, [cart, isFocused, context]);
+  }, [cart, isFocused, context?.tableId]);
 
   useEffect(() => {
-
     // 2. If activeOrder is missing, try fetching from kitchen ONCE
-    if (!activeOrder && !hasAttemptedInitialFetch) {
+    if (!activeOrder && !hasAttemptedInitialFetch && context) {
       console.log(
         "🔍 [Summary] Active order missing, fetching from kitchen (initial attempt)...",
       );
       setHasAttemptedInitialFetch(true);
       useActiveOrdersStore.getState().fetchActiveKitchenOrders();
     }
+  }, [context?.tableId, activeOrder?.orderId, hasAttemptedInitialFetch]);
 
-    // 3. Fetch servers
+  useEffect(() => {
+    // 3. Fetch servers once on mount
     fetchServers();
 
-    // 4. Fetch all dishes for split search
+    // 4. Fetch all dishes for split search once on mount
     fetch(`${API_URL}/api/menu/dishes/all`)
       .then((res) => res.json())
       .then((data) => setAllDishes(Array.isArray(data) ? data : []))
       .catch((err) => console.error("Error fetching all dishes:", err));
-  }, [activeOrder]);
+  }, []);
 
    const user = useAuthStore((s: any) => s.user);
    const permissions = useAuthStore((s: any) => s.permissions);

@@ -30,7 +30,10 @@ import { formatToSingaporeDate, formatToSingaporeTime } from "../../utils/timezo
 const { width } = Dimensions.get("window");
 
 const LogoutButtonWeb = ({ onConfirm }: { onConfirm: () => void }) => {
-  const containerRef = useRef<HTMLDivElement>(null);
+  if (Platform.OS !== "web" || typeof document === "undefined") {
+    return null;
+  }
+  const containerRef = useRef<any>(null);
 
   useEffect(() => {
     const styleId = "animated-logout-style";

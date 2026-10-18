@@ -20,7 +20,9 @@
     "production": {
       "autoIncrement": true,
       "env": {
-        "EXPO_PUBLIC_API_URL": "http://192.168.0.229:3000"
+        "EXPO_PUBLIC_API_URL": "http://192.168.0.229:3000",
+        "NODE_OPTIONS": "--max-old-space-size=4096",
+        "EXPO_ROUTER_DISABLE_RN_NAVIGATION_CHECK": "1"
       },
       "android": {
         "buildType": "apk"

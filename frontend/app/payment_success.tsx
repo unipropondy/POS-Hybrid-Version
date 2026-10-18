@@ -318,7 +318,10 @@ export default function PaymentSuccess() {
           audio.volume = 1.0;
           await audio.play();
         } else {
-          const { Audio } = require("expo-av");
+          let Audio: any = null;
+          try {
+            Audio = require("expo-av").Audio;
+          } catch {}
           try {
             await Audio.setAudioModeAsync({
               playsInSilentModeIOS: true,

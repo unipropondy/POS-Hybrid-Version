@@ -1,7 +1,7 @@
 import { Platform } from "react-native";
 import { API_URL } from "../constants/Config";
 
-// Intercepts browser console messages and sends them to backend for writing to logs/frontend.log
+// Intercepts browser console errors and sends them in batches to backend for writing to logs/frontend.log
 export function initClientLogger() {
   if (Platform.OS !== "web" || typeof window === "undefined") return;
 
@@ -15,22 +15,24 @@ export function initClientLogger() {
 
   const flush = async () => {
     if (queue.length === 0 || isSending) return;
-    const batch = [...queue];
-    queue = [];
+    // Cap at 20 logs per batch to prevent large payloads
+    const batch = queue.splice(0, 20);
     isSending = true;
 
     try {
-      for (const item of batch) {
-        await fetch(`${API_URL}/api/logs/client`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(item),
-        }).catch(() => {});
-      }
+      // Send the entire batch in a SINGLE HTTP request rather than sequential requests
+      await fetch(`${API_URL}/api/logs/client`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(batch),
+      }).catch(() => {});
     } catch {
       // Ignore network errors when shipping logs
     } finally {
       isSending = false;
+      if (queue.length > 0) {
+        scheduleFlush();
+      }
     }
   };
 
@@ -39,7 +41,7 @@ export function initClientLogger() {
       timer = setTimeout(() => {
         timer = null;
         flush();
-      }, 500);
+      }, 2000);
     }
   };
 
@@ -59,45 +61,74 @@ export function initClientLogger() {
       .join(" ");
   };
 
+  // Routine console.log stays in browser DevTools — DO NOT flood HTTP connections
   window.console.log = (...args: any[]) => {
     originalLog(...args);
-    const msg = formatArgs(args);
-    // Don't log internal client log requests to avoid loops
-    if (msg.includes("/api/logs/client")) return;
-    queue.push({ level: "INFO", message: msg });
-    scheduleFlush();
   };
 
+  // Routine console.warn stays in browser DevTools
   window.console.warn = (...args: any[]) => {
     originalWarn(...args);
-    const msg = formatArgs(args);
-    if (msg.includes("/api/logs/client")) return;
-    queue.push({ level: "WARN", message: msg });
-    scheduleFlush();
   };
 
+  // Only ship genuine console.error messages
   window.console.error = (...args: any[]) => {
     originalError(...args);
     const msg = formatArgs(args);
-    if (msg.includes("/api/logs/client")) return;
-    queue.push({ level: "ERROR", message: msg });
-    scheduleFlush();
+    // Ignore internal logger endpoints, retry pings, and transient network errors to avoid feedback loops
+    if (
+      msg.includes("/api/logs/client") ||
+      msg.includes("/health") ||
+      msg.includes("[Fetch ") ||
+      msg.includes("Failed to fetch") ||
+      msg.includes("AbortError") ||
+      msg.includes("signal is aborted") ||
+      msg.includes("[KeepAlive]")
+    ) {
+      return;
+    }
+    if (queue.length < 50) {
+      queue.push({ level: "ERROR", message: msg });
+      scheduleFlush();
+    }
   };
 
   // Global uncaught errors
   window.addEventListener("error", (event) => {
-    queue.push({
-      level: "FATAL",
-      message: `Uncaught Error: ${event.message} at ${event.filename}:${event.lineno}`,
-    });
-    scheduleFlush();
+    const msg = String(event.message || '');
+    if (
+      msg.includes("AbortError") ||
+      msg.includes("signal is aborted") ||
+      msg.includes("ResizeObserver loop") ||
+      msg.includes("Failed to fetch")
+    ) {
+      return;
+    }
+    if (queue.length < 50) {
+      queue.push({
+        level: "FATAL",
+        message: `Uncaught Error: ${event.message} at ${event.filename}:${event.lineno}`,
+      });
+      scheduleFlush();
+    }
   });
 
   window.addEventListener("unhandledrejection", (event) => {
-    queue.push({
-      level: "FATAL",
-      message: `Unhandled Promise Rejection: ${event.reason}`,
-    });
-    scheduleFlush();
+    const reasonMsg = String(event.reason?.message || event.reason || '');
+    if (
+      reasonMsg.includes("AbortError") ||
+      reasonMsg.includes("signal is aborted") ||
+      reasonMsg.includes("Network request failed") ||
+      reasonMsg.includes("Failed to fetch")
+    ) {
+      return;
+    }
+    if (queue.length < 50) {
+      queue.push({
+        level: "FATAL",
+        message: `Unhandled Promise Rejection: ${event.reason}`,
+      });
+      scheduleFlush();
+    }
   });
 }

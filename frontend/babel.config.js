@@ -5,7 +5,7 @@ module.exports = function (api) {
     presets: ['babel-preset-expo'],
     plugins: [
       'react-native-reanimated/plugin',
-      ...(isProd ? ['transform-remove-console'] : []),
+      ...(isProd ? [['transform-remove-console', { exclude: ['error', 'warn'] }]] : []),
     ],
   };
 };

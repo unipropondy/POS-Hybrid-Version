@@ -453,7 +453,7 @@ class UniversalPrinter {
   ): Promise<{ success: boolean; error?: string }> {
     const startTime = Date.now();
     while (Date.now() - startTime < timeoutMs) {
-      await new Promise((r) => setTimeout(r, 300));
+      await new Promise((r) => setTimeout(r, 1000));
       try {
         const res = await fetch(`${API_URL}/api/print-jobs/status/${jobId}`);
         const data = await res.json();
