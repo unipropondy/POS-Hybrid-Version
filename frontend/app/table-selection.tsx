@@ -128,7 +128,28 @@ export default function TableSelectionScreen() {
   );
 
   useEffect(() => {
-    const handleTableSync = () => {
+    const handleTableSync = (data?: any) => {
+      if (data?.tableId || data?.tableNo) {
+        const cleanId = String(data?.tableId || "").replace(/^\{|\}$/g, "").trim().toLowerCase();
+        setTables((prev) =>
+          prev.map((t) => {
+            const matchId = cleanId && t.id === cleanId;
+            const matchNo = data?.tableNo && String(t.label) === String(data.tableNo);
+            if (matchId || matchNo) {
+              return {
+                ...t,
+                Status: Number(data.status ?? 0),
+                totalAmount: Number(data.totalAmount ?? 0),
+                customerName: data.customerName ?? undefined,
+                pax: data.pax ?? undefined,
+                StartTime: data.startTime ?? undefined,
+                lockedByName: data.lockedByName ?? undefined,
+              };
+            }
+            return t;
+          })
+        );
+      }
       fetchTables();
     };
     socket.on("table_status_updated", handleTableSync);

@@ -1953,6 +1953,9 @@ router.post("/save", async (req, res) => {
     let customerRecord = null;
     let finalBillNo = null;
     let hasRemaining = false;
+    const eventsToEmit = [];
+    let resolvedTableNo = tableNo || null;
+    let resolvedSection = section || null;
 
     await runInTransaction(async (transaction) => {
       const validCashierGuid = await resolveCashierUserId(transaction, cashierId);
@@ -2065,10 +2068,14 @@ router.post("/save", async (req, res) => {
     if (cleanTableId) {
         const tableCheck = await transaction.request()
             .input("tid", sql.UniqueIdentifier, cleanTableId)
-            .query("SELECT CurrentOrderId, Pax, CustomerName FROM TableMaster WITH (UPDLOCK) WHERE TableId = @tid");
-        displayOrderId = tableCheck.recordset[0]?.CurrentOrderId;
-        tablePax = tableCheck.recordset[0]?.Pax;
-        tableCustomerName = tableCheck.recordset[0]?.CustomerName;
+            .query("SELECT TableNumber, DiningSection, CurrentOrderId, Pax, CustomerName FROM TableMaster WITH (UPDLOCK) WHERE TableId = @tid");
+        if (tableCheck.recordset.length > 0) {
+            displayOrderId = tableCheck.recordset[0]?.CurrentOrderId;
+            tablePax = tableCheck.recordset[0]?.Pax;
+            tableCustomerName = tableCheck.recordset[0]?.CustomerName;
+            if (!resolvedTableNo) resolvedTableNo = tableCheck.recordset[0]?.TableNumber || null;
+            if (!resolvedSection) resolvedSection = tableCheck.recordset[0]?.DiningSection || null;
+        }
         
         if (displayOrderId && displayOrderId.includes('-')) {
             dailySequence = parseInt(displayOrderId.split('-')[1]) || 0;
@@ -2926,6 +2933,9 @@ router.post("/save", async (req, res) => {
       if (tableId) {
         const cleanTableId = String(tableId).replace(/^\{|\}$/g, "").trim();
         const validTableGuid = toGuidOrNull(cleanTableId);
+        const sectionMap = { "1": "SECTION_1", "2": "SECTION_2", "3": "SECTION_3", "4": "TAKEAWAY" };
+        const normalizedSection = sectionMap[String(resolvedSection)] || (resolvedSection ? String(resolvedSection) : "SECTION_1");
+        const targetTableNo = resolvedTableNo || tableNo || cleanTableId;
         
         if (isSplitParsed && hasRemaining) {
           console.log(`[SAVE SALE] Split bill partial payment. Remaining Total: ${remainingTotal}`);
@@ -2937,19 +2947,29 @@ router.post("/save", async (req, res) => {
               .query("UPDATE [dbo].[TableMaster] SET TotalAmount = @total WHERE TableId = @tid");
           }
 
-          const io = req.app.get("io");
-          if (io) {
-            io.emit("table_status_updated", { tableId: cleanTableId.toLowerCase(), status: 1, totalAmount: remainingTotal });
-            io.emit("cart_updated", { tableId: cleanTableId.toLowerCase(), orderId: displayOrderId });
-          }
+          eventsToEmit.push({
+            event: "table_status_updated",
+            data: {
+              tableId: cleanTableId.toLowerCase(),
+              tableNo: targetTableNo,
+              section: normalizedSection,
+              status: 1,
+              totalAmount: remainingTotal,
+              outletId: businessUnitId,
+              restaurantId: businessUnitId,
+            }
+          });
+          eventsToEmit.push({
+            event: "cart_updated",
+            data: { tableId: cleanTableId.toLowerCase(), tableNo: targetTableNo, orderId: displayOrderId, outletId: businessUnitId }
+          });
         } else {
           // Fully paid or normal sale: complete cleanup
-          console.log(`[SAVE SALE] Cleaning up table: ${cleanTableId}`);
+          console.log(`[SAVE SALE] Cleaning up table: ${cleanTableId} (${targetTableNo})`);
           await transaction.request()
             .input("cartId", sql.NVarChar(128), cleanTableId)
             .query("DELETE FROM [dbo].[CartItems] WHERE [CartId] = @cartId");
             
-          const targetTableNo = tableNo || cleanTableId;
           if (validTableGuid) {
             await transaction.request()
               .input("tid", sql.UniqueIdentifier, validTableGuid)
@@ -2961,12 +2981,35 @@ router.post("/save", async (req, res) => {
               .query("UPDATE [dbo].[TableMaster] SET Status = 0, entry_status = NULL, TotalAmount = 0, StartTime = NULL, CurrentOrderId = NULL, CustomerName = NULL, Pax = NULL, ModifiedOn = GETDATE() WHERE TableNumber = @tno OR TableId = @tno");
           }
 
-          const io = req.app.get("io");
-          if (io) {
-            io.emit("table_status_updated", { tableId: cleanTableId.toLowerCase(), tableNo: targetTableNo, status: 0, totalAmount: 0, startTime: null, entryStatus: null, customerName: null, pax: null });
-            io.emit("cart_updated", { tableId: cleanTableId.toLowerCase(), tableNo: targetTableNo });
-            io.emit("order_closed", { tableId: cleanTableId.toLowerCase(), tableNo: targetTableNo, orderId: displayOrderId });
-          }
+          eventsToEmit.push({
+            event: "table_status_updated",
+            data: {
+              tableId: cleanTableId.toLowerCase(),
+              tableNo: targetTableNo,
+              section: normalizedSection,
+              status: 0,
+              totalAmount: 0,
+              startTime: null,
+              entryStatus: null,
+              customerName: null,
+              pax: null,
+              modifiedOn: new Date().toISOString(),
+              outletId: businessUnitId,
+              restaurantId: businessUnitId,
+            }
+          });
+          eventsToEmit.push({
+            event: "cart_updated",
+            data: { tableId: cleanTableId.toLowerCase(), tableNo: targetTableNo, outletId: businessUnitId }
+          });
+          eventsToEmit.push({
+            event: "order_closed",
+            data: { tableId: cleanTableId.toLowerCase(), tableNo: targetTableNo, orderId: displayOrderId, outletId: businessUnitId }
+          });
+          eventsToEmit.push({
+            event: "table_config_updated",
+            data: { tableId: cleanTableId.toLowerCase(), tableNo: targetTableNo, section: normalizedSection, status: 0, outletId: businessUnitId }
+          });
 
           // 🚀 CLEANUP MERGED SOURCE TABLES AS WELL (Bullet 5)
           try {
@@ -2990,7 +3033,6 @@ router.post("/save", async (req, res) => {
               `);
 
             if (childTablesRes.recordset && childTablesRes.recordset.length > 0) {
-              const sectionMap = { "1": "SECTION_1", "2": "SECTION_2", "3": "SECTION_3", "4": "TAKEAWAY" };
               for (const childTable of childTablesRes.recordset) {
                 const childTableId = String(childTable.TableId).replace(/^\{|\}$/g, "").trim();
                 const childTableNo = childTable.TableNumber;
@@ -3014,20 +3056,35 @@ router.post("/save", async (req, res) => {
                     .query("UPDATE [dbo].[TableMaster] SET Status = 0, entry_status = NULL, TotalAmount = 0, StartTime = NULL, CurrentOrderId = NULL, CustomerName = NULL, Pax = NULL, ModifiedOn = GETDATE() WHERE TableNumber = @tno OR TableId = @tno");
                 }
 
-                if (io) {
-                  io.emit("table_status_updated", { 
-                    tableId: childTableId.toLowerCase(), 
-                    status: 0, 
-                    totalAmount: 0,
-                    startTime: null,
+                eventsToEmit.push({
+                  event: "table_status_updated",
+                  data: {
+                    tableId: childTableId.toLowerCase(),
                     tableNo: childTableNo,
                     section: childSection,
+                    status: 0,
+                    totalAmount: 0,
+                    startTime: null,
+                    entryStatus: null,
                     customerName: null,
-                    pax: null
-                  });
-                  io.emit("cart_updated", { tableId: childTableId.toLowerCase(), tableNo: childTableNo });
-                  io.emit("order_closed", { tableId: childTableId.toLowerCase(), tableNo: childTableNo, orderId: displayOrderId });
-                }
+                    pax: null,
+                    modifiedOn: new Date().toISOString(),
+                    outletId: businessUnitId,
+                    restaurantId: businessUnitId,
+                  }
+                });
+                eventsToEmit.push({
+                  event: "cart_updated",
+                  data: { tableId: childTableId.toLowerCase(), tableNo: childTableNo, outletId: businessUnitId }
+                });
+                eventsToEmit.push({
+                  event: "order_closed",
+                  data: { tableId: childTableId.toLowerCase(), tableNo: childTableNo, orderId: displayOrderId, outletId: businessUnitId }
+                });
+                eventsToEmit.push({
+                  event: "table_config_updated",
+                  data: { tableId: childTableId.toLowerCase(), tableNo: childTableNo, section: childSection, status: 0, outletId: businessUnitId }
+                });
               }
             }
           } catch (childErr) {
@@ -3038,7 +3095,7 @@ router.post("/save", async (req, res) => {
           await transaction.request()
             .input("orderNo", sql.NVarChar(50), displayOrderId)
             .input("guidOid", sql.UniqueIdentifier, guidOrderId || DEFAULT_GUID)
-            .input("targetTno", sql.NVarChar(50), String(tableNo || cleanTableId))
+            .input("targetTno", sql.NVarChar(50), String(targetTableNo))
             .query(`
               UPDATE RestaurantOrderCur 
               SET isOrderClosed = 1, ModifiedOn = GETDATE() 
@@ -3075,6 +3132,15 @@ router.post("/save", async (req, res) => {
       }
 
     }, { name: "SaveSale", timeoutMs: 60000 });
+
+    // 🚀 POST-COMMIT REAL-TIME SYNC: Emit table and order status updates only after DB transaction is committed!
+    const io = req.app.get("io");
+    if (io && eventsToEmit.length > 0) {
+      console.log(`🔌 [SAVE SALE] Emitting ${eventsToEmit.length} post-commit real-time socket events:`, eventsToEmit.map(e => `${e.event}:${e.data.tableNo || e.data.tableId}`).join(", "));
+      for (const item of eventsToEmit) {
+        io.emit(item.event, item.data);
+      }
+    }
 
     // 🚀 POST-SAVE VALIDATION: Deep integrity check for Backoffice compatibility
     if (guidOrderId) {
@@ -3213,6 +3279,17 @@ router.post("/save", async (req, res) => {
          console.error(`[Rewards] ❌ Atomic process failed (non-blocking):`, rewardErr.message);
        }
      }
+
+    // ⚡ INSTANT PUSH: Push settled/closed order status to Remote DB asynchronously (1-Way Local -> Remote)
+    if (displayOrderId || orderId) {
+      const targetOid = displayOrderId || orderId;
+      setImmediate(() => {
+        try {
+          const { pushActiveOrderToRemote } = require("../services/syncService");
+          pushActiveOrderToRemote(targetOid).catch(() => {});
+        } catch (_) {}
+      });
+    }
 
     res.json({
       success: true,

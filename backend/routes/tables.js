@@ -161,14 +161,20 @@ router.post("/lock-persistent", async (req, res) => {
       });
     }
 
-    // ⚡ Background 2-way table & order push to Remote DB
-    try {
-      const { getPool, getRemotePool, isRemoteOnline } = require("../config/db");
-      const { syncOperationalStateFromRemote } = require("../services/autoProvisionLocalDb");
-      if (isRemoteOnline()) {
-        syncOperationalStateFromRemote(getRemotePool(), getPool()).catch(() => {});
-      }
-    } catch (_) {}
+    // ⚡ Asynchronously push table unlock to Remote DB
+    setImmediate(async () => {
+      try {
+        const { getRemotePool, isRemoteOnline } = require("../config/db");
+        if (isRemoteOnline && isRemoteOnline()) {
+          const remotePool = getRemotePool();
+          if (remotePool) {
+            await remotePool.request()
+              .input("tblNo", cleanId)
+              .query(`UPDATE TableMaster SET Status = 0, LockedByName = NULL, ModifiedOn = GETDATE() WHERE TableNumber = @tblNo`).catch(() => {});
+          }
+        }
+      } catch (_) {}
+    });
 
     res.json({ success: true });
   } catch (err) {

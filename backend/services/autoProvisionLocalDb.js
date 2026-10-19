@@ -596,7 +596,7 @@ const MASTER_CATALOG_TABLES = [
 ];
 
 let lastMasterCatalogSyncTime = 0;
-const MASTER_CATALOG_SYNC_INTERVAL_MS = 20000; // Check catalog every 20 seconds
+const MASTER_CATALOG_SYNC_INTERVAL_MS = 600000; // Check catalog every 10 minutes (prevents WAN congestion)
 
 // 2-Way Master Catalog Synchronizer: Checks every remote and local record, pushes and pulls differences
 async function syncMasterCatalog2Way(remotePool, localPool) {
@@ -828,6 +828,192 @@ async function hydrateAllTablesFromRemote(remotePool, localPool) {
   }
 }
 
+let remoteOrderColsCache = null;
+let remoteDetailColsCache = null;
+
+/**
+ * ⚡ INSTANT 1-WAY PUSH: Local DB -> Remote DB
+ * Instantly synchronizes an active or modified order and all its items
+ * from Local DB's RestaurantOrderCur & RestaurantOrderDetailCur to Remote DB.
+ * Strictly 1-way: NEVER pulls from Remote to Local.
+ */
+async function pushActiveOrderToRemote(orderIdOrNumber, customRemotePool, customLocalPool) {
+  if (!orderIdOrNumber) return;
+  try {
+    const { getPool, getRemotePool, isRemoteOnline } = require("../config/db");
+    const remotePool = customRemotePool || (isRemoteOnline() ? getRemotePool() : null);
+    const localPool = customLocalPool || getPool();
+
+    if (!remotePool || !localPool) return;
+
+    // Cache Remote column names so we never insert non-existent columns
+    if (!remoteOrderColsCache) {
+      const oCols = await remotePool.request().query("SELECT LOWER(COLUMN_NAME) AS col FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'RestaurantOrderCur'").catch(() => ({ recordset: [] }));
+      if (oCols.recordset.length > 0) remoteOrderColsCache = new Set(oCols.recordset.map(r => r.col));
+    }
+    if (!remoteDetailColsCache) {
+      const dCols = await remotePool.request().query("SELECT LOWER(COLUMN_NAME) AS col FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'RestaurantOrderDetailCur'").catch(() => ({ recordset: [] }));
+      if (dCols.recordset.length > 0) remoteDetailColsCache = new Set(dCols.recordset.map(r => r.col));
+    }
+
+    const idStr = String(orderIdOrNumber).replace(/^\{|\}$/g, "").trim();
+
+    // 1. Fetch Order Header from Local DB
+    const localOrderRes = await localPool.request()
+      .input("idStr", idStr)
+      .query(`
+        SELECT TOP 1 * FROM RestaurantOrderCur WITH (NOLOCK)
+        WHERE OrderId = TRY_CAST(@idStr AS UNIQUEIDENTIFIER) OR OrderNumber = @idStr
+        ORDER BY ModifiedOn DESC
+      `).catch(() => ({ recordset: [] }));
+
+    let lo = localOrderRes.recordset[0];
+
+    // If order was already closed/settled and moved out of Cur, check RestaurantOrder
+    if (!lo) {
+      const closedOrderRes = await localPool.request()
+        .input("idStr", idStr)
+        .query(`
+          SELECT TOP 1 * FROM RestaurantOrder WITH (NOLOCK)
+          WHERE OrderId = TRY_CAST(@idStr AS UNIQUEIDENTIFIER) OR OrderNumber = @idStr
+        `).catch(() => ({ recordset: [] }));
+      const clo = closedOrderRes.recordset[0];
+      if (clo) {
+        // Mark closed on remote
+        await remotePool.request()
+          .input("oid", clo.OrderId)
+          .query(`
+            UPDATE RestaurantOrderCur 
+            SET isOrderClosed = 1, StatusCode = 3, ModifiedOn = GETDATE() 
+            WHERE OrderId = @oid
+          `).catch(() => {});
+        return;
+      }
+      return;
+    }
+
+    const orderId = lo.OrderId;
+
+    // 2. Push Header to Remote DB
+    const keys = Object.keys(lo).filter(k => lo[k] !== null && (!remoteOrderColsCache || remoteOrderColsCache.has(k.toLowerCase())));
+    if (keys.length > 0) {
+      const colList = keys.map(k => `[${k}]`).join(", ");
+      const req = remotePool.request();
+      keys.forEach((k, idx) => {
+        req.input(`lp_${idx}`, lo[k]);
+      });
+      const valList = keys.map((k, idx) => `@lp_${idx}`).join(", ");
+      const updateAssignments = keys
+        .map((k, idx) => ({ key: k, idx }))
+        .filter(item => item.key.toLowerCase() !== 'orderid')
+        .map(item => `[${item.key}] = @lp_${item.idx}`)
+        .join(", ");
+      req.input("lp_OrderId", orderId);
+
+      await req.query(`
+        IF NOT EXISTS (SELECT 1 FROM RestaurantOrderCur WHERE OrderId = @lp_OrderId)
+        BEGIN
+          INSERT INTO RestaurantOrderCur (${colList}) VALUES (${valList})
+        END
+        ELSE
+        BEGIN
+          UPDATE RestaurantOrderCur SET ${updateAssignments} WHERE OrderId = @lp_OrderId
+        END
+      `).catch((err) => console.warn(`⚠️ [Instant-Push] Header warning (${orderId}):`, err.message));
+    }
+
+    // 3. Fetch all line items from Local DB RestaurantOrderDetailCur
+    const localDetailsRes = await localPool.request()
+      .input("oid", orderId)
+      .query(`
+        SELECT * FROM RestaurantOrderDetailCur WITH (NOLOCK) 
+        WHERE OrderId = @oid AND StatusCode <> 0
+      `).catch(() => ({ recordset: [] }));
+
+    const localDetails = localDetailsRes.recordset;
+    const localDetailIds = localDetails.map(d => d.OrderDetailId);
+
+    // 4. Sync details to Remote DB
+    if (localDetailIds.length > 0) {
+      const cleanDetailIds = localDetailIds.map(id => `'${id}'`).join(",");
+      await remotePool.request().query(`
+        DELETE FROM RestaurantOrderDetailCur 
+        WHERE OrderId = '${orderId}' AND StatusCode = 1 AND OrderDetailId NOT IN (${cleanDetailIds})
+      `).catch(() => {});
+    } else {
+      await remotePool.request().query(`
+        DELETE FROM RestaurantOrderDetailCur 
+        WHERE OrderId = '${orderId}' AND StatusCode = 1
+      `).catch(() => {});
+    }
+
+    for (const lod of localDetails) {
+      const dKeys = Object.keys(lod).filter(k => lod[k] !== null && (!remoteDetailColsCache || remoteDetailColsCache.has(k.toLowerCase())));
+      if (dKeys.length === 0) continue;
+      const dColList = dKeys.map(k => `[${k}]`).join(", ");
+      const dReq = remotePool.request();
+      dKeys.forEach((k, idx) => {
+        dReq.input(`ldp_${idx}`, lod[k]);
+      });
+      const dValList = dKeys.map((k, idx) => `@ldp_${idx}`).join(", ");
+      const dUpdateAssignments = dKeys
+        .map((k, idx) => ({ key: k, idx }))
+        .filter(item => item.key.toLowerCase() !== 'orderdetailid')
+        .map(item => `[${item.key}] = @ldp_${item.idx}`)
+        .join(", ");
+      dReq.input("ldp_OrderDetailId", lod.OrderDetailId);
+
+      await dReq.query(`
+        IF NOT EXISTS (SELECT 1 FROM RestaurantOrderDetailCur WHERE OrderDetailId = @ldp_OrderDetailId)
+        BEGIN
+          INSERT INTO RestaurantOrderDetailCur (${dColList}) VALUES (${dValList})
+        END
+        ELSE
+        BEGIN
+          UPDATE RestaurantOrderDetailCur SET ${dUpdateAssignments} WHERE OrderDetailId = @ldp_OrderDetailId
+        END
+      `).catch((err) => console.warn(`⚠️ [Instant-Push] Detail warning (${lod.OrderDetailId}):`, err.message));
+    }
+
+    // 5. Also push TableMaster for the table if assigned
+    const tableIdentifier = lo.Tableno || lo.TableNumber;
+    if (tableIdentifier) {
+      const tblRes = await localPool.request()
+        .input("tblNo", String(tableIdentifier).trim())
+        .query(`
+          SELECT TOP 1 TableNumber, Status, StartTime, TotalAmount, CurrentOrderId, CustomerName, Pax, LockedByName, entry_status, ModifiedOn
+          FROM TableMaster WITH (NOLOCK)
+          WHERE TableNumber = @tblNo
+        `).catch(() => ({ recordset: [] }));
+      const tbl = tblRes.recordset[0];
+      if (tbl) {
+        await remotePool.request()
+          .input("tblNo", tbl.TableNumber)
+          .input("status", tbl.Status !== undefined ? tbl.Status : 0)
+          .input("startTime", tbl.StartTime)
+          .input("totalAmt", tbl.TotalAmount || 0)
+          .input("currOrder", tbl.CurrentOrderId)
+          .input("custName", tbl.CustomerName)
+          .input("pax", tbl.Pax)
+          .input("lockedBy", tbl.LockedByName)
+          .input("entryStatus", tbl.entry_status)
+          .input("modifiedOn", tbl.ModifiedOn || new Date())
+          .query(`
+            UPDATE TableMaster
+            SET Status = @status, StartTime = @startTime, TotalAmount = @totalAmt,
+                CurrentOrderId = @currOrder, CustomerName = @custName, Pax = @pax,
+                LockedByName = @lockedBy, entry_status = @entryStatus, ModifiedOn = @modifiedOn
+            WHERE TableNumber = @tblNo
+          `).catch(() => {});
+      }
+    }
+
+    console.log(`⚡ [Instant-Push] Pushed Order ${lo.OrderNumber || orderId} (${localDetails.length} items) Local -> Remote DB`);
+  } catch (err) {
+    console.warn(`⚠️ [Instant-Push] Error pushing order ${orderIdOrNumber}:`, err.message);
+  }
+}
+
 // Helper: Sync active floor plan, active open orders, and Day-Start sequence from Remote DB
 async function syncOperationalStateFromRemote(remotePool, localPool) {
   try {
@@ -884,7 +1070,8 @@ async function syncOperationalStateFromRemote(remotePool, localPool) {
       await syncMasterCatalog2Way(remotePool, localPool);
     }
 
-    // 0C. 2-Way Delta Sync for Operational Tables (Attendance, Staff, Customer Credit, Invoices & Settlements)
+    // 0C. Operational Table Sync for Non-Transactional Entities (Attendance, Staff, Customer Credit & Sequences)
+    // (Note: Sales, Invoices, Settlements & Payment details are already pushed 1-way by salesPushService)
     await syncTable2Way(remotePool, localPool, "TimeEntry", ["Userid", "ClockinTime"], 50);
     await syncTable2Way(remotePool, localPool, "DailyAttendance", ["DeliveryPersonId", "StartDateTime"], 50);
     await syncTable2Way(remotePool, localPool, "DailyAttendanceLog", ["DeliveryPersonId", "StartDateTime"], 50);
@@ -892,14 +1079,6 @@ async function syncOperationalStateFromRemote(remotePool, localPool) {
     await syncTable2Way(remotePool, localPool, "CreditCustomerMaster", "CustomerId", 50);
     await syncTable2Way(remotePool, localPool, "CustomerCreditTransactions", "TransactionId", 50);
     await syncTable2Way(remotePool, localPool, "OrderSequences", ["RestaurantId", "SequenceDate"], 50);
-    await syncTable2Way(remotePool, localPool, "SettlementHeader", "SettlementID", 50);
-    await syncTable2Way(remotePool, localPool, "SettlementItemDetail", "OrderDetailId", 50);
-    await syncTable2Way(remotePool, localPool, "SettlementTotalSales", ["SettlementID", "PayMode"], 50);
-    await syncTable2Way(remotePool, localPool, "PaymentDetailCur", "PaymentId", 50);
-    await syncTable2Way(remotePool, localPool, "PaymentDetail", "PaymentId", 50);
-    await syncTable2Way(remotePool, localPool, "RestaurantInvoice", "RestaurantBillId", 50);
-    await syncTable2Way(remotePool, localPool, "RestaurantOrder", "OrderId", 50);
-    await syncTable2Way(remotePool, localPool, "RestaurantOrderDetail", "OrderDetailId", 50);
 
     // 1. Sync DailyOrderSequenceNumber (Business Day Start/End status)
     const remoteSeq = await remotePool.request().query("SELECT TOP 50 * FROM DailyOrderSequenceNumber");
@@ -915,111 +1094,37 @@ async function syncOperationalStateFromRemote(remotePool, localPool) {
         `).catch(() => {});
     }
 
-    // 2. 2-Way Floor Plan Table State Sync (Timestamp-based: Remote <-> Local)
-    const remoteTables = await remotePool.request().query(`
-      SELECT TableNumber, Status, StartTime, TotalAmount, CurrentOrderId, CustomerName, Pax, LockedByName, entry_status, ModifiedOn
-      FROM TableMaster
-    `);
+    // 2. 1-Way Floor Plan Table State Sync: Push Local DB Table State -> Remote DB ONLY
+    // (Remote -> Local pull is completely DISABLED so Remote DB never resets or overrides local dining floor status)
     const localTables = await localPool.request().query(`
       SELECT TableNumber, Status, StartTime, TotalAmount, CurrentOrderId, CustomerName, Pax, LockedByName, entry_status, ModifiedOn
-      FROM TableMaster
-    `);
-
-    const localTableMap = new Map(localTables.recordset.map(t => [t.TableNumber, t]));
-
-    // Pre-fetch all closed/settled order numbers locally so we never allow stale remote tables to resurrect them
-    const closedOrdersCheckRes = await localPool.request().query(`
-      SELECT OrderNumber FROM RestaurantOrderCur WITH (NOLOCK) WHERE isOrderClosed = 1
-      UNION
-      SELECT OrderNumber FROM RestaurantOrder WITH (NOLOCK)
-      UNION
-      SELECT BillNo AS OrderNumber FROM SettlementHeader WITH (NOLOCK)
+      FROM TableMaster WITH (NOLOCK)
     `).catch(() => ({ recordset: [] }));
-    const localSettledOrClosedOrderNos = new Set(closedOrdersCheckRes.recordset.map(o => String(o.OrderNumber || '').trim().toLowerCase()).filter(Boolean));
 
-    for (const rTbl of remoteTables.recordset) {
-      const lTbl = localTableMap.get(rTbl.TableNumber);
-
-      // 🛡️ SHIELD: If Remote thinks table is occupied with an order that is already settled or closed locally,
-      // Remote DB is stale! Clear Remote DB table to Status = 0 so it never overwrites local.
-      if (rTbl.Status > 0 && rTbl.CurrentOrderId) {
-        const orderNoStr = String(rTbl.CurrentOrderId).trim().toLowerCase();
-        if (localSettledOrClosedOrderNos.has(orderNoStr) || (lTbl && lTbl.Status === 0)) {
-          await remotePool.request()
-            .input("tblNo", rTbl.TableNumber)
-            .query(`
-              UPDATE TableMaster
-              SET Status = 0, entry_status = NULL, TotalAmount = 0, StartTime = NULL, CurrentOrderId = NULL, CustomerName = NULL, Pax = NULL, ModifiedOn = GETDATE()
-              WHERE TableNumber = @tblNo
-            `).catch(() => {});
-          continue;
-        }
-      }
-
-      const rTime = rTbl.ModifiedOn ? new Date(rTbl.ModifiedOn).getTime() : 0;
-      const lTime = lTbl && lTbl.ModifiedOn ? new Date(lTbl.ModifiedOn).getTime() : 0;
-
-      if (rTime > lTime) {
-        // Remote is newer -> Update Local DB
-        await localPool.request()
-          .input("tblNo", rTbl.TableNumber)
-          .input("status", rTbl.Status)
-          .input("startTime", rTbl.StartTime)
-          .input("totalAmt", rTbl.TotalAmount || 0)
-          .input("currOrder", rTbl.CurrentOrderId)
-          .input("custName", rTbl.CustomerName)
-          .input("pax", rTbl.Pax)
-          .input("lockedBy", rTbl.LockedByName)
-          .input("entryStatus", rTbl.entry_status)
-          .input("modifiedOn", rTbl.ModifiedOn)
-          .query(`
-            UPDATE TableMaster
-            SET Status = @status, StartTime = @startTime, TotalAmount = @totalAmt,
-                CurrentOrderId = @currOrder, CustomerName = @custName, Pax = @pax,
-                LockedByName = @lockedBy, entry_status = @entryStatus, ModifiedOn = @modifiedOn
-            WHERE TableNumber = @tblNo
-          `).catch(() => {});
-      } else if (lTime > rTime && lTbl) {
-        // Local is newer -> Push to Remote DB
-        await remotePool.request()
-          .input("tblNo", lTbl.TableNumber)
-          .input("status", lTbl.Status)
-          .input("startTime", lTbl.StartTime)
-          .input("totalAmt", lTbl.TotalAmount || 0)
-          .input("currOrder", lTbl.CurrentOrderId)
-          .input("custName", lTbl.CustomerName)
-          .input("pax", lTbl.Pax)
-          .input("lockedBy", lTbl.LockedByName)
-          .input("entryStatus", lTbl.entry_status)
-          .input("modifiedOn", lTbl.ModifiedOn)
-          .query(`
-            UPDATE TableMaster
-            SET Status = @status, StartTime = @startTime, TotalAmount = @totalAmt,
-                CurrentOrderId = @currOrder, CustomerName = @custName, Pax = @pax,
-                LockedByName = @lockedBy, entry_status = @entryStatus, ModifiedOn = @modifiedOn
-            WHERE TableNumber = @tblNo
-          `).catch(() => {});
-      }
-    }
-
-    // 3. 2-Way Active Cart & Open Order Details Sync (CartItems & RestaurantOrderDetailCur)
-    // A. Sync CartItems from Remote DB -> Local DB
-    const remoteCartItems = await remotePool.request().query("SELECT * FROM CartItems").catch(() => ({ recordset: [] }));
-    for (const cItem of remoteCartItems.recordset) {
-      await localPool.request()
-        .input("id", cItem.Id)
-        .input("cartId", cItem.CartId)
-        .input("payload", cItem.CartPayload)
+    for (const lTbl of localTables.recordset) {
+      await remotePool.request()
+        .input("tblNo", lTbl.TableNumber)
+        .input("status", lTbl.Status !== undefined ? lTbl.Status : 0)
+        .input("startTime", lTbl.StartTime)
+        .input("totalAmt", lTbl.TotalAmount || 0)
+        .input("currOrder", lTbl.CurrentOrderId)
+        .input("custName", lTbl.CustomerName)
+        .input("pax", lTbl.Pax)
+        .input("lockedBy", lTbl.LockedByName)
+        .input("entryStatus", lTbl.entry_status)
+        .input("modifiedOn", lTbl.ModifiedOn || new Date())
         .query(`
-          IF EXISTS (SELECT 1 FROM CartItems WHERE Id = @id)
-            UPDATE CartItems SET CartId = @cartId, CartPayload = @payload, UpdatedAt = GETDATE() WHERE Id = @id;
-          ELSE
-            INSERT INTO CartItems (Id, CartId, CartPayload, UpdatedAt) VALUES (@id, @cartId, @payload, GETDATE());
+          UPDATE TableMaster
+          SET Status = @status, StartTime = @startTime, TotalAmount = @totalAmt,
+              CurrentOrderId = @currOrder, CustomerName = @custName, Pax = @pax,
+              LockedByName = @lockedBy, entry_status = @entryStatus, ModifiedOn = @modifiedOn
+          WHERE TableNumber = @tblNo
         `).catch(() => {});
     }
 
-    // B. Sync CartItems from Local DB -> Remote DB
-    const localCartItems = await localPool.request().query("SELECT * FROM CartItems").catch(() => ({ recordset: [] }));
+    // 3. 1-Way CartItems Sync: Push Local DB -> Remote DB ONLY
+    // (Remote -> Local cart pull is completely DISABLED so stale remote carts never pollute local tables)
+    const localCartItems = await localPool.request().query("SELECT * FROM CartItems WITH (NOLOCK)").catch(() => ({ recordset: [] }));
     for (const lItem of localCartItems.recordset) {
       await remotePool.request()
         .input("id", lItem.Id)
@@ -1033,134 +1138,15 @@ async function syncOperationalStateFromRemote(remotePool, localPool) {
         `).catch(() => {});
     }
 
-    // 4. 2-Way Sync Active Open Orders & Line Items (RestaurantOrderCur & RestaurantOrderDetailCur)
-    // Pre-fetch all closed/settled orders on Local DB
-    const localClosedOrdersCheck = await localPool.request().query(`
-      SELECT OrderId, OrderNumber FROM RestaurantOrderCur WITH (NOLOCK) WHERE isOrderClosed = 1
-      UNION
-      SELECT OrderId, OrderNumber FROM RestaurantOrder WITH (NOLOCK)
-      UNION
-      SELECT CAST(OrderId AS UNIQUEIDENTIFIER) AS OrderId, BillNo AS OrderNumber FROM SettlementHeader WITH (NOLOCK)
-    `).catch(() => ({ recordset: [] }));
-    const localClosedOrderIds = new Set(localClosedOrdersCheck.recordset.map(o => String(o.OrderId || '').toLowerCase()).filter(Boolean));
-    const localClosedOrderNos = new Set(localClosedOrdersCheck.recordset.map(o => String(o.OrderNumber || '').trim().toLowerCase()).filter(Boolean));
+    // 4. 1-WAY SYNC: Active Open Orders & Line Items (Local DB -> Remote DB ONLY)
+    // 🛡️ REMOTE PULL DISABLED: Never pull open orders or details from Remote DB into Local DB!
+    // Local DB is the sole authoritative master of on-ground orders and item lists.
 
-    // A. Sync from Remote DB -> Local DB (only pull new orders that do not exist locally)
-    const remoteOrders = await remotePool.request().query(`
-      SELECT TOP 100 * FROM RestaurantOrderCur WITH (NOLOCK) WHERE (isOrderClosed = 0 OR isOrderClosed IS NULL)
-    `).catch(() => ({ recordset: [] }));
-
-    const localOrdersMapRes = await localPool.request().query(`
-      SELECT OrderId, ModifiedOn FROM RestaurantOrderCur WITH (NOLOCK) WHERE (isOrderClosed = 0 OR isOrderClosed IS NULL)
-    `).catch(() => ({ recordset: [] }));
-    const localModifiedMap = new Map(localOrdersMapRes.recordset.map(o => [o.OrderId, o.ModifiedOn ? new Date(o.ModifiedOn).getTime() : 0]));
-
-    for (const ro of remoteOrders.recordset) {
-      const roIdStr = String(ro.OrderId || '').toLowerCase();
-      const roNoStr = String(ro.OrderNumber || '').trim().toLowerCase();
-
-      // 🛡️ CRITICAL LOCK: If this order has already been closed or settled on Local DB,
-      // Remote DB is holding a stale open order! DO NOT re-open it on Local DB!
-      // Instead, close it on Remote DB to keep both sides clean.
-      if (localClosedOrderIds.has(roIdStr) || localClosedOrderNos.has(roNoStr)) {
-        await remotePool.request()
-          .input("oid", ro.OrderId)
-          .query(`UPDATE RestaurantOrderCur SET isOrderClosed = 1, StatusCode = 3, ModifiedOn = GETDATE() WHERE OrderId = @oid AND (isOrderClosed = 0 OR isOrderClosed IS NULL)`)
-          .catch(() => {});
-        continue;
-      }
-
-      // 🛡️ LOCK SHIELD: If this order already exists on Local DB, Local POS is the active master!
-      // Do not overwrite or delete local line items from remote.
-      if (localModifiedMap.has(ro.OrderId)) continue;
-
-      const keys = Object.keys(ro).filter(k => ro[k] !== null);
-      if (keys.length === 0) continue;
-      const colList = keys.map(k => `[${k}]`).join(", ");
-      const req = localPool.request();
-      const valList = keys.map((k, idx) => {
-        const paramName = `p_${idx}`;
-        req.input(paramName, ro[k]);
-        return `@${paramName}`;
-      }).join(", ");
-      const updateAssignments = keys
-        .map((k, idx) => ({ key: k, idx }))
-        .filter(item => item.key.toLowerCase() !== 'orderid')
-        .map(item => `[${item.key}] = @p_${item.idx}`)
-        .join(", ");
-      req.input("p_OrderId", ro.OrderId);
-
-      await req.query(`
-        IF NOT EXISTS (SELECT 1 FROM RestaurantOrderCur WHERE OrderId = @p_OrderId)
-        BEGIN
-          INSERT INTO RestaurantOrderCur (${colList}) VALUES (${valList})
-        END
-        ELSE
-        BEGIN
-          UPDATE RestaurantOrderCur SET ${updateAssignments} WHERE OrderId = @p_OrderId
-        END
-      `).catch((err) => console.warn(`⚠️ [Auto-Provision] Remote->Local header pull warning (${ro.OrderId}):`, err.message));
-
-      const remoteOrderDetails = await remotePool.request()
-        .input("oid", ro.OrderId)
-        .query("SELECT * FROM RestaurantOrderDetailCur WHERE OrderId = @oid AND StatusCode <> 0").catch(() => ({ recordset: [] }));
-
-      const remoteDetailIds = remoteOrderDetails.recordset.map(d => d.OrderDetailId);
-      if (remoteDetailIds.length > 0) {
-        const cleanDetailIds = remoteDetailIds.map(id => `'${id}'`).join(",");
-        await localPool.request().query(`
-          DELETE FROM RestaurantOrderDetailCur 
-          WHERE OrderId = '${ro.OrderId}' AND StatusCode = 1 AND OrderDetailId NOT IN (${cleanDetailIds})
-        `).catch(() => {});
-      }
-
-      for (const rod of remoteOrderDetails.recordset) {
-        const dKeys = Object.keys(rod).filter(k => rod[k] !== null);
-        if (dKeys.length === 0) continue;
-        const dColList = dKeys.map(k => `[${k}]`).join(", ");
-        const dReq = localPool.request();
-        const dValList = dKeys.map((k, idx) => {
-          const paramName = `dp_${idx}`;
-          dReq.input(paramName, rod[k]);
-          return `@${paramName}`;
-        }).join(", ");
-        const dUpdateAssignments = dKeys
-          .map((k, idx) => ({ key: k, idx }))
-          .filter(item => item.key.toLowerCase() !== 'orderdetailid')
-          .map(item => `[${item.key}] = @dp_${item.idx}`)
-          .join(", ");
-        dReq.input("dp_OrderDetailId", rod.OrderDetailId);
-
-        await dReq.query(`
-          IF NOT EXISTS (SELECT 1 FROM RestaurantOrderDetailCur WHERE OrderDetailId = @dp_OrderDetailId)
-          BEGIN
-            INSERT INTO RestaurantOrderDetailCur (${dColList}) VALUES (${dValList})
-          END
-          ELSE
-          BEGIN
-            UPDATE RestaurantOrderDetailCur SET ${dUpdateAssignments} WHERE OrderDetailId = @dp_OrderDetailId
-          END
-        `).catch((err) => console.warn(`⚠️ [Auto-Provision] Remote->Local detail pull warning (${rod.OrderDetailId}):`, err.message));
-      }
-    }
-
-    // A2. Sync Closed Status from Remote DB -> Local DB (close Local orders if closed on Remote by exact OrderId)
-    const remoteClosedOrders = await remotePool.request().query(`
-      SELECT OrderId FROM RestaurantOrderCur WHERE isOrderClosed = 1 AND ModifiedOn >= DATEADD(DAY, -1, GETDATE())
-    `).catch(() => ({ recordset: [] }));
-    for (const rco of remoteClosedOrders.recordset) {
-      if (rco.OrderId) {
-        await localPool.request().query(`
-          UPDATE RestaurantOrderCur SET isOrderClosed = 1, ModifiedOn = GETDATE() WHERE OrderId = '${rco.OrderId}' AND (isOrderClosed = 0 OR isOrderClosed IS NULL)
-        `).catch(() => {});
-      }
-    }
-
-    // B2. Sync Closed Status from Local DB -> Remote DB (close Remote orders if closed on Local)
+    // A. Sync Closed Status from Local DB -> Remote DB (close Remote orders if closed on Local)
     const localClosedOrders = await localPool.request().query(`
-      SELECT OrderId FROM RestaurantOrderCur WHERE isOrderClosed = 1 AND ModifiedOn >= DATEADD(DAY, -1, GETDATE())
+      SELECT OrderId FROM RestaurantOrderCur WITH (NOLOCK) WHERE isOrderClosed = 1 AND ModifiedOn >= DATEADD(DAY, -1, GETDATE())
       UNION
-      SELECT OrderId FROM RestaurantOrder WHERE ModifiedOn >= DATEADD(DAY, -1, GETDATE())
+      SELECT OrderId FROM RestaurantOrder WITH (NOLOCK) WHERE ModifiedOn >= DATEADD(DAY, -1, GETDATE())
     `).catch(() => ({ recordset: [] }));
     for (const lco of localClosedOrders.recordset) {
       if (lco.OrderId) {
@@ -1170,99 +1156,18 @@ async function syncOperationalStateFromRemote(remotePool, localPool) {
       }
     }
 
-    // B. Sync from Local DB -> Remote DB (Push Local Active Carts/Orders to Remote Cloud DB)
+    // B. Push Local Active Open Orders & Details -> Remote DB (sweep recently modified active orders)
     const localOrders = await localPool.request().query(`
-      SELECT TOP 100 * FROM RestaurantOrderCur WITH (NOLOCK) WHERE (isOrderClosed = 0 OR isOrderClosed IS NULL)
+      SELECT TOP 10 OrderId FROM RestaurantOrderCur WITH (NOLOCK) 
+      WHERE (isOrderClosed = 0 OR isOrderClosed IS NULL)
+      ORDER BY ModifiedOn DESC
     `).catch(() => ({ recordset: [] }));
-
-    const remoteOrdersMapRes = await remotePool.request().query(`
-      SELECT OrderId, ModifiedOn FROM RestaurantOrderCur WITH (NOLOCK) WHERE (isOrderClosed = 0 OR isOrderClosed IS NULL)
-    `).catch(() => ({ recordset: [] }));
-    const remoteModifiedMap = new Map(remoteOrdersMapRes.recordset.map(o => [o.OrderId, o.ModifiedOn ? new Date(o.ModifiedOn).getTime() : 0]));
 
     for (const lo of localOrders.recordset) {
-      const lTime = lo.ModifiedOn ? new Date(lo.ModifiedOn).getTime() : 0;
-      const rTime = remoteModifiedMap.get(lo.OrderId) || 0;
-
-      // Skip if Remote DB is already up-to-date or newer
-      if (rTime >= lTime && rTime > 0) continue;
-
-      const keys = Object.keys(lo).filter(k => lo[k] !== null);
-      if (keys.length === 0) continue;
-      const colList = keys.map(k => `[${k}]`).join(", ");
-      const req = remotePool.request();
-      const valList = keys.map((k, idx) => {
-        const paramName = `lp_${idx}`;
-        req.input(paramName, lo[k]);
-        return `@${paramName}`;
-      }).join(", ");
-      const updateAssignments = keys
-        .map((k, idx) => ({ key: k, idx }))
-        .filter(item => item.key.toLowerCase() !== 'orderid')
-        .map(item => `[${item.key}] = @lp_${item.idx}`)
-        .join(", ");
-      req.input("lp_OrderId", lo.OrderId);
-
-      await req.query(`
-        IF NOT EXISTS (SELECT 1 FROM RestaurantOrderCur WHERE OrderId = @lp_OrderId)
-        BEGIN
-          INSERT INTO RestaurantOrderCur (${colList}) VALUES (${valList})
-        END
-        ELSE
-        BEGIN
-          UPDATE RestaurantOrderCur SET ${updateAssignments} WHERE OrderId = @lp_OrderId
-        END
-      `).catch((err) => console.warn(`⚠️ [Auto-Provision] Local->Remote header push warning (${lo.OrderId}):`, err.message));
-
-      const localOrderDetails = await localPool.request()
-        .input("oid", lo.OrderId)
-        .query("SELECT * FROM RestaurantOrderDetailCur WITH (NOLOCK) WHERE OrderId = @oid AND StatusCode <> 0").catch(() => ({ recordset: [] }));
-
-      const localDetailIds = localOrderDetails.recordset.map(d => d.OrderDetailId);
-      if (localDetailIds.length > 0) {
-        const cleanDetailIds = localDetailIds.map(id => `'${id}'`).join(",");
-        await remotePool.request().query(`
-          DELETE FROM RestaurantOrderDetailCur 
-          WHERE OrderId = '${lo.OrderId}' AND StatusCode = 1 AND OrderDetailId NOT IN (${cleanDetailIds})
-        `).catch(() => {});
-      } else {
-        await remotePool.request().query(`
-          DELETE FROM RestaurantOrderDetailCur 
-          WHERE OrderId = '${lo.OrderId}' AND StatusCode = 1
-        `).catch(() => {});
-      }
-
-      for (const lod of localOrderDetails.recordset) {
-        const dKeys = Object.keys(lod).filter(k => lod[k] !== null);
-        if (dKeys.length === 0) continue;
-        const dColList = dKeys.map(k => `[${k}]`).join(", ");
-        const dReq = remotePool.request();
-        const dValList = dKeys.map((k, idx) => {
-          const paramName = `ldp_${idx}`;
-          dReq.input(paramName, lod[k]);
-          return `@${paramName}`;
-        }).join(", ");
-        const dUpdateAssignments = dKeys
-          .map((k, idx) => ({ key: k, idx }))
-          .filter(item => item.key.toLowerCase() !== 'orderdetailid')
-          .map(item => `[${item.key}] = @ldp_${item.idx}`)
-          .join(", ");
-        dReq.input("ldp_OrderDetailId", lod.OrderDetailId);
-
-        await dReq.query(`
-          IF NOT EXISTS (SELECT 1 FROM RestaurantOrderDetailCur WHERE OrderDetailId = @ldp_OrderDetailId)
-          BEGIN
-            INSERT INTO RestaurantOrderDetailCur (${dColList}) VALUES (${dValList})
-          END
-          ELSE
-          BEGIN
-            UPDATE RestaurantOrderDetailCur SET ${dUpdateAssignments} WHERE OrderDetailId = @ldp_OrderDetailId
-          END
-        `).catch((err) => console.warn(`⚠️ [Auto-Provision] Local->Remote detail push warning (${lod.OrderDetailId}):`, err.message));
-      }
+      await pushActiveOrderToRemote(lo.OrderId, remotePool, localPool);
     }
 
-    console.log("⚡ [Auto-Provision] Operational state, carts & active open orders synced!");
+    console.log("⚡ [Auto-Provision] Operational state, carts & active open orders synced (1-way Local -> Remote push)!");
   } catch (err) {
     console.warn("⚠️ [Auto-Provision] Operational state sync warning:", err.message);
   }
@@ -1402,5 +1307,6 @@ module.exports = {
   syncSchemaFromRemoteToLocal,
   syncOperationalStateFromRemote,
   syncMasterCatalog2Way,
-  syncTable2Way
+  syncTable2Way,
+  pushActiveOrderToRemote
 };

@@ -93,13 +93,18 @@ function copyDirRecursive(src, dest, ignoreList = ['.git', '.cache', 'logs']) {
 copyDirRecursive(backendSrcDir, targetBackendDir);
 console.log('✓ Backend copied successfully with dist and node_modules');
 
-// 5. Create payload.zip using PowerShell Compress-Archive
+// 5. Create payload.zip using tar.exe or PowerShell Compress-Archive
 console.log('✓ Compressing payload into payload.zip...');
 try {
-  execSync(
-    `powershell.exe -NoProfile -Command "Compress-Archive -Path '${payloadStageDir}\\*' -DestinationPath '${payloadZip}' -Force -CompressionLevel Optimal"`,
-    { stdio: 'inherit' }
-  );
+  const hasTar = fs.existsSync('C:\\WINDOWS\\system32\\tar.exe');
+  if (hasTar) {
+    execSync(`tar.exe -a -c -f "${payloadZip}" *`, { cwd: payloadStageDir, stdio: 'inherit' });
+  } else {
+    execSync(
+      `powershell.exe -NoProfile -Command "Compress-Archive -Path '${payloadStageDir}\\*' -DestinationPath '${payloadZip}' -Force -CompressionLevel Optimal"`,
+      { stdio: 'inherit' }
+    );
+  }
   console.log('✓ Successfully created payload.zip!');
 } catch (err) {
   console.error('Error creating zip:', err.message);

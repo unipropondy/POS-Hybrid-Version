@@ -1308,11 +1308,15 @@ router.post("/save-cart", async (req, res) => {
     // Always sync table status to update the payable amount instantly on the main grid via socket/db
     syncTableStatus(req, cleanId).catch(() => { });
 
-    // ⚡ Background 2-way table & order push to Remote DB
-    try {
-      const { triggerSyncProcess } = require("../services/syncService");
-      triggerSyncProcess();
-    } catch (_) { }
+    // ⚡ INSTANT PUSH: Push active order & items to Remote DB asynchronously (1-Way Local -> Remote)
+    if (currentOrderIdResult) {
+      setImmediate(() => {
+        try {
+          const { pushActiveOrderToRemote } = require("../services/syncService");
+          pushActiveOrderToRemote(currentOrderIdResult).catch(() => {});
+        } catch (_) {}
+      });
+    }
   } catch (err) {
     console.error("SAVE CART ERROR:", err);
     require("fs").appendFileSync(
@@ -1696,16 +1700,15 @@ router.post("/send", async (req, res) => {
       // 5. Refresh totals and notify instantly
       syncTableStatus(req, cleanId).catch(() => { });
 
-      // ⚡ Background 2-way table & order push to Remote DB
-      try {
-        const { getPool, getRemotePool, isRemoteOnline } = require("../config/db");
-        const { syncOperationalStateFromRemote } = require("../services/autoProvisionLocalDb");
-        const { triggerSyncProcess } = require("../services/syncService");
-        triggerSyncProcess();
-        if (isRemoteOnline()) {
-          syncOperationalStateFromRemote(getRemotePool(), getPool()).catch(() => { });
-        }
-      } catch (_) { }
+      // ⚡ INSTANT PUSH: Push sent order & items to Remote DB asynchronously (1-Way Local -> Remote)
+      if (finalOrderId) {
+        setImmediate(() => {
+          try {
+            const { pushActiveOrderToRemote } = require("../services/syncService");
+            pushActiveOrderToRemote(finalOrderId).catch(() => {});
+          } catch (_) {}
+        });
+      }
     } catch (e) {
       if (rejectLock) rejectLock(e);
       await transaction.rollback();
@@ -2077,6 +2080,14 @@ router.post("/cancel", async (req, res) => {
         );
 
       await transaction.commit();
+
+      // ⚡ INSTANT PUSH: Push cancelled/closed order to Remote DB (1-Way Local -> Remote)
+      try {
+        const { pushActiveOrderToRemote } = require("../services/syncService");
+        if (header.OrderId) {
+          pushActiveOrderToRemote(header.OrderId).catch(() => {});
+        }
+      } catch (_) { }
 
       await syncTableStatus(req, cleanTid);
       req.app

@@ -10,6 +10,7 @@ import UniversalPrinter from "../components/UniversalPrinter";
 import { useNotificationStore } from "../stores/notificationStore";
 import { useTerminalPaymentStore } from "../stores/terminalPaymentStore";
 import { usePaymentSettingsStore } from "../stores/paymentSettingsStore";
+import { parseDatabaseDate } from "../utils/timezoneHelper";
 
 /**
  * useGlobalSocketSync
@@ -42,6 +43,36 @@ export function useGlobalSocketSync() {
       useActiveOrdersStore.getState().fetchActiveKitchenOrders();
       // Re-fetch latest payment methods from local database
       usePaymentSettingsStore.getState().fetchPaymentMethods();
+      
+      // 🚀 NETWORK RECONNECTION TABLE RE-SYNC:
+      // When connection is restored after offline period, immediately pull fresh table master data
+      fetch(`${API_URL}/api/tables/all`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (!data) return;
+          const rawArray = Array.isArray(data) ? data : (data.data || data.recordset || []);
+          if (rawArray.length > 0) {
+            const sectionMap: Record<string, string> = { "1": "SECTION_1", "2": "SECTION_2", "3": "SECTION_3", "4": "TAKEAWAY" };
+            const updates = rawArray.map((t: any) => ({
+              tableId: String(t.TableId || t.id || "").replace(/^\{|\}$/g, "").trim().toLowerCase(),
+              section: sectionMap[String(t.DiningSection)] || "SECTION_1",
+              tableNo: String(t.TableNumber || t.label || ""),
+              orderId: t.currentOrderId || "EMPTY",
+              status: (t.Status === 5 ? "LOCKED" : t.Status === 1 ? "SENT" : t.Status === 2 ? "BILL_REQUESTED" : t.Status === 3 ? "HOLD" : "EMPTY") as any,
+              startTime: t.StartTime ? parseDatabaseDate(t.StartTime).getTime() : 0,
+              lockedByName: t.lockedByName,
+              totalAmount: Number(t.totalAmount) || 0,
+              isHoldOvertime: t.isHoldOvertime === 1 || !!t.isHoldOvertime,
+              lastModified: t.ModifiedOn,
+              entryStatus: t.entryStatus,
+              paymentStatus: t.paymentStatus || 0,
+              customerName: t.customerName,
+              pax: t.pax,
+            }));
+            useTableStatusStore.getState().batchUpdateTableStatus(updates);
+          }
+        })
+        .catch((err) => console.warn("🔌 [Socket-Global] Reconnect table sync error:", err.message));
       
       // Immediately check for any print jobs on reconnect
       const isCustomer =
@@ -136,15 +167,15 @@ export function useGlobalSocketSync() {
     // --- 2. TABLE STATUS ---
     const handleTableStatus = (data: any) => {
       const now = Date.now();
-      const tableId = data.tableId || data.tableid;
-      if (!tableId) return;
+      const tableId = data.tableId || data.tableid || data.id;
+      if (!tableId && !data.tableNo) return;
 
       if (__DEV__) {
-        console.log(`[TRACE] [${now}] [SOCKET_RECEIVE] table_status_updated | Table: ${tableId} | Status: ${data.status}`);
+        console.log(`[TRACE] [${now}] [SOCKET_RECEIVE] table_status_updated | Table: ${tableId || data.tableNo} | Status: ${data.status}`);
       }
 
-      const status = data.status !== undefined ? data.status : data.Status;
-      const totalAmount = data.totalAmount !== undefined ? data.totalAmount : data.TotalAmount;
+      const status = data.status !== undefined ? Number(data.status) : (data.Status !== undefined ? Number(data.Status) : 0);
+      const totalAmount = data.totalAmount !== undefined ? Number(data.totalAmount) : (data.TotalAmount !== undefined ? Number(data.TotalAmount) : 0);
       const startTime = data.startTime || data.StartTime;
       const currentOrderId = data.currentOrderId || data.CurrentOrderId;
       const isHoldOvertime = data.isHoldOvertime !== undefined ? data.isHoldOvertime : data.IsHoldOvertime;
@@ -156,29 +187,36 @@ export function useGlobalSocketSync() {
       
       const store = useTableStatusStore.getState();
       const cleanTableId = String(tableId || "").replace(/^\{|\}$/g, "").trim().toLowerCase();
-      let existingTable = store.tables.find((t: any) => {
-        const tId = String(t.tableId || "").replace(/^\{|\}$/g, "").trim().toLowerCase();
-        return tId === cleanTableId;
-      });
+      
+      // Look up existing table from tableMap (O(1)) or tables array
+      let existingTable: any = cleanTableId ? store.tableMap[cleanTableId] : undefined;
+      if (!existingTable && cleanTableId) {
+        existingTable = store.tables.find((t: any) => {
+          const tId = String(t.tableId || "").replace(/^\{|\}$/g, "").trim().toLowerCase();
+          return tId === cleanTableId;
+        });
+      }
       
       if (!existingTable && data.tableNo) {
         existingTable = store.tables.find((t: any) => 
           String(t.tableNo) === String(data.tableNo) && 
-          String(t.section) === String(data.section)
+          (!data.section || String(t.section) === String(data.section))
         );
       }
 
-      // 🚀 INSTANT SYNC: Apply the status update immediately
-      if (existingTable || (data.tableNo && data.section)) {
-        const sectionMap: Record<string, string> = { "1": "SECTION_1", "2": "SECTION_2", "3": "SECTION_3", "4": "TAKEAWAY" };
-        const rawSection = existingTable?.section || data.section;
-        const normalizedSection = sectionMap[String(rawSection)] || rawSection;
-        const cleanTableNo = existingTable?.tableNo || (data.tableNo ? String(data.tableNo).trim() : "");
+      const sectionMap: Record<string, string> = { "1": "SECTION_1", "2": "SECTION_2", "3": "SECTION_3", "4": "TAKEAWAY" };
+      const rawSection = data.section || existingTable?.section || "SECTION_1";
+      const normalizedSection = sectionMap[String(rawSection)] || rawSection;
+      const cleanTableNo = (data.tableNo ? String(data.tableNo).trim() : "") || existingTable?.tableNo || "";
+      const effectiveTableId = cleanTableId || (existingTable?.tableId ? String(existingTable.tableId).replace(/^\{|\}$/g, "").trim().toLowerCase() : "");
 
-        const computedStatus = (status === 5 ? "LOCKED" : (status === 1 || status === 4) ? "SENT" : status === 2 ? "BILL_REQUESTED" : status === 3 ? "HOLD" : "EMPTY");
-        const computedEntryStatus = computedStatus === "EMPTY" ? null : (entryStatus !== undefined ? entryStatus : existingTable?.entryStatus);
+      const computedStatus = (status === 5 ? "LOCKED" : (status === 1 || status === 4) ? "SENT" : status === 2 ? "BILL_REQUESTED" : status === 3 ? "HOLD" : "EMPTY");
+      const computedEntryStatus = computedStatus === "EMPTY" ? null : (entryStatus !== undefined ? entryStatus : existingTable?.entryStatus);
+      
+      // 🚀 INSTANT SYNC: Apply the status update immediately
+      if (effectiveTableId || cleanTableNo) {
         store.updateTableStatus(
-          cleanTableId,
+          effectiveTableId,
           normalizedSection,
           cleanTableNo,
           currentOrderId || "SYNC",
@@ -194,16 +232,26 @@ export function useGlobalSocketSync() {
           pax
         );
 
-        if (computedStatus === "EMPTY" && tableId) {
-          const tblIdStr = String(tableId);
-          useCartStore.getState().clearTableSession(tblIdStr);
-          useTerminalPaymentStore.getState().clearSession(tblIdStr);
+        if (computedStatus === "EMPTY" && effectiveTableId) {
+          useCartStore.getState().clearTableSession(effectiveTableId);
+          useCartStore.getState().setTableOrderId(effectiveTableId, null);
+          useTerminalPaymentStore.getState().clearSession(effectiveTableId);
           try {
             const { useTableNavigationStore } = require("../stores/tableNavigationStore");
-            useTableNavigationStore.getState().clearTableLastScreen(tblIdStr);
-            useTableNavigationStore.getState().clearSelectedMethod(tblIdStr);
+            useTableNavigationStore.getState().clearTableLastScreen(effectiveTableId);
+            useTableNavigationStore.getState().clearSelectedMethod(effectiveTableId);
           } catch (e) {
             console.warn("Failed to clear table navigation on EMPTY socket status:", e);
+          }
+
+          // Also check if current order context is on this table — clear it
+          const currentContext = useOrderContextStore.getState().currentOrder;
+          const currentTableId = currentContext?.tableId ? String(currentContext.tableId).replace(/^\{|\}$/g, "").trim().toLowerCase() : "";
+          if (currentTableId === effectiveTableId) {
+            const contextId = getContextId(currentContext);
+            if (contextId) {
+              useCartStore.getState().setCartItems(contextId, [], true);
+            }
           }
         }
       }

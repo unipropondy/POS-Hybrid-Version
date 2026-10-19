@@ -355,11 +355,14 @@ function startSyncWorker(pushIntervalMs = 5000, pullIntervalMs = 5 * 60 * 1000) 
   console.log(`   ⬇️ Pull Master Data & Prices <- Remote DB: Every ${pullIntervalMs / 60000} minutes`);
 }
 
+const { pushActiveOrderToRemote } = require("./autoProvisionLocalDb");
+
 module.exports = {
   startSyncWorker,
   triggerSyncProcess,
   pullMasterDataFromRemote,
   enqueueSync,
+  pushActiveOrderToRemote,
   getSyncStats: () => ({
     ...syncStats,
     isOnline: isRemoteOnline(),

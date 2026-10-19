@@ -473,10 +473,13 @@ app.get("/health", (req, res) => res.json({ status: "ok", timestamp: new Date() 
 
 // 📥 CLIENT LOGS ENDPOINT: Allows frontend to stream logs directly to local frontend.log file
 app.post("/api/logs/client", express.json(), (req, res) => {
-  const { level, message, details } = req.body || {};
-  if (message) {
-    const detailStr = details ? ` | ${typeof details === "object" ? JSON.stringify(details) : details}` : "";
-    logToFile(frontendLogPath, `[${(level || "INFO").toUpperCase()}] ${message}${detailStr}`);
+  const items = Array.isArray(req.body) ? req.body : [req.body];
+  for (const item of items) {
+    const { level, message, details } = item || {};
+    if (message) {
+      const detailStr = details ? ` | ${typeof details === "object" ? JSON.stringify(details) : details}` : "";
+      logToFile(frontendLogPath, `[${(level || "INFO").toUpperCase()}] ${message}${detailStr}`);
+    }
   }
   res.status(204).end();
 });

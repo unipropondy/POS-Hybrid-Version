@@ -1650,10 +1650,41 @@ export default function Category() {
       }
     };
 
+    const handleTableStatusUpdated = (data: any) => {
+      const incomingId = String(data?.tableId || data?.id || "").replace(/^\{|\}$/g, "").trim().toLowerCase();
+      if (!incomingId && !data?.tableNo) return;
+
+      // 1. Immediately update allTables in local state so the table updates without waiting for network fetch
+      setAllTables((prev) =>
+        prev.map((tbl) => {
+          const matchId = incomingId && tbl.id === incomingId;
+          const matchNo = data.tableNo && String(tbl.label) === String(data.tableNo) && (!data.section || String(tbl.DiningSection) === String(data.section).replace("SECTION_", ""));
+          if (matchId || matchNo) {
+            return {
+              ...tbl,
+              Status: Number(data.status ?? 0),
+              totalAmount: Number(data.totalAmount ?? 0),
+              customerName: data.customerName ?? undefined,
+              pax: data.pax ?? undefined,
+              entryStatus: data.entryStatus ?? undefined,
+              StartTime: data.startTime ?? undefined,
+              lockedByName: data.lockedByName ?? undefined,
+            };
+          }
+          return tbl;
+        })
+      );
+
+      // 2. Also trigger a background fetch to keep full table collection in sync with DB
+      fetchTables();
+    };
+
+    socket.on("table_status_updated", handleTableStatusUpdated);
     socket.on("table_config_updated", handleTableConfigUpdated);
     socket.on("section_layout_updated", handleSectionLayoutUpdated);
 
     return () => {
+      socket.off("table_status_updated", handleTableStatusUpdated);
       socket.off("table_config_updated", handleTableConfigUpdated);
       socket.off("section_layout_updated", handleSectionLayoutUpdated);
     };
@@ -2157,9 +2188,10 @@ export default function Category() {
         return;
       }
 
-      const effectiveStatus =
-        tableData && tableData.status !== "EMPTY"
-          ? tableData.status === "SENT"
+      const effectiveStatus = tableData
+        ? tableData.status === "EMPTY"
+          ? 0
+          : tableData.status === "SENT"
             ? 1
             : tableData.status === "BILL_REQUESTED"
               ? 2
@@ -2167,8 +2199,8 @@ export default function Category() {
                 ? 3
                 : tableData.status === "LOCKED"
                   ? 5
-                  : 1
-          : Number(item.Status);
+                  : 0
+        : Number(item.Status);
 
       if (isCheckoutAction) {
         if (effectiveStatus !== 2) {
