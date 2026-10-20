@@ -113,7 +113,7 @@ async function initDB(pool) {
       BEGIN
           CREATE TABLE [dbo].[AppSettings](
               [Id] [int] IDENTITY(1,1) NOT NULL PRIMARY KEY,
-              [Shop] [nvarchar](255) NULL DEFAULT 'My Restaurant',
+              [ShopName] [nvarchar](255) NULL DEFAULT 'My Restaurant',
               [HoldOvertimeMinutes] [int] NULL DEFAULT 60,
               [EnableCheckoutFlow] [bit] NULL DEFAULT 1,
               [EnableDirectProcessToPay] [bit] NULL DEFAULT 0,
@@ -127,7 +127,7 @@ async function initDB(pool) {
               [EnableCookingInstructions] [bit] NULL DEFAULT 1,
               [EnableReceiptPrint] [bit] NULL DEFAULT 1
           );
-          INSERT INTO [dbo].[AppSettings] ([Shop]) VALUES ('My Restaurant');
+          EXEC sp_executesql N'INSERT INTO [dbo].[AppSettings] ([ShopName]) VALUES (''My Restaurant'')';
       END
     `);
 
