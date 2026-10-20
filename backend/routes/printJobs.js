@@ -42,9 +42,9 @@ router.get('/bridge-status', async (req, res) => {
   try {
     const pool = getPool();
     const result = await pool.request().query(`
-      SELECT DATEDIFF(SECOND, LastBridgeHeartbeat, GETDATE()) AS SecondsSinceHeartbeat 
+      SELECT MIN(DATEDIFF(SECOND, LastBridgeHeartbeat, GETDATE())) AS SecondsSinceHeartbeat 
       FROM CompanySettings 
-      WHERE Id = '1'
+      WHERE LastBridgeHeartbeat IS NOT NULL
     `);
     if (result.recordset.length > 0 && result.recordset[0].SecondsSinceHeartbeat !== null) {
       const isOnline = result.recordset[0].SecondsSinceHeartbeat < 8; // 8 seconds threshold
@@ -230,7 +230,8 @@ router.post('/', authenticateBridge, async (req, res) => {
     const pool = getPool();
 
     // Resolve Printer IP and Name from req.body if provided, or from PrintMaster / CompanySettings
-    let printerIp = (targetPrinterIp || bodyPrinterIp || '').trim();
+    let rawIp = (targetPrinterIp || bodyPrinterIp || '').trim();
+    let printerIp = (rawIp === 'undefined' || rawIp === 'null') ? '' : rawIp;
     let printerName = printerIp || 'Receipt Printer';
     const pType = parseInt(printerType);
 
@@ -294,22 +295,20 @@ router.post('/', authenticateBridge, async (req, res) => {
       }
     }
 
-    // Safety fallback: if printerIp is still not resolved to an IP address, check CompanySettings or ANY active printer in PrintMaster
-    if (!printerIp || !/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(printerIp.trim())) {
+    // Safety fallback: only if printerIp is STILL completely empty, look up any active printer
+    if (!printerIp || printerIp.trim() === '') {
       try {
         const csFallback = await pool.request()
-          .query("SELECT TOP 1 PrinterIP FROM CompanySettings WHERE Id = '1'");
+          .query("SELECT TOP 1 PrinterIP FROM CompanySettings WHERE PrinterIP IS NOT NULL AND PrinterIP <> ''");
         if (csFallback.recordset.length > 0 && csFallback.recordset[0].PrinterIP) {
           const cand = csFallback.recordset[0].PrinterIP.trim();
-          if (/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(cand)) {
-            printerIp = cand;
-            printerName = cand;
-          }
+          printerIp = cand;
+          printerName = cand;
         }
       } catch (_) {}
     }
 
-    if (!printerIp || !/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(printerIp.trim())) {
+    if (!printerIp || printerIp.trim() === '') {
       try {
         const pmFallback = await pool.request().query(`
           SELECT TOP 1 ISNULL(NULLIF(PrinterIP, ''), NULLIF(PrinterPath, '')) as PrinterIP, PrinterName 
@@ -318,10 +317,8 @@ router.post('/', authenticateBridge, async (req, res) => {
         `);
         if (pmFallback.recordset.length > 0 && pmFallback.recordset[0].PrinterIP) {
           const cand = pmFallback.recordset[0].PrinterIP.trim();
-          if (/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(cand)) {
-            printerIp = cand;
-            printerName = pmFallback.recordset[0].PrinterName || cand;
-          }
+          printerIp = cand;
+          printerName = pmFallback.recordset[0].PrinterName || cand;
         }
       } catch (_) {}
     }

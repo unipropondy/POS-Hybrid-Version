@@ -22,7 +22,7 @@
         "foregroundImage": "./assets/images/logo_pos.png"
       },
       "package": "com.unipro.pos",
-      "versionCode": 4,
+      "versionCode": 5,
       "permissions": [
         "INTERNET",
         "ACCESS_NETWORK_STATE"

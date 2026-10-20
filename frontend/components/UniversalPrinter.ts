@@ -704,28 +704,33 @@ class UniversalPrinter {
     type: "NEW" | "ADDITIONAL" | "REPRINT" | "KDS_PRINT" = "NEW",
     printerIpOverride?: string,
   ): Promise<boolean> {
+    const cleanPrinterIp = (printerIpOverride && printerIpOverride !== "undefined" && printerIpOverride !== "null")
+      ? printerIpOverride.trim()
+      : undefined;
+    const kitchenTypeValue = orderData.kitchenCode || orderData.KitchenCode || orderData.kitchenTypeValue || orderData.KitchenTypeValue || "0";
+    const text = this.formatKOTThermalText(orderData, type);
+    const pType = type === "KDS_PRINT" ? 4 : 2;
+
+    // --- STEP 1: Web (Windows POS EXE / Browser) ---
     if (Platform.OS === "web") {
       try {
         const isOnline = await this.isBridgeOnline();
         if (!isOnline) {
-          console.log("ðŸ“¡ [Web Print Bridge] Bridge is OFFLINE. Direct fallback to preview.");
+          console.log("📡 [Web Print Bridge] Bridge is OFFLINE. Direct fallback to preview.");
           this.printKOTViaFrame(this.generateKOTHTML(orderData, type), 50);
           await this.logPrintJob(orderData.orderId, orderData.orderNo, type);
           return true;
         }
 
-        const text = this.formatKOTThermalText(orderData, type);
-        // Map kitchenCode or kitchenTypeValue
-        const kitchenTypeValue = orderData.kitchenCode || orderData.KitchenCode || orderData.kitchenTypeValue || orderData.KitchenTypeValue || "0";
-        console.log(`ðŸ“¡ [Web Print Bridge] Queueing KOT to Kitchen type: ${kitchenTypeValue}`);
-        const success = await this.queuePrintJob(2, kitchenTypeValue, text);
+        console.log(`📡 [Web Print Bridge] Queueing KOT to Kitchen type: ${kitchenTypeValue}`);
+        const success = await this.queuePrintJob(pType, kitchenTypeValue, text, true, cleanPrinterIp);
         if (success) {
           await this.logPrintJob(orderData.orderId, orderData.orderNo, type);
           return true;
         }
 
-        // ðŸš€ Fallback: If Print Bridge failed or printer not detected on web, trigger iframe print preview immediately
-        console.log("âš ï¸  [Web KOT Print] Print Bridge queue failed. Falling back to iframe print preview.");
+        // 🚀 Web Fallback: If Print Bridge failed or printer not detected on web, trigger iframe print preview immediately
+        console.log("⚠️ [Web KOT Print] Print Bridge queue failed. Falling back to iframe print preview.");
         this.printKOTViaFrame(this.generateKOTHTML(orderData, type), 800);
         await this.logPrintJob(orderData.orderId, orderData.orderNo, type);
         return true;
@@ -742,11 +747,25 @@ class UniversalPrinter {
       }
     }
 
+    // --- STEP 2: Mobile / Native (Android APK / Tablet) ---
+    // Expected Architecture: Android APK -> Node.js Local Server -> Configured Kitchen Printer / Windows Spooler
+    try {
+      console.log(`📡 [APK Print] Queueing KOT Order ${orderData.orderNo || orderData.orderId} via Local Server Print Queue (Kitchen Type: ${kitchenTypeValue}, Printer: ${cleanPrinterIp || "auto"})...`);
+      const queueSuccess = await this.queuePrintJob(pType, kitchenTypeValue, text, true, cleanPrinterIp);
+      if (queueSuccess) {
+        console.log(`✅ [APK Print] KOT order successfully queued to local server print queue!`);
+        await this.logPrintJob(orderData.orderId, orderData.orderNo, type);
+        return true;
+      }
+      console.warn("⚠️ [APK Print] Local server print queue returned false. Checking direct hardware fallback options...");
+    } catch (bridgeErr) {
+      console.warn("⚠️ [APK Print] Error communicating with server print queue:", bridgeErr);
+    }
+
+    // --- STEP 3: Fallback for Standalone/Direct Hardware Mode (if local server queue unreachable) ---
     try {
       const company = await BillPDFGenerator.loadSettings(userId);
-      const html = this.generateKOTHTML(orderData, type);
-      
-      let targetIp: string = printerIpOverride || "";
+      let targetIp: string = cleanPrinterIp || "";
       if (!targetIp) {
         if (type === "KDS_PRINT") {
           try {
@@ -763,93 +782,57 @@ class UniversalPrinter {
         }
       }
 
-      // âœ… 1. Try Hardware Printer (WiFi or Bluetooth)
-      const hasConfiguredIp = targetIp && targetIp.trim().length > 0;
-      if (hasConfiguredIp) {
-        let isReachable = false;
-        const isIp = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(targetIp.trim());
-        if (isIp) {
-          isReachable = await this.isIpReachable(targetIp, 9100);
-        } else {
-          isReachable = true;
-        }
-
+      // 1. Direct IPv4 TCP fallback (raw port 9100 on local subnet)
+      const isIp = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test((targetIp || "").trim());
+      if (isIp) {
+        const isReachable = await this.isIpReachable(targetIp.trim(), 9100);
         if (isReachable) {
           try {
-            const text = this.formatKOTThermalText(orderData, type);
-
-            if (isIp) {
-              console.log(`ðŸŒ KOT WiFi print to: ${targetIp}`);
-              const printPromise = ThermalPrinter.printTcp({
-                ip: targetIp,
-                port: 9100,
-                payload: text,
-                mmFeedPaper: 25,
-              });
-              const timeoutPromise = new Promise((_, reject) =>
-                setTimeout(() => reject(new Error("WiFi Timeout")), 1500),
-              );
-              await Promise.race([printPromise, timeoutPromise]);
-            } else {
-              console.log(`🔵 KOT Bluetooth print to: ${targetIp}`);
-              await ThermalPrinterImport?.getBluetoothDeviceList?.().catch(() => {});
-              const printPromise = ThermalPrinter.printBluetooth({
-                macAddress: targetIp,
-                payload: text,
-                mmFeedPaper: 25,
-              });
-              const timeoutPromise = new Promise((_, reject) =>
-                setTimeout(() => reject(new Error("BT Timeout")), 12000),
-              );
-              await Promise.race([printPromise, timeoutPromise]);
-            }
+            console.log(`🌐 [APK Direct Print] Direct TCP fallback to ${targetIp.trim()}:9100`);
+            const printPromise = ThermalPrinter.printTcp({
+              ip: targetIp.trim(),
+              port: 9100,
+              payload: text,
+              mmFeedPaper: 25,
+            });
+            const timeoutPromise = new Promise((_, reject) =>
+              setTimeout(() => reject(new Error("WiFi Timeout")), 2000),
+            );
+            await Promise.race([printPromise, timeoutPromise]);
             await this.logPrintJob(orderData.orderId, orderData.orderNo, type);
             return true;
-          } catch (printError) {
-            console.warn("âŒ Hardware KOT failed/timeout, falling back directly to PDF...");
-          }
-        } else {
-          console.warn(`âŒ configured printer IP ${targetIp} not reachable, falling back directly to PDF...`);
-        }
-      } else {
-        // âœ… 2. Try Sunmi direct print (Silent) (Only if IP is NOT entered)
-        const sunmiReady = await SunmiPrinterService.init().catch(() => false);
-        if (sunmiReady) {
-          try {
-            const printPromise = SunmiPrinterService.printKOT(orderData, type);
-            const timeoutPromise = new Promise((_, reject) =>
-              setTimeout(() => reject(new Error("Sunmi Timeout")), 2000),
-            );
-            const printed = await Promise.race([printPromise, timeoutPromise]);
-
-            if (printed) {
-              console.log("âœ… KOT Printed with Sunmi - NO PREVIEW");
-              await this.logPrintJob(orderData.orderId, orderData.orderNo, type);
-              return true;
-            }
-          } catch (sunmiErr) {
-            console.warn("âŒ Sunmi KOT failed/timeout:", sunmiErr);
+          } catch (tcpErr) {
+            console.warn("❌ Direct TCP print fallback failed:", tcpErr);
           }
         }
       }
 
-      // âœ… 3. Mobile Fallback (Android/iOS)
-      const { uri } = await Print.printToFileAsync({
-        html,
-        width: 302, // 80mm at 96dpi (80 Ã— 3.7795 â‰ˆ 302px)
-      });
-
-      if (Platform.OS === "android" || Platform.OS === "ios") {
-        if (await Sharing.isAvailableAsync()) {
-          await Sharing.shareAsync(uri);
+      // 2. Direct Sunmi internal thermal printer fallback (if running on a Sunmi POS terminal)
+      const sunmiReady = await SunmiPrinterService.init().catch(() => false);
+      if (sunmiReady) {
+        try {
+          const printPromise = SunmiPrinterService.printKOT(orderData, type);
+          const timeoutPromise = new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("Sunmi Timeout")), 2000),
+          );
+          const printed = await Promise.race([printPromise, timeoutPromise]);
+          if (printed) {
+            console.log("✅ KOT Printed with Sunmi internal printer");
+            await this.logPrintJob(orderData.orderId, orderData.orderNo, type);
+            return true;
+          }
+        } catch (sunmiErr) {
+          console.warn("❌ Sunmi KOT print failed:", sunmiErr);
         }
       }
 
-      // âœ… 4. LOG TO DATABASE (Audit Trail)
+      // 🛑 Critical: Never trigger Print.printToFileAsync / Sharing.shareAsync during waiter order workflow!
+      // Unwanted PDF share sheets disrupt waiter workflow on Android tablets during restaurant service.
+      console.warn(`⚠️ [UniversalPrinter] KOT print could not be dispatched to printer for Order ${orderData.orderNo || orderData.orderId}. PDF modal suppressed.`);
       await this.logPrintJob(orderData.orderId, orderData.orderNo, type);
-      return true;
+      return false;
     } catch (error) {
-      console.log("KOT Print Error:", error);
+      console.error("❌ [UniversalPrinter] KOT Print Error:", error);
       return false;
     }
   }
@@ -1547,7 +1530,7 @@ class UniversalPrinter {
               console.log(`📡 [APK Print Bridge] Queueing receipt to Print Bridge for: ${targetIp}`);
               const text = this.formatThermalTextWithDiscount(saleData, company, discountInfo);
               const pType = isTakeaway ? 3 : 1;
-              const success = await this.queuePrintJob(pType, undefined, text);
+              const success = await this.queuePrintJob(pType, undefined, text, true, targetIp);
               if (success) return;
             } catch (bridgeErr) {
               console.warn("APK Print Bridge queue failed, trying direct connection:", bridgeErr);
