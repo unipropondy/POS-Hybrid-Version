@@ -4,6 +4,7 @@ import { format } from "date-fns";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
 import { Alert, Platform } from "react-native";
+// @ts-ignore
 import ThermalPrinterImport from "react-native-thermal-printer";
 
 // Safe wrapper around react-native-thermal-printer to prevent null-reference crashes
