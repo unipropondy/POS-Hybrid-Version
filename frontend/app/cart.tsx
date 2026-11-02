@@ -428,7 +428,8 @@ export default function CartScreen() {
     }
     holdOrder(targetOrderId, cart, orderContext);
     showToast({ type: 'success', message: 'Order Held' });
-    router.replace(`/(tabs)/category?section=${orderContext.section || "TAKEAWAY"}`);
+    const targetSec = orderContext?.section || "SECTION_1";
+    router.replace(`/(tabs)/category?section=${targetSec}`);
   };
 
   const handlePlus = React.useCallback((lineItemId: string) => {
@@ -485,7 +486,8 @@ export default function CartScreen() {
 
       useCartStore.getState().checkoutOrder(tableId);
       showToast({ type: "success", message: "Success", subtitle: "Order finalized & Printing...", duration: 800 });
-      router.replace(`/(tabs)/category?section=${orderContext.section}`);
+      const targetSec = orderContext?.section || "SECTION_1";
+      router.replace(`/(tabs)/category?section=${targetSec}`);
       return;
     } else {
       router.push("/summary");
@@ -517,7 +519,8 @@ export default function CartScreen() {
               updateTableStatus(tableId, context.section!, context.tableNo!, officialOrderId, 'SENT', sendRes.StartTime || new Date().toISOString(), undefined, payableAmount);
               socket.emit("new_order", { orderId: officialOrderId, context, items: cart, createdAt: Date.now() });
               showToast({ type: "success", message: "Order Sent", subtitle: `Kitchen notified. Order #${officialOrderId}`, duration: 800 });
-              router.replace(`/(tabs)/category?section=${context.section}`);
+              const targetSec = context?.section || "SECTION_1";
+              router.replace(`/(tabs)/category?section=${targetSec}`);
               try {
                 const kitchenGroups: Record<string, any[]> = {};
                 const expandedItems: any[] = [];
@@ -587,7 +590,7 @@ export default function CartScreen() {
         } catch (err) { console.error(err); }
       }
     }
-    const sectionPath = context.section || "TAKEAWAY";
+    const sectionPath = context.section || "SECTION_1";
     router.replace(`/(tabs)/category?section=${sectionPath}`);
   };
 

@@ -364,7 +364,8 @@ async function getPrimaryKeyColumns(pool, tableName, fallbackPk) {
 }
 
 // Top-level 2-Way table delta sync (Missing rows pushed/pulled + timestamp-based updates)
-async function syncTable2Way(remotePool, localPool, tableName, fallbackPk, maxDelta = 100) {
+// syncMode: 'twoWay' (default) | 'pullOnly' (Remote -> Local) | 'pushOnly' (Local -> Remote)
+async function syncTable2Way(remotePool, localPool, tableName, fallbackPk, maxDelta = 100, syncMode = 'twoWay') {
   try {
     let lCols = await getTableColumns(localPool, tableName);
     const rCols = await getTableColumns(remotePool, tableName);
@@ -382,6 +383,49 @@ async function syncTable2Way(remotePool, localPool, tableName, fallbackPk, maxDe
     const rReadOnly = await getReadOnlyColumns(remotePool, tableName);
     const readOnlyCols = new Set([...lReadOnly, ...rReadOnly]);
 
+    // Session columns are STRICTLY LOCAL and must never be pushed to cloud or overwritten by cloud
+    const LOCAL_SESSION_PROTECTED_COLS = new Set([
+      "isloggedin",
+      "lastheartbeat",
+      "activesessionid"
+    ]);
+
+    // TableMaster protected columns: Visual editor layout, dimensions, locking,
+    // and live floor operational state are strictly managed on Local DB.
+    // They must NEVER be overwritten by Remote SQL Server data pulls or updates.
+    const TABLEMASTER_PROTECTED_COLS = new Set([
+      "tabletype",
+      "xsize",
+      "ysize",
+      "xpos",
+      "ypos",
+      "pos",
+      "lockedbyname",
+      "islocked",
+      "totalamount",
+      "currentorderid",
+      "entry_status",
+      "payment_status",
+      "customername",
+      "pax",
+      "status",
+      "starttime",
+      "endtime",
+      "loginuser"
+    ]);
+
+    const isProtectedColumn = (col) => {
+      const lowerTbl = String(tableName).toLowerCase();
+      const lowerCol = String(col).toLowerCase();
+      if (lowerTbl === 'usermaster') {
+        return LOCAL_SESSION_PROTECTED_COLS.has(lowerCol);
+      }
+      if (lowerTbl === 'tablemaster' && syncMode === 'pullOnly') {
+        return TABLEMASTER_PROTECTED_COLS.has(lowerCol);
+      }
+      return false;
+    };
+
     const pkCols = await getPrimaryKeyColumns(localPool, tableName, fallbackPk);
     if (!pkCols || pkCols.length === 0) return { tableName, pushed: 0, pulled: 0, updatedLocal: 0, updatedRemote: 0 };
     const pkColSql = pkCols.map(p => `[${p}]`).join(", ");
@@ -394,14 +438,13 @@ async function syncTable2Way(remotePool, localPool, tableName, fallbackPk, maxDe
     const sortCol = dateCandidates.find(c => lCols.has(c.toLowerCase()) && rCols.has(c.toLowerCase()));
     const orderSql = sortCol ? `ORDER BY [${sortCol}] DESC` : '';
 
-    const modCandidates = ['ModifiedOn', 'ModifyOn', 'ModifyDate', 'UpdatedOn'];
+    const modCandidates = ['ModifiedOn', 'ModifyOn', 'ModifyDate', 'UpdatedOn', 'UpdatedDate'];
     const modCol = modCandidates.find(c => lCols.has(c.toLowerCase()) && rCols.has(c.toLowerCase()));
 
     const selectColsSql = modCol ? `${pkColSql}, [${modCol}]` : pkColSql;
 
-    const queryLimit = maxDelta > 500 ? 5000 : 500;
-    const lPkRes = await localPool.request().query(`SELECT TOP ${queryLimit} ${selectColsSql} FROM [dbo].[${tableName}] ${orderSql}`).catch(() => ({ recordset: [] }));
-    const rPkRes = await remotePool.request().query(`SELECT TOP ${queryLimit} ${selectColsSql} FROM [dbo].[${tableName}] ${orderSql}`).catch(() => ({ recordset: [] }));
+    const lPkRes = await localPool.request().query(`SELECT ${selectColsSql} FROM [dbo].[${tableName}] ${orderSql}`).catch(() => ({ recordset: [] }));
+    const rPkRes = await remotePool.request().query(`SELECT ${selectColsSql} FROM [dbo].[${tableName}] ${orderSql}`).catch(() => ({ recordset: [] }));
 
     const makePkKey = (row) => pkCols.map(pk => String(getRowVal(row, pk) ?? '')).join('___');
 
@@ -414,50 +457,60 @@ async function syncTable2Way(remotePool, localPool, tableName, fallbackPk, maxDe
     const missingOnRemote = lPkRes.recordset.filter(r => !rPkMap.has(makePkKey(r)));
     const missingOnLocal = rPkRes.recordset.filter(r => !lPkMap.has(makePkKey(r)));
 
-    const toPush = (maxDelta && missingOnRemote.length > maxDelta) ? missingOnRemote.slice(0, maxDelta) : missingOnRemote;
-    const toPull = (maxDelta && missingOnLocal.length > maxDelta) ? missingOnLocal.slice(0, maxDelta) : missingOnLocal;
+    const allowPush = syncMode === 'twoWay' || syncMode === 'pushOnly';
+    const allowPull = syncMode === 'twoWay' || syncMode === 'pullOnly';
+
+    const toPush = allowPush ? missingOnRemote : [];
+    const toPull = allowPull ? missingOnLocal : [];
 
     const lHasIdent = await hasIdentityCol(localPool, tableName);
     const rHasIdent = await hasIdentityCol(remotePool, tableName);
 
     let pushed = 0, pulled = 0, updatedLocal = 0, updatedRemote = 0;
 
-    // 1. LOCAL -> REMOTE (Push new local records to Remote Cloud DB)
-    for (const targetPkRow of toPush) {
-      const reqWhere = pkCols.map((pk, idx) => `[${pk}] = @lpk_${idx}`).join(" AND ");
-      const fetchReq = localPool.request();
-      pkCols.forEach((pk, idx) => fetchReq.input(`lpk_${idx}`, getRowVal(targetPkRow, pk)));
+    // 1. LOCAL -> REMOTE (Push new local records to Remote Cloud DB - only if allowPush)
+    if (allowPush) {
+      for (const targetPkRow of toPush) {
+        const reqWhere = pkCols.map((pk, idx) => `[${pk}] = @lpk_${idx}`).join(" AND ");
+        const fetchReq = localPool.request();
+        pkCols.forEach((pk, idx) => fetchReq.input(`lpk_${idx}`, getRowVal(targetPkRow, pk)));
 
-      const lRowRes = await fetchReq.query(`SELECT TOP 1 * FROM [dbo].[${tableName}] WHERE ${reqWhere}`).catch(() => ({ recordset: [] }));
-      const lRow = lRowRes.recordset[0];
-      if (!lRow) continue;
+        const lRowRes = await fetchReq.query(`SELECT TOP 1 * FROM [dbo].[${tableName}] WHERE ${reqWhere}`).catch(() => ({ recordset: [] }));
+        const lRow = lRowRes.recordset[0];
+        if (!lRow) continue;
 
-      const keys = Object.keys(lRow).filter(k => lRow[k] !== null && !readOnlyCols.has(k.toLowerCase()) && rCols.has(k.toLowerCase()));
-      if (keys.length === 0) continue;
-      const colList = keys.map(k => `[${k}]`).join(", ");
-      const req = remotePool.request();
-      const valList = keys.map((k, idx) => {
-        const paramName = `lp_${idx}`;
-        req.input(paramName, lRow[k]);
-        return `@${paramName}`;
-      }).join(", ");
+        const keys = Object.keys(lRow).filter(k => 
+          lRow[k] !== null && 
+          !readOnlyCols.has(k.toLowerCase()) && 
+          !isProtectedColumn(k) &&
+          rCols.has(k.toLowerCase())
+        );
+        if (keys.length === 0) continue;
+        const colList = keys.map(k => `[${k}]`).join(", ");
+        const req = remotePool.request();
+        const valList = keys.map((k, idx) => {
+          const paramName = `lp_${idx}`;
+          req.input(paramName, lRow[k]);
+          return `@${paramName}`;
+        }).join(", ");
 
-      const insertWhere = pkCols.map((pk, idx) => `[${pk}] = @rpk_${idx}`).join(" AND ");
-      pkCols.forEach((pk, idx) => req.input(`rpk_${idx}`, getRowVal(targetPkRow, pk)));
+        const insertWhere = pkCols.map((pk, idx) => `[${pk}] = @rpk_${idx}`).join(" AND ");
+        pkCols.forEach((pk, idx) => req.input(`rpk_${idx}`, getRowVal(targetPkRow, pk)));
 
-      const identOn = rHasIdent ? `SET IDENTITY_INSERT [dbo].[${tableName}] ON;` : '';
-      const identOff = rHasIdent ? `SET IDENTITY_INSERT [dbo].[${tableName}] OFF;` : '';
+        const identOn = rHasIdent ? `SET IDENTITY_INSERT [dbo].[${tableName}] ON;` : '';
+        const identOff = rHasIdent ? `SET IDENTITY_INSERT [dbo].[${tableName}] OFF;` : '';
 
-      const sqlQuery = `
-        ${identOn}
-        IF NOT EXISTS (SELECT 1 FROM [dbo].[${tableName}] WHERE ${insertWhere})
-        BEGIN
-          INSERT INTO [dbo].[${tableName}] (${colList}) VALUES (${valList});
-        END;
-        ${identOff}
-      `;
-      await req.query(sqlQuery).catch((err) => console.warn(`⚠️ [Auto-Provision] Local->Remote ${tableName} push warning:`, err.message));
-      pushed++;
+        const sqlQuery = `
+          ${identOn}
+          IF NOT EXISTS (SELECT 1 FROM [dbo].[${tableName}] WHERE ${insertWhere})
+          BEGIN
+            INSERT INTO [dbo].[${tableName}] (${colList}) VALUES (${valList});
+          END;
+          ${identOff}
+        `;
+        await req.query(sqlQuery).catch((err) => console.warn(`⚠️ [Auto-Provision] Local->Remote ${tableName} push warning:`, err.message));
+        pushed++;
+      }
     }
 
     // 2. REMOTE -> LOCAL (Pull cloud updates to Local DB)
@@ -470,7 +523,12 @@ async function syncTable2Way(remotePool, localPool, tableName, fallbackPk, maxDe
       const rRow = rRowRes.recordset[0];
       if (!rRow) continue;
 
-      const keys = Object.keys(rRow).filter(k => rRow[k] !== null && !readOnlyCols.has(k.toLowerCase()) && lCols.has(k.toLowerCase()));
+      const keys = Object.keys(rRow).filter(k => 
+        rRow[k] !== null && 
+        !readOnlyCols.has(k.toLowerCase()) && 
+        !isProtectedColumn(k) &&
+        lCols.has(k.toLowerCase())
+      );
       if (keys.length === 0) continue;
       const colList = keys.map(k => `[${k}]`).join(", ");
       const req = localPool.request();
@@ -498,11 +556,10 @@ async function syncTable2Way(remotePool, localPool, tableName, fallbackPk, maxDe
       pulled++;
     }
 
-    // 3. UPDATES: If modCol exists, compare timestamps for items present on both sides (capped at 50 updates per cycle)
+    // 3. UPDATES & DETERMINISTIC CONFLICT RESOLUTION
+    // If modCol exists, compare timestamps for items present on both sides
     if (modCol) {
-      let updateCount = 0;
       for (const [key, lRowSummary] of lPkMap.entries()) {
-        if (updateCount >= 50) break;
         const rRowSummary = rPkMap.get(key);
         if (!rRowSummary) continue;
 
@@ -511,15 +568,110 @@ async function syncTable2Way(remotePool, localPool, tableName, fallbackPk, maxDe
         const lTime = lRawTime ? new Date(lRawTime).getTime() : 0;
         const rTime = rRawTime ? new Date(rRawTime).getTime() : 0;
 
-        if (rTime - lTime > 2000) {
-          // Remote is newer -> Pull update to Local
+        if (lTime === rTime) {
+          // If timestamps are identical, check if values actually diverge (simultaneous edits or identical clocks)
+          const reqWhere = pkCols.map((pk, idx) => `[${pk}] = @cpk_${idx}`).join(" AND ");
+          const lFetch = localPool.request();
+          const rFetch = remotePool.request();
+          pkCols.forEach((pk, idx) => {
+            lFetch.input(`cpk_${idx}`, getRowVal(lRowSummary, pk));
+            rFetch.input(`cpk_${idx}`, getRowVal(rRowSummary, pk));
+          });
+          const lFull = (await lFetch.query(`SELECT TOP 1 * FROM [dbo].[${tableName}] WHERE ${reqWhere}`).catch(() => ({ recordset: [] }))).recordset[0];
+          const rFull = (await rFetch.query(`SELECT TOP 1 * FROM [dbo].[${tableName}] WHERE ${reqWhere}`).catch(() => ({ recordset: [] }))).recordset[0];
+
+          if (lFull && rFull) {
+            const compareCols = Object.keys(lFull).filter(k => 
+              !readOnlyCols.has(k.toLowerCase()) && 
+              !isProtectedColumn(k) &&
+              rCols.has(k.toLowerCase()) && 
+              lCols.has(k.toLowerCase()) &&
+              !pkCols.some(pk => pk.toLowerCase() === k.toLowerCase())
+            );
+            const hasValueDivergence = compareCols.some(k => String(lFull[k] ?? '') !== String(rFull[k] ?? ''));
+            if (!hasValueDivergence) {
+              // Exactly identical values and identical timestamp -> skip
+              continue;
+            }
+
+            // VALUE DIVERGENCE DETECTED WITH IDENTICAL TIMESTAMPS:
+            // Deterministic Tie-Breaker Policy:
+            // When timestamps match exactly (e.g. smalldatetime minute-level resolution or simultaneous edits):
+            // - Remote ERP is the authoritative tie-breaker for Master, Settings, and Reward data.
+            // - Local DB is tie-breaker only for strictly local live checkout cart state.
+            const winner = 'REMOTE';
+            if (winner === 'REMOTE' && allowPull) {
+              const uReq = localPool.request();
+              const updateAssignments = compareCols.map((k, idx) => {
+                uReq.input(`up_${idx}`, rFull[k]);
+                return `[${k}] = @up_${idx}`;
+              }).join(", ");
+              pkCols.forEach((pk, idx) => uReq.input(`up_pk_${idx}`, getRowVal(rRowSummary, pk)));
+              const uWhere = pkCols.map((pk, idx) => `[${pk}] = @up_pk_${idx}`).join(" AND ");
+              const upRes = await uReq.query(`UPDATE [dbo].[${tableName}] SET ${updateAssignments} WHERE ${uWhere}`).catch((uErr) => {
+                console.warn(`⚠️ [Auto-Provision] ${tableName} tie-breaker update failed:`, uErr.message);
+                return { rowsAffected: [0] };
+              });
+              if (upRes.rowsAffected && upRes.rowsAffected[0] > 0) {
+                updatedLocal++;
+              }
+
+              localPool.request()
+                .input("tbl", tableName)
+                .input("key", String(key))
+                .input("lTime", lRawTime ? new Date(lRawTime) : null)
+                .input("rTime", rRawTime ? new Date(rRawTime) : null)
+                .input("winner", "REMOTE")
+                .input("res", "Identical timestamp conflict: resolved by deterministic Remote tie-breaker rule.")
+                .query(`
+                  IF OBJECT_ID('SyncConflictLog', 'U') IS NOT NULL
+                  INSERT INTO SyncConflictLog (TableName, RecordKey, LocalTime, RemoteTime, WinningSource, Resolution)
+                  VALUES (@tbl, @key, @lTime, @rTime, @winner, @res)
+                `).catch(() => {});
+            } else if (winner === 'LOCAL' && allowPush) {
+              const uReq = remotePool.request();
+              const updateAssignments = compareCols.map((k, idx) => {
+                uReq.input(`up_${idx}`, lFull[k]);
+                return `[${k}] = @up_${idx}`;
+              }).join(", ");
+              pkCols.forEach((pk, idx) => uReq.input(`up_pk_${idx}`, getRowVal(lRowSummary, pk)));
+              const uWhere = pkCols.map((pk, idx) => `[${pk}] = @up_pk_${idx}`).join(" AND ");
+              await uReq.query(`UPDATE [dbo].[${tableName}] SET ${updateAssignments} WHERE ${uWhere}`).catch(() => {});
+              updatedRemote++;
+
+              localPool.request()
+                .input("tbl", tableName)
+                .input("key", String(key))
+                .input("lTime", lRawTime ? new Date(lRawTime) : null)
+                .input("rTime", rRawTime ? new Date(rRawTime) : null)
+                .input("winner", "LOCAL")
+                .input("res", "Identical timestamp conflict: resolved by deterministic Local tie-breaker rule.")
+                .query(`
+                  IF OBJECT_ID('SyncConflictLog', 'U') IS NOT NULL
+                  INSERT INTO SyncConflictLog (TableName, RecordKey, LocalTime, RemoteTime, WinningSource, Resolution)
+                  VALUES (@tbl, @key, @lTime, @rTime, @winner, @res)
+                `).catch(() => {});
+            }
+          }
+          continue;
+        }
+
+        // Time difference evaluation:
+        // Remote is newer: Pull remote to local
+        if (rTime > lTime && allowPull) {
           const reqWhere = pkCols.map((pk, idx) => `[${pk}] = @rpk_${idx}`).join(" AND ");
           const fetchReq = remotePool.request();
           pkCols.forEach((pk, idx) => fetchReq.input(`rpk_${idx}`, getRowVal(rRowSummary, pk)));
           const rRowRes = await fetchReq.query(`SELECT TOP 1 * FROM [dbo].[${tableName}] WHERE ${reqWhere}`).catch(() => ({ recordset: [] }));
           const rRow = rRowRes.recordset[0];
           if (rRow) {
-            const keys = Object.keys(rRow).filter(k => rRow[k] !== null && !readOnlyCols.has(k.toLowerCase()) && lCols.has(k.toLowerCase()) && !pkCols.some(pk => pk.toLowerCase() === k.toLowerCase()));
+            const keys = Object.keys(rRow).filter(k => 
+              rRow[k] !== null && 
+              !readOnlyCols.has(k.toLowerCase()) && 
+              !isProtectedColumn(k) &&
+              lCols.has(k.toLowerCase()) && 
+              !pkCols.some(pk => pk.toLowerCase() === k.toLowerCase())
+            );
             if (keys.length > 0) {
               const uReq = localPool.request();
               const updateAssignments = keys.map((k, idx) => {
@@ -530,18 +682,37 @@ async function syncTable2Way(remotePool, localPool, tableName, fallbackPk, maxDe
               const uWhere = pkCols.map((pk, idx) => `[${pk}] = @up_pk_${idx}`).join(" AND ");
               await uReq.query(`UPDATE [dbo].[${tableName}] SET ${updateAssignments} WHERE ${uWhere}`).catch(() => {});
               updatedLocal++;
-              updateCount++;
+
+              // Record conflict diagnosis
+              localPool.request()
+                .input("tbl", tableName)
+                .input("key", String(key))
+                .input("lTime", lRawTime ? new Date(lRawTime) : null)
+                .input("rTime", rRawTime ? new Date(rRawTime) : null)
+                .input("winner", "REMOTE")
+                .input("res", `Remote timestamp is newer by ${rTime - lTime}ms. Updated Local record.`)
+                .query(`
+                  IF OBJECT_ID('SyncConflictLog', 'U') IS NOT NULL
+                  INSERT INTO SyncConflictLog (TableName, RecordKey, LocalTime, RemoteTime, WinningSource, Resolution)
+                  VALUES (@tbl, @key, @lTime, @rTime, @winner, @res)
+                `).catch(() => {});
             }
           }
-        } else if (lTime - rTime > 2000) {
-          // Local is newer -> Push update to Remote
+        } else if (lTime > rTime && allowPush) {
+          // Local is newer: Push local to remote
           const reqWhere = pkCols.map((pk, idx) => `[${pk}] = @lpk_${idx}`).join(" AND ");
           const fetchReq = localPool.request();
           pkCols.forEach((pk, idx) => fetchReq.input(`lpk_${idx}`, getRowVal(lRowSummary, pk)));
           const lRowRes = await fetchReq.query(`SELECT TOP 1 * FROM [dbo].[${tableName}] WHERE ${reqWhere}`).catch(() => ({ recordset: [] }));
           const lRow = lRowRes.recordset[0];
           if (lRow) {
-            const keys = Object.keys(lRow).filter(k => lRow[k] !== null && !readOnlyCols.has(k.toLowerCase()) && rCols.has(k.toLowerCase()) && !pkCols.some(pk => pk.toLowerCase() === k.toLowerCase()));
+            const keys = Object.keys(lRow).filter(k => 
+              lRow[k] !== null && 
+              !readOnlyCols.has(k.toLowerCase()) && 
+              !isProtectedColumn(k) &&
+              rCols.has(k.toLowerCase()) && 
+              !pkCols.some(pk => pk.toLowerCase() === k.toLowerCase())
+            );
             if (keys.length > 0) {
               const uReq = remotePool.request();
               const updateAssignments = keys.map((k, idx) => {
@@ -552,74 +723,238 @@ async function syncTable2Way(remotePool, localPool, tableName, fallbackPk, maxDe
               const uWhere = pkCols.map((pk, idx) => `[${pk}] = @up_pk_${idx}`).join(" AND ");
               await uReq.query(`UPDATE [dbo].[${tableName}] SET ${updateAssignments} WHERE ${uWhere}`).catch(() => {});
               updatedRemote++;
-              updateCount++;
+
+              // Record conflict diagnosis
+              localPool.request()
+                .input("tbl", tableName)
+                .input("key", String(key))
+                .input("lTime", lRawTime ? new Date(lRawTime) : null)
+                .input("rTime", rRawTime ? new Date(rRawTime) : null)
+                .input("winner", "LOCAL")
+                .input("res", `Local timestamp is newer by ${lTime - rTime}ms. Pushed to Remote record.`)
+                .query(`
+                  IF OBJECT_ID('SyncConflictLog', 'U') IS NOT NULL
+                  INSERT INTO SyncConflictLog (TableName, RecordKey, LocalTime, RemoteTime, WinningSource, Resolution)
+                  VALUES (@tbl, @key, @lTime, @rTime, @winner, @res)
+                `).catch(() => {});
             }
           }
         }
       }
     }
 
-    return { tableName, pushed, pulled, updatedLocal, updatedRemote };
+    // 3B. RECONCILIATION FOR PULL-ONLY MASTER CATALOG TABLES (Category A)
+    // If a record exists locally but was deleted from the Remote source of truth:
+    // 1. Check if the record is referenced by historical sales/orders/invoices/KOTs.
+    // 2. If referenced, NEVER hard delete: soft-deactivate (IsActive = 0) to preserve history while disabling menu selection.
+    // 3. If unreferenced, hard delete safely.
+    let deletedLocal = 0;
+    if (syncMode === 'pullOnly' && missingOnRemote.length > 0) {
+      for (const delPkRow of missingOnRemote) {
+        try {
+          const lowerTbl = String(tableName).toLowerCase();
+          let isReferenced = false;
+
+          // Check historical order/settlement references for DishMaster
+          if (lowerTbl === 'dishmaster') {
+            const dishIdVal = getRowVal(delPkRow, 'DishId');
+            const refCheck = await localPool.request()
+              .input("did", dishIdVal)
+              .query(`
+                SELECT TOP 1 1 AS hasRef FROM [dbo].[RestaurantOrderDetail] WHERE DishId = @did
+                UNION ALL
+                SELECT TOP 1 1 AS hasRef FROM [dbo].[SettlementItemDetail] WHERE DishId = @did
+              `).catch(() => ({ recordset: [] }));
+            if (refCheck.recordset.length > 0) {
+              isReferenced = true;
+            }
+          }
+
+          const delReq = localPool.request();
+          const delWhere = pkCols.map((pk, idx) => {
+            delReq.input(`dpk_${idx}`, getRowVal(delPkRow, pk));
+            return `[${pk}] = @dpk_${idx}`;
+          }).join(" AND ");
+
+          if (isReferenced) {
+            // Preserve historical reporting integrity and make it unavailable for new orders
+            if (lCols.has("isactive")) {
+              await localPool.request().query(`UPDATE [dbo].[${tableName}] SET IsActive = 0 WHERE ${delWhere}`).catch(() => {});
+            }
+          } else {
+            const delRes = await delReq.query(`DELETE FROM [dbo].[${tableName}] WHERE ${delWhere}`).catch(async (fkErr) => {
+              if (lCols.has("isactive")) {
+                await localPool.request().query(`UPDATE [dbo].[${tableName}] SET IsActive = 0 WHERE ${delWhere}`).catch(() => {});
+              }
+              return { rowsAffected: [0] };
+            });
+            if (delRes.rowsAffected && delRes.rowsAffected[0] > 0) {
+              deletedLocal += delRes.rowsAffected[0];
+            }
+          }
+        } catch (_) {}
+      }
+    }
+
+    // 4. Special Master Sync for UserMaster: Always sync AllowedLogins and credentials down from Cloud to Local
+    if (String(tableName).toLowerCase() === 'usermaster') {
+      try {
+        const rUsersRes = await remotePool.request().query(`
+          SELECT UserId, UserName, AllowedLogins, UserPassword, FullName, UserGroupid, IsDisabled
+          FROM [dbo].[UserMaster]
+        `).catch(() => ({ recordset: [] }));
+
+        for (const ru of rUsersRes.recordset) {
+          if (!ru.UserId && !ru.UserName) continue;
+          const uReq = localPool.request()
+            .input("UserId", ru.UserId)
+            .input("UserName", ru.UserName)
+            .input("AllowedLogins", ru.AllowedLogins !== null && ru.AllowedLogins !== undefined ? ru.AllowedLogins : 1)
+            .input("UserPassword", ru.UserPassword)
+            .input("FullName", ru.FullName)
+            .input("UserGroupid", ru.UserGroupid)
+            .input("IsDisabled", ru.IsDisabled ? 1 : 0);
+
+          const upRes = await uReq.query(`
+            UPDATE [dbo].[UserMaster]
+            SET AllowedLogins = @AllowedLogins,
+                UserPassword = CASE WHEN @UserPassword IS NOT NULL AND @UserPassword <> '' THEN @UserPassword ELSE UserPassword END,
+                FullName = CASE WHEN @FullName IS NOT NULL AND @FullName <> '' THEN @FullName ELSE FullName END,
+                UserGroupid = CASE WHEN @UserGroupid IS NOT NULL THEN @UserGroupid ELSE UserGroupid END,
+                IsDisabled = @IsDisabled
+            WHERE (UserId = @UserId OR UserName = @UserName)
+              AND (
+                ISNULL(AllowedLogins, 1) <> @AllowedLogins
+                OR IsDisabled <> @IsDisabled
+                OR (@UserPassword IS NOT NULL AND @UserPassword <> '' AND ISNULL(UserPassword, '') <> @UserPassword)
+                OR (@FullName IS NOT NULL AND @FullName <> '' AND ISNULL(FullName, '') <> @FullName)
+                OR (@UserGroupid IS NOT NULL AND ISNULL(UserGroupid, '00000000-0000-0000-0000-000000000000') <> @UserGroupid)
+              )
+          `).catch((uErr) => {
+            console.warn("⚠️ [Auto-Provision] UserMaster special update error:", uErr.message);
+            return { rowsAffected: [0] };
+          });
+
+          if (upRes.rowsAffected && upRes.rowsAffected[0] > 0) {
+            updatedLocal++;
+            console.log(`👤 [UserMaster Sync] Updated user '${ru.UserName}' credentials/details from Remote DB.`);
+          }
+        }
+      } catch (uErr) {
+        console.warn("⚠️ [Auto-Provision] UserMaster sync warning:", uErr.message);
+      }
+    }
+
+    return { tableName, pushed, pulled, updatedLocal, updatedRemote, deletedLocal };
   } catch (err) {
     console.warn(`⚠️ [Auto-Provision] 2-way sync error for ${tableName}:`, err.message);
-    return { tableName, pushed: 0, pulled: 0, updatedLocal: 0, updatedRemote: 0 };
+    return { tableName, pushed: 0, pulled: 0, updatedLocal: 0, updatedRemote: 0, deletedLocal: 0 };
   }
 }
 
-// Master Menu, Catalog, Settings & Terminal tables to keep in continuous 2-way synchronization
-const MASTER_CATALOG_TABLES = [
+// =========================================================================================
+// CATEGORY A: STRICTLY ONE-WAY PULL ONLY (Remote Cloud ERP -> Local DB)
+// The Remote database is the source of truth for these tables.
+// Local changes are NEVER pushed to Remote.
+// =========================================================================================
+const CATEGORY_A_PULL_ONLY_TABLES = [
   { name: 'CategoryMaster', pk: 'CategoryId' },
   { name: 'CategoryKitchenType', pk: ['CategoryId', 'KitchenTypeCode'] },
-  { name: 'DishGroupMaster', pk: 'DishGroupId' },
   { name: 'DishGroupKitchentype', pk: ['DishGroupid', 'KitchenTypeCode'] },
   { name: 'DishGroupMapping', pk: ['DishId', 'DishGroupId'] },
   { name: 'DishMaster', pk: 'DishId' },
+  { name: 'DishGroupMaster', pk: 'DishGroupId' },
   { name: 'ModifierMaster', pk: 'ModifierID' },
-  { name: 'DishModifier', pk: ['DishId', 'ModifierId'] },
   { name: 'DishGroupModifier', pk: ['DishGroupId', 'ModifierId'] },
-  { name: 'DishModifierGroup', pk: 'ModifierGroupId' },
+  { name: 'DishModifier', pk: ['DishId', 'ModifierId'] },
+  { name: 'DishModifierGroup', pk: 'DishModifierGroupId' },
   { name: 'ComboGroupMaster', pk: 'ComboGroupId' },
   { name: 'ComboGroupDishMapping', pk: 'MappingId' },
-  { name: 'ParentDishComboGroupMapping', pk: ['ComboGroupId', 'ParentDishId'] },
   { name: 'TableMaster', pk: 'TableId' },
   { name: 'Paymode', pk: 'PayMode' },
-  { name: 'PrintMaster', pk: 'PrinterId' },
-  { name: 'TerminalMaster', pk: 'TerminalId' },
+  { name: 'ParentDishComboGroupMapping', pk: ['ParentDishId', 'ComboGroupId'] },
   { name: 'ImageList', pk: 'Imageid' },
-  { name: 'CompanySettings', pk: 'Id' },
-  { name: 'CompanyMaster', pk: 'CompanyId' },
-  { name: 'AppSettings', pk: 'Id' },
-  { name: 'SettingsMaster', pk: 'Id' },
   { name: 'UserGroupMaster', pk: 'UserGroupId' },
   { name: 'UserMaster', pk: 'UserId' },
-  { name: 'UserPermission', pk: 'UserId' }
+  { name: 'UserPermission', pk: ['UserGroupCode', 'FormCode'] }
+];
+
+// =========================================================================================
+// CATEGORY B: TWO-WAY PUSH AND PULL SYNCHRONIZATION (Local DB <-> Remote DB)
+// Changes in either database are synchronized bidirectionally with conflict resolution.
+// =========================================================================================
+const CATEGORY_B_TWOWAY_TABLES = [
+  { name: 'TerminalMaster', pk: 'TerminalId' },
+  { name: 'CompanySettings', pk: 'Id' },
+  { name: 'AppSettings', pk: 'Id' },
+  { name: 'MemberMaster', pk: 'MemberId' },
+  { name: 'RewardPointDetails', pk: 'Id' },
+  { name: 'LoyaltyCustomer', pk: 'LoyaltyCustomerId' },
+  { name: 'LoyaltyVisit', pk: 'LoyaltyVisitId' },
+  { name: 'CustomerDishLoyaltyState', pk: ['CustomerId', 'RuleId'] },
+  { name: 'CreditCustomerMaster', pk: 'CustomerId' },
+  { name: 'CustomerCreditTransactions', pk: 'TransactionId' },
+  { name: 'CustomerCreditAllocations', pk: 'AllocationId' }
 ];
 
 let lastMasterCatalogSyncTime = 0;
-const MASTER_CATALOG_SYNC_INTERVAL_MS = 600000; // Check catalog every 10 minutes (prevents WAN congestion)
+const MASTER_CATALOG_SYNC_INTERVAL_MS = 180000; // Check catalog every 3-5 minutes (default: 3 minutes)
 
-// 2-Way Master Catalog Synchronizer: Checks every remote and local record, pushes and pulls differences
+let isMasterCatalogSyncing = false;
+const tableSyncStateMap = new Map();
+const cartSyncStateMap = new Map();
+
+// Execute synchronization for Category A (Pull-Only) and Category B (2-Way)
 async function syncMasterCatalog2Way(remotePool, localPool) {
   if (!remotePool || !localPool) return;
-  lastMasterCatalogSyncTime = Date.now();
-  console.log("⚡ [Auto-Provision] Verifying 2-Way sync for Master Catalog (Categories, Dishes, Combos, Modifiers, Tables, Paymodes)...");
-  let totalChanges = 0;
-  for (const t of MASTER_CATALOG_TABLES) {
-    const res = await syncTable2Way(remotePool, localPool, t.name, t.pk, 2000);
-    if (res && (res.pulled > 0 || res.pushed > 0 || res.updatedLocal > 0 || res.updatedRemote > 0)) {
-      totalChanges += (res.pulled + res.pushed + res.updatedLocal + res.updatedRemote);
-      console.log(`📦 [MasterSync] ${t.name}: Pulled=${res.pulled}, Pushed=${res.pushed}, UpdLocal=${res.updatedLocal}, UpdRemote=${res.updatedRemote}`);
-    }
+  if (isMasterCatalogSyncing) {
+    console.log("⏳ [CatalogSync] Catalog sync already running. Skipping overlapping cycle.");
+    return;
   }
+  isMasterCatalogSyncing = true;
+  lastMasterCatalogSyncTime = Date.now();
+  let totalChanges = 0;
 
-  if (totalChanges > 0) {
-    console.log(`✨ [MasterSync] Master Catalog updated with ${totalChanges} changes! Invalidating menu cache...`);
-    try {
-      const menuRoute = require("../routes/menu");
-      if (menuRoute && typeof menuRoute.clearMenuCache === "function") {
-        menuRoute.clearMenuCache();
+  try {
+    // 1. Sync Category A tables: STRICTLY ONE-WAY PULL ONLY (Remote -> Local)
+    console.log("📥 [CatalogSync] Pulling Category A Master Catalog tables (Remote -> Local Only)...");
+    for (const t of CATEGORY_A_PULL_ONLY_TABLES) {
+      try {
+        const res = await syncTable2Way(remotePool, localPool, t.name, t.pk, 2000, 'pullOnly');
+        if (res && (res.pulled > 0 || res.updatedLocal > 0 || (res.deletedLocal && res.deletedLocal > 0))) {
+          totalChanges += (res.pulled + res.updatedLocal + (res.deletedLocal || 0));
+          console.log(`📦 [PullOnly] ${t.name}: Pulled=${res.pulled}, UpdLocal=${res.updatedLocal}, DelLocal=${res.deletedLocal || 0}`);
+        }
+      } catch (tblErr) {
+        console.warn(`⚠️ [PullOnly] ${t.name} warning:`, tblErr.message);
       }
-    } catch (_) {}
+    }
+
+    // 2. Sync Category B tables: TWO-WAY (Local <-> Remote)
+    console.log("🔄 [CatalogSync] Synchronizing Category B Operational & Settings tables (2-Way)...");
+    for (const t of CATEGORY_B_TWOWAY_TABLES) {
+      try {
+        const res = await syncTable2Way(remotePool, localPool, t.name, t.pk, 500, 'twoWay');
+        if (res && (res.pulled > 0 || res.pushed > 0 || res.updatedLocal > 0 || res.updatedRemote > 0)) {
+          totalChanges += (res.pulled + res.pushed + res.updatedLocal + res.updatedRemote);
+          console.log(`📦 [TwoWay] ${t.name}: Pulled=${res.pulled}, Pushed=${res.pushed}, UpdLocal=${res.updatedLocal}, UpdRemote=${res.updatedRemote}`);
+        }
+      } catch (tblErr) {
+        console.warn(`⚠️ [TwoWay] ${t.name} warning:`, tblErr.message);
+      }
+    }
+
+    if (totalChanges > 0) {
+      console.log(`✨ [CatalogSync] Catalog updated with ${totalChanges} total changes! Invalidating menu cache...`);
+      try {
+        const menuRoute = require("../routes/menu");
+        if (menuRoute && typeof menuRoute.clearMenuCache === "function") {
+          menuRoute.clearMenuCache();
+        }
+      } catch (_) {}
+    }
+  } finally {
+    isMasterCatalogSyncing = false;
   }
 }
 
@@ -685,10 +1020,14 @@ async function hydrateTableFast(remotePool, localPool, tableName) {
     const validLocalCols = new Set(lColsRes.recordset.map(r => r.COLUMN_NAME.toLowerCase()));
 
     const firstRow = records[0];
-    const insertCols = Object.keys(firstRow).filter(k => 
-      !readOnlyCols.has(k.toLowerCase()) && 
-      validLocalCols.has(k.toLowerCase())
-    );
+    const isUserMaster = String(tableName).toLowerCase() === 'usermaster';
+    const insertCols = Object.keys(firstRow).filter(k => {
+      const lower = k.toLowerCase();
+      if (isUserMaster && (lower === 'isloggedin' || lower === 'lastheartbeat' || lower === 'activesessionid')) {
+        return false;
+      }
+      return !readOnlyCols.has(lower) && validLocalCols.has(lower);
+    });
 
     if (insertCols.length === 0) return { tableName, synced: 0 };
 
@@ -1017,12 +1356,11 @@ async function pushActiveOrderToRemote(orderIdOrNumber, customRemotePool, custom
 // Helper: Sync active floor plan, active open orders, and Day-Start sequence from Remote DB
 async function syncOperationalStateFromRemote(remotePool, localPool) {
   try {
-    // 0. Mirror business day (DateEntry) and push all sales, settlements, day end, reports, members & credit to Remote DB
-    const { mirrorBusinessDateEntry, pushAllSalesAndOperationalToRemote } = require("./salesPushService");
+    // 0. Mirror business day (DateEntry) to Remote DB
+    const { mirrorBusinessDateEntry } = require("./salesPushService");
     await mirrorBusinessDateEntry(localPool, remotePool);
-    await pushAllSalesAndOperationalToRemote(localPool, remotePool);
 
-    // 0B. SyncDeletedLog Table Creation & Offline Deletion Processing
+    // 0B. SyncDeletedLog & SyncConflictLog Table Creation & Offline Deletion Processing
     const createDeletedLogTblSql = `
       IF OBJECT_ID('SyncDeletedLog', 'U') IS NULL
       BEGIN
@@ -1032,53 +1370,105 @@ async function syncOperationalStateFromRemote(remotePool, localPool) {
           RecordId VARCHAR(100) NOT NULL,
           DeletedAt DATETIME DEFAULT GETDATE()
         );
-      END
+      END;
+      IF OBJECT_ID('SyncConflictLog', 'U') IS NULL
+      BEGIN
+        CREATE TABLE SyncConflictLog (
+          ConflictId INT IDENTITY(1,1) PRIMARY KEY,
+          TableName VARCHAR(100) NOT NULL,
+          RecordKey VARCHAR(255) NOT NULL,
+          LocalTime DATETIME NULL,
+          RemoteTime DATETIME NULL,
+          WinningSource VARCHAR(50) NOT NULL,
+          Resolution VARCHAR(255) NOT NULL,
+          LoggedAt DATETIME DEFAULT GETDATE()
+        );
+      END;
     `;
     await localPool.request().query(createDeletedLogTblSql).catch(() => {});
     await remotePool.request().query(createDeletedLogTblSql).catch(() => {});
 
-    // Process Local Deletions -> Remote DB
+    // Table PK lookup map for Category A and Category B tables deletion synchronization
+    const deletionTablePkMap = {
+      // Category A (Remote -> Local deletions)
+      'CategoryMaster': 'CategoryId',
+      'CategoryKitchenType': 'CategoryId',
+      'DishGroupKitchentype': 'DishGroupid',
+      'DishGroupMapping': 'DishId',
+      'DishMaster': 'DishId',
+      'DishGroupMaster': 'DishGroupId',
+      'ModifierMaster': 'ModifierID',
+      'DishGroupModifier': 'DishGroupId',
+      'DishModifier': 'DishId',
+      'DishModifierGroup': 'DishModifierGroupId',
+      'ComboGroupMaster': 'ComboGroupId',
+      'ComboGroupDishMapping': 'MappingId',
+      'TableMaster': 'TableId',
+      'Paymode': 'PayMode',
+      'ParentDishComboGroupMapping': 'ParentDishId',
+      'ImageList': 'Imageid',
+      'UserGroupMaster': 'UserGroupId',
+      'UserMaster': 'UserId',
+      'UserPermission': 'UserGroupCode',
+      // Category B (Two-Way deletions)
+      'TerminalMaster': 'TerminalId',
+      'CompanySettings': 'Id',
+      'AppSettings': 'Id',
+      'MemberMaster': 'MemberId',
+      'RewardPointDetails': 'Id',
+      'LoyaltyCustomer': 'LoyaltyCustomerId',
+      'LoyaltyVisit': 'LoyaltyVisitId',
+      'CustomerDishLoyaltyState': 'CustomerId',
+      'CreditCustomerMaster': 'CustomerId',
+      'CustomerCreditTransactions': 'TransactionId',
+      'CreditCustomerTransaction': 'TransactionId',
+      'CustomerCreditAllocations': 'AllocationId'
+    };
+
+    // Category A tables are STRICTLY PULL-ONLY: Local deletions must NEVER be pushed to Remote!
+    const CATEGORY_A_SET = new Set(CATEGORY_A_PULL_ONLY_TABLES.map(t => t.name.toLowerCase()));
+
+    // Process Local Deletions -> Remote DB (Category B only)
     const localDeletions = await localPool.request().query("SELECT Id, TableName, RecordId FROM SyncDeletedLog").catch(() => ({ recordset: [] }));
     for (const del of localDeletions.recordset) {
-      const pkName = (del.TableName === 'CreditCustomerMaster') ? 'CustomerId' :
-                     (del.TableName === 'CustomerCreditTransactions' || del.TableName === 'CreditCustomerTransaction') ? 'TransactionId' : 'MemberId';
+      if (CATEGORY_A_SET.has(del.TableName.toLowerCase())) {
+        // Discard local deletion of Category A table to prevent polluting Remote source of truth
+        await localPool.request().input("id", del.Id).query("DELETE FROM SyncDeletedLog WHERE Id = @id").catch(() => {});
+        continue;
+      }
+      const pkName = deletionTablePkMap[del.TableName] || 'Id';
       await remotePool.request()
         .input("recId", del.RecordId)
-        .query(`DELETE FROM ${del.TableName} WHERE [${pkName}] = @recId`).catch(() => {});
+        .query(`DELETE FROM [dbo].[${del.TableName}] WHERE [${pkName}] = @recId`).catch(() => {});
       await localPool.request()
         .input("id", del.Id)
         .query("DELETE FROM SyncDeletedLog WHERE Id = @id").catch(() => {});
     }
 
-    // Process Remote Deletions -> Local DB
+    // Process Remote Deletions -> Local DB (Category A and Category B)
     const remoteDeletions = await remotePool.request().query("SELECT Id, TableName, RecordId FROM SyncDeletedLog").catch(() => ({ recordset: [] }));
     for (const rDel of remoteDeletions.recordset) {
-      const pkName = (rDel.TableName === 'CreditCustomerMaster') ? 'CustomerId' :
-                     (rDel.TableName === 'CustomerCreditTransactions' || rDel.TableName === 'CreditCustomerTransaction') ? 'TransactionId' : 'MemberId';
+      const pkName = deletionTablePkMap[rDel.TableName] || 'Id';
       await localPool.request()
         .input("recId", rDel.RecordId)
-        .query(`DELETE FROM ${rDel.TableName} WHERE [${pkName}] = @recId`).catch(() => {});
+        .query(`DELETE FROM [dbo].[${rDel.TableName}] WHERE [${pkName}] = @recId`).catch(() => {});
       await remotePool.request()
         .input("id", rDel.Id)
         .query("DELETE FROM SyncDeletedLog WHERE Id = @id").catch(() => {});
     }
 
-    // 0A. Master Catalog Sync: verify all menu, catalog, settings & terminals every 20s (or on first run)
+    // 0A. Master Catalog Sync: verify all menu, catalog, settings & terminals every 3 minutes (or on first run)
     const now = Date.now();
     if (now - lastMasterCatalogSyncTime >= MASTER_CATALOG_SYNC_INTERVAL_MS || lastMasterCatalogSyncTime === 0) {
       lastMasterCatalogSyncTime = now;
       await syncMasterCatalog2Way(remotePool, localPool);
     }
 
-    // 0C. Operational Table Sync for Non-Transactional Entities (Attendance, Staff, Customer Credit & Sequences)
-    // (Note: Sales, Invoices, Settlements & Payment details are already pushed 1-way by salesPushService)
+    // 0C. Operational Table Sync for Non-Transactional Staff & Attendance Entities
+    // (Note: Category A & Category B are synchronized above in syncMasterCatalog2Way)
     await syncTable2Way(remotePool, localPool, "TimeEntry", ["Userid", "ClockinTime"], 50);
     await syncTable2Way(remotePool, localPool, "DailyAttendance", ["DeliveryPersonId", "StartDateTime"], 50);
     await syncTable2Way(remotePool, localPool, "DailyAttendanceLog", ["DeliveryPersonId", "StartDateTime"], 50);
-    await syncTable2Way(remotePool, localPool, "MemberMaster", "MemberId", 50);
-    await syncTable2Way(remotePool, localPool, "CreditCustomerMaster", "CustomerId", 50);
-    await syncTable2Way(remotePool, localPool, "CustomerCreditTransactions", "TransactionId", 50);
-    await syncTable2Way(remotePool, localPool, "OrderSequences", ["RestaurantId", "SequenceDate"], 50);
 
     // 1. Sync DailyOrderSequenceNumber (Business Day Start/End status)
     const remoteSeq = await remotePool.request().query("SELECT TOP 50 * FROM DailyOrderSequenceNumber");
@@ -1102,6 +1492,12 @@ async function syncOperationalStateFromRemote(remotePool, localPool) {
     `).catch(() => ({ recordset: [] }));
 
     for (const lTbl of localTables.recordset) {
+      const tblKey = String(lTbl.TableNumber);
+      const stateSig = `${lTbl.Status}_${lTbl.TotalAmount}_${lTbl.CurrentOrderId}_${lTbl.LockedByName}_${lTbl.entry_status}_${lTbl.CustomerName}_${lTbl.Pax}_${lTbl.StartTime}`;
+      if (tableSyncStateMap.get(tblKey) === stateSig) {
+        continue; // Unchanged table floor state: skip redundant remote network query
+      }
+
       await remotePool.request()
         .input("tblNo", lTbl.TableNumber)
         .input("status", lTbl.Status !== undefined ? lTbl.Status : 0)
@@ -1119,13 +1515,21 @@ async function syncOperationalStateFromRemote(remotePool, localPool) {
               CurrentOrderId = @currOrder, CustomerName = @custName, Pax = @pax,
               LockedByName = @lockedBy, entry_status = @entryStatus, ModifiedOn = @modifiedOn
           WHERE TableNumber = @tblNo
-        `).catch(() => {});
+        `).then(() => {
+          tableSyncStateMap.set(tblKey, stateSig);
+        }).catch(() => {});
     }
 
     // 3. 1-Way CartItems Sync: Push Local DB -> Remote DB ONLY
     // (Remote -> Local cart pull is completely DISABLED so stale remote carts never pollute local tables)
     const localCartItems = await localPool.request().query("SELECT * FROM CartItems WITH (NOLOCK)").catch(() => ({ recordset: [] }));
     for (const lItem of localCartItems.recordset) {
+      const cartKey = String(lItem.Id);
+      const cartSig = `${lItem.CartId}_${lItem.CartPayload}`;
+      if (cartSyncStateMap.get(cartKey) === cartSig) {
+        continue; // Unchanged cart: skip redundant remote network query
+      }
+
       await remotePool.request()
         .input("id", lItem.Id)
         .input("cartId", lItem.CartId)
@@ -1135,7 +1539,19 @@ async function syncOperationalStateFromRemote(remotePool, localPool) {
             UPDATE CartItems SET CartId = @cartId, CartPayload = @payload, UpdatedAt = GETDATE() WHERE Id = @id;
           ELSE
             INSERT INTO CartItems (Id, CartId, CartPayload, UpdatedAt) VALUES (@id, @cartId, @payload, GETDATE());
-        `).catch(() => {});
+        `).then(() => {
+          cartSyncStateMap.set(cartKey, cartSig);
+        }).catch(() => {});
+    }
+
+    // Prune stale entries in cartSyncStateMap to keep memory strictly bounded
+    if (cartSyncStateMap.size > localCartItems.recordset.length) {
+      const activeCartKeys = new Set(localCartItems.recordset.map(i => String(i.Id)));
+      for (const k of cartSyncStateMap.keys()) {
+        if (!activeCartKeys.has(k)) {
+          cartSyncStateMap.delete(k);
+        }
+      }
     }
 
     // 4. 1-WAY SYNC: Active Open Orders & Line Items (Local DB -> Remote DB ONLY)
@@ -1308,5 +1724,7 @@ module.exports = {
   syncOperationalStateFromRemote,
   syncMasterCatalog2Way,
   syncTable2Way,
-  pushActiveOrderToRemote
+  pushActiveOrderToRemote,
+  CATEGORY_A_PULL_ONLY_TABLES,
+  CATEGORY_B_TWOWAY_TABLES
 };

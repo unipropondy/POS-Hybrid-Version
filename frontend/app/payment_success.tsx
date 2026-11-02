@@ -180,10 +180,8 @@ export default function PaymentSuccess() {
     } else if (params.isSplit === "true") {
       setShowSplitConfirmModal(true);
     } else {
-      router.replace({
-        pathname: "/(tabs)/category",
-        params: { section },
-      });
+      const targetSec = section || "SECTION_1";
+      router.replace(`/(tabs)/category?section=${targetSec}`);
     }
   };
 
@@ -270,7 +268,10 @@ export default function PaymentSuccess() {
         total: displayTotal,
         paymentMethod: isFocPayment ? "FOC" : method,
         cashPaid: parseFloat(paid) || 0,
+        cashReceived: parseFloat(paid) || 0,
+        tenderedAmount: parseFloat(paid) || 0,
         change: parseFloat(change) || 0,
+        changeAmount: parseFloat(change) || 0,
         items: items,
         payments: payments,
         roundOff: parseFloat(roundOff) || 0,

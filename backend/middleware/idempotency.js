@@ -1,3 +1,4 @@
+const crypto = require("crypto");
 const processedRequests = new Map(); // requestId -> { status, timestamp, response: { status, headers, body } }
 
 // Cleanup interval: run every 5 minutes to clear entries older than 5 minutes (fallback safety)
@@ -18,10 +19,23 @@ module.exports = function idempotencyMiddleware(req, res, next) {
     return next();
   }
 
+  const bodyChecksum = crypto
+    .createHash('sha256')
+    .update(typeof req.body === 'object' ? JSON.stringify(req.body) : String(req.body || ''))
+    .digest('hex');
+
   if (processedRequests.has(requestId)) {
     const record = processedRequests.get(requestId);
     console.log(`[Idempotency] Duplicate request detected for ID: ${requestId}. Method: ${req.method}, URL: ${req.originalUrl}. Status: ${record.status}`);
     
+    // Check if the payload matches the original request
+    if (record.checksum && record.checksum !== bodyChecksum) {
+      console.warn(`[Idempotency] Request ID reuse with differing payload: ${requestId}`);
+      return res.status(422).json({ 
+        error: "Unprocessable Entity: Idempotency-Key reuse with different request parameters or payload." 
+      });
+    }
+
     if (record.status === 'processing') {
       // If it is still being processed by the server, return a 409 Conflict to avoid overlapping execution
       return res.status(409).json({ error: "Request is already processing. Please try again." });
@@ -38,6 +52,7 @@ module.exports = function idempotencyMiddleware(req, res, next) {
   // Register request as processing to lock it
   processedRequests.set(requestId, { 
     status: 'processing', 
+    checksum: bodyChecksum,
     timestamp: Date.now() 
   });
 
@@ -47,6 +62,7 @@ module.exports = function idempotencyMiddleware(req, res, next) {
     // Save response details to cache
     processedRequests.set(requestId, {
       status: 'resolved',
+      checksum: bodyChecksum,
       timestamp: Date.now(),
       response: {
         status: res.statusCode,

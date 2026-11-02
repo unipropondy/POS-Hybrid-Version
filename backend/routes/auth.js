@@ -8,6 +8,7 @@ if (!JWT_SECRET) {
   throw new Error("FATAL: JWT_SECRET environment variable is not set!");
 }
 const bcrypt = require("bcryptjs");
+const crypto = require("crypto");
 
 async function sendWelcomeEmail({
   email,
@@ -412,6 +413,8 @@ router.post("/login", async (req, res) => {
           u.UserId, u.UserCode, u.UserName, u.UserPassword, u.FullName,
           u.FirstName, u.LastName, u.IsDisabled, u.UserGroupid,
           u.FromDate, u.ToDate,
+          ISNULL(u.AllowedLogins, 1) AS AllowedLogins,
+          ISNULL(u.IsLoggedIn, 0) AS IsLoggedIn,
           g.UserGroupCode AS RoleCode, g.UserGroupName AS RoleName,
           g.isActive AS IsGroupActive
         FROM [dbo].[UserMaster] u
@@ -536,9 +539,8 @@ router.post("/login", async (req, res) => {
 
     const dbPassword = (user.UserPassword || "").trim();
     let isValid = false;
-    let needsRehash = false;
 
-    // 1. Try bcrypt check
+    // 1. Try bcrypt check (if already bcrypt)
     try {
       if (dbPassword.startsWith("$2a$") || dbPassword.startsWith("$2b$")) {
         isValid = await bcrypt.compare(password, dbPassword);
@@ -547,7 +549,7 @@ router.post("/login", async (req, res) => {
       console.error("Bcrypt compare error:", e);
     }
 
-    // 2. Legacy check fallback
+    // 2. Base64 & plain text check (do NOT overwrite in DB)
     if (!isValid) {
       const parts = dbPassword.split("-");
       const candidates = [dbPassword, parts[0]].filter((c) => c.length > 0);
@@ -555,14 +557,12 @@ router.post("/login", async (req, res) => {
       for (const cand of candidates) {
         if (cand === password) {
           isValid = true;
-          needsRehash = true;
           break;
         }
         try {
           const decoded = Buffer.from(cand, "base64").toString("utf-8").trim();
           if (decoded === password) {
             isValid = true;
-            needsRehash = true;
             break;
           }
         } catch (e) {}
@@ -576,28 +576,6 @@ router.post("/login", async (req, res) => {
       return res
         .status(401)
         .json({ success: false, message: "Invalid User ID or Password." });
-    }
-
-    // Auto-migrate legacy password to bcrypt
-    if (needsRehash) {
-      try {
-        const hashedPassword = await bcrypt.hash(password, 10);
-        await pool
-          .request()
-          .input("UserId", user.UserId)
-          .input("HashedPassword", hashedPassword)
-          .query(
-            "UPDATE [dbo].[UserMaster] SET UserPassword = @HashedPassword WHERE UserId = @UserId",
-          );
-        console.log(
-          `[AUTH] Successfully migrated password to bcrypt for user "${user.UserName}".`,
-        );
-      } catch (e) {
-        console.error(
-          `[AUTH] Failed to migrate password to bcrypt for user "${user.UserName}":`,
-          e,
-        );
-      }
     }
 
     // ✅ VALIDATE USER-SPECIFIC LICENSE WINDOW
@@ -636,30 +614,107 @@ router.post("/login", async (req, res) => {
       }
     }
 
-    // Update Last Login
-    await pool
-      .request()
-      .input("UserId", user.UserId)
-      .query(
-        "UPDATE [dbo].[UserMaster] SET LastLogInDate = GETDATE() WHERE UserId = @UserId",
-      );
-
     const finalUserId = String(user.UserId).trim();
     const roleCode = (user.RoleCode || "CASHIER").toUpperCase().trim();
 
-    // 1. Generate Security Token (JWT)
+    // === MULTI-DEVICE SESSION MANAGEMENT & ALLOWED LOGINS ===
+    const allowedLoginsRaw = parseInt(user.AllowedLogins, 10);
+    const isUnlimited = isNaN(allowedLoginsRaw) || allowedLoginsRaw <= 0 || allowedLoginsRaw >= 999;
+    const allowedLogins = isUnlimited ? 999 : allowedLoginsRaw;
+
+    // 1. Prune dead sessions (> 300s = 5 minutes old)
+    await pool
+      .request()
+      .input("UserId", finalUserId)
+      .query(`
+        DELETE FROM [dbo].[UserSessions]
+        WHERE UserId = @UserId AND DATEDIFF(SECOND, LastHeartbeat, GETDATE()) > 300
+      `);
+
+    // 2. Fetch active sessions for this user
+    const activeSessionsResult = await pool
+      .request()
+      .input("UserId", finalUserId)
+      .query(`
+        SELECT SessionId, DeviceName, IpAddress, DATEDIFF(SECOND, LastHeartbeat, GETDATE()) AS AgeSec
+        FROM [dbo].[UserSessions]
+        WHERE UserId = @UserId AND DATEDIFF(SECOND, LastHeartbeat, GETDATE()) <= 300
+      `);
+
+    const activeSessions = activeSessionsResult.recordset || [];
+    const clientSessionId = (req.body.sessionId || "").trim();
+    const isExistingDevice = clientSessionId && activeSessions.some((s) => s.SessionId === clientSessionId);
+
+    // 3. Check concurrency limit
+    if (!isUnlimited && activeSessions.length >= allowedLogins && !isExistingDevice) {
+      console.warn(`[AUTH] Login blocked for ${user.UserName}: Reached max allowed logins (${activeSessions.length}/${allowedLogins} devices).`);
+      const isAdminRole = roleCode === "ADMIN" || roleCode === "ADMINISTRATOR" || roleCode === "SUPERADMIN";
+      return res.status(409).json({
+        success: false,
+        isLocked: true,
+        message: `User reached max allowed logins (${allowedLogins} device(s)). Active devices: ${activeSessions.length}.`,
+        allowedLogins,
+        activeCount: activeSessions.length,
+        role: roleCode,
+        roleName: user.RoleName || roleCode,
+        canForceUnlock: isAdminRole,
+      });
+    }
+
+    // 4. Generate or reuse SessionId
+    const sessionId = isExistingDevice ? clientSessionId : (clientSessionId || crypto.randomUUID());
+    const deviceName = (req.body.deviceName || "").trim() || (req.headers["user-agent"] ? req.headers["user-agent"].substring(0, 100) : "Tablet/POS");
+    const ipAddress = (req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "").toString().substring(0, 50);
+
+    // 5. Upsert into UserSessions
+    await pool
+      .request()
+      .input("SessionId", sessionId)
+      .input("UserId", finalUserId)
+      .input("DeviceName", deviceName)
+      .input("IpAddress", ipAddress)
+      .query(`
+        IF EXISTS (SELECT 1 FROM [dbo].[UserSessions] WHERE SessionId = @SessionId)
+        BEGIN
+          UPDATE [dbo].[UserSessions]
+          SET LastHeartbeat = GETDATE(), DeviceName = @DeviceName, IpAddress = @IpAddress
+          WHERE SessionId = @SessionId;
+        END
+        ELSE
+        BEGIN
+          INSERT INTO [dbo].[UserSessions] (SessionId, UserId, DeviceName, IpAddress, CreatedAt, LastHeartbeat)
+          VALUES (@SessionId, @UserId, @DeviceName, @IpAddress, GETDATE(), GETDATE());
+        END
+      `);
+
+    // 6. Update UserMaster LastLogInDate, IsLoggedIn = 1, LastHeartbeat, and ActiveSessionId
+    await pool
+      .request()
+      .input("UserId", finalUserId)
+      .input("SessionId", sessionId)
+      .query(`
+        UPDATE [dbo].[UserMaster] 
+        SET LastLogInDate = GETDATE(), 
+            IsLoggedIn = 1, 
+            LastHeartbeat = GETDATE(), 
+            ActiveSessionId = @SessionId 
+        WHERE UserId = @UserId
+      `);
+
+    // 7. Generate Security Token (JWT)
     const token = jwt.sign(
       { userId: finalUserId, role: roleCode },
       JWT_SECRET,
       { expiresIn: "24h" },
     );
 
-    console.log(`✅ Login Success: ${user.FullName} | Role: ${roleCode}`);
+    console.log(`✅ Login Success: ${user.FullName} | Role: ${roleCode} | Session: ${sessionId}`);
 
-    // 2. Return Comprehensive Auth Response
+    // 8. Return Comprehensive Auth Response with SessionId
     return res.json({
       success: true,
       token,
+      sessionId,
       user: {
         userId: finalUserId,
         id: finalUserId,
@@ -671,11 +726,197 @@ router.post("/login", async (req, res) => {
         userGroupId: user.UserGroupid,
         licenseFromDate: user.FromDate,
         licenseToDate: user.ToDate,
+        allowedLogins: user.AllowedLogins || 1,
       },
     });
   } catch (err) {
     console.error("LOGIN ERROR:", err);
     res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+/* ================= AUTH - HEARTBEAT ================= */
+router.post("/heartbeat", async (req, res) => {
+  try {
+    const { userId, sessionId } = req.body;
+    if (!userId || !sessionId) {
+      return res.status(400).json({ success: false, message: "Missing userId or sessionId" });
+    }
+
+    const pool = await poolPromise;
+    if (!pool) {
+      return res.status(503).json({ success: false, message: "Database unavailable" });
+    }
+
+    const cleanUserId = String(userId).trim();
+    const cleanSessionId = String(sessionId).trim();
+
+    const result = await pool
+      .request()
+      .input("UserId", cleanUserId)
+      .input("SessionId", cleanSessionId)
+      .query(`
+        UPDATE [dbo].[UserSessions]
+        SET LastHeartbeat = GETDATE()
+        WHERE UserId = @UserId AND SessionId = @SessionId
+      `);
+
+    if (result.rowsAffected[0] === 0) {
+      // Session was revoked, deleted, or expired
+      return res.status(401).json({
+        success: false,
+        sessionRevoked: true,
+        message: "Session expired or revoked.",
+      });
+    }
+
+    // Touch UserMaster.LastHeartbeat
+    await pool
+      .request()
+      .input("UserId", cleanUserId)
+      .query(`UPDATE [dbo].[UserMaster] SET LastHeartbeat = GETDATE() WHERE UserId = @UserId`)
+      .catch(() => {});
+
+    return res.json({ success: true, message: "Heartbeat acknowledged" });
+  } catch (err) {
+    console.error("[AUTH] Heartbeat Error:", err);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+/* ================= AUTH - LOGOUT ================= */
+router.post("/logout", async (req, res) => {
+  try {
+    const { userId, sessionId } = req.body;
+    if (!userId) {
+      return res.status(400).json({ success: false, message: "Missing userId" });
+    }
+
+    const pool = await poolPromise;
+    if (!pool) {
+      return res.status(503).json({ success: false, message: "Database unavailable" });
+    }
+
+    const cleanUserId = String(userId).trim();
+
+    if (sessionId) {
+      await pool
+        .request()
+        .input("UserId", cleanUserId)
+        .input("SessionId", String(sessionId).trim())
+        .query(`
+          DELETE FROM [dbo].[UserSessions]
+          WHERE UserId = @UserId AND SessionId = @SessionId
+        `);
+    } else {
+      await pool
+        .request()
+        .input("UserId", cleanUserId)
+        .query(`
+          DELETE FROM [dbo].[UserSessions]
+          WHERE UserId = @UserId AND DATEDIFF(SECOND, LastHeartbeat, GETDATE()) > 300
+        `);
+    }
+
+    // Check remaining active sessions
+    const checkResult = await pool
+      .request()
+      .input("UserId", cleanUserId)
+      .query(`
+        SELECT COUNT(*) AS activeCount
+        FROM [dbo].[UserSessions]
+        WHERE UserId = @UserId AND DATEDIFF(SECOND, LastHeartbeat, GETDATE()) <= 300
+      `);
+
+    const remainingCount = checkResult.recordset[0]?.activeCount || 0;
+    if (remainingCount === 0) {
+      await pool
+        .request()
+        .input("UserId", cleanUserId)
+        .query(`UPDATE [dbo].[UserMaster] SET IsLoggedIn = 0, ActiveSessionId = NULL, LastHeartbeat = NULL WHERE UserId = @UserId`);
+    }
+
+    return res.json({
+      success: true,
+      message: "Logged out successfully",
+      remainingSessions: remainingCount,
+    });
+  } catch (err) {
+    console.error("[AUTH] Logout Error:", err);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+/* ================= AUTH - FORCE UNLOCK ================= */
+router.post("/force-unlock", async (req, res) => {
+  try {
+    const { userId, userName } = req.body;
+    if (!userId && !userName) {
+      return res.status(400).json({ success: false, message: "userId or userName is required" });
+    }
+
+    const pool = await poolPromise;
+    if (!pool) {
+      return res.status(503).json({ success: false, message: "Database unavailable" });
+    }
+
+    // Verify user exists and check their authoritative role
+    let userQuery = pool.request();
+    let sqlQuery = `
+      SELECT u.UserId, u.UserName, g.UserGroupCode AS RoleCode, g.UserGroupName AS RoleName
+      FROM [dbo].[UserMaster] u
+      LEFT JOIN [dbo].[UserGroupMaster] g ON u.UserGroupid = g.UserGroupId
+    `;
+
+    if (userId) {
+      userQuery.input("UserId", String(userId).trim());
+      sqlQuery += ` WHERE u.UserId = @UserId`;
+    } else {
+      userQuery.input("UserName", String(userName).trim());
+      sqlQuery += ` WHERE u.UserName = @UserName`;
+    }
+
+    const uRes = await userQuery.query(sqlQuery);
+    if (!uRes.recordset || uRes.recordset.length === 0) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    const targetUser = uRes.recordset[0];
+    const roleCode = (targetUser.RoleCode || "").trim().toUpperCase();
+    const isAdmin = roleCode === "ADMIN" || roleCode === "ADMINISTRATOR" || roleCode === "SUPERADMIN";
+
+    // Strictly enforce ADMIN authorization for force unlock
+    if (!isAdmin) {
+      console.warn(`[AUTH] Unauthorized force-unlock attempt for user "${targetUser.UserName}" with role "${roleCode}".`);
+      return res.status(403).json({
+        success: false,
+        message: "Access denied. Force unlock is only permitted for administrator accounts.",
+      });
+    }
+
+    const targetUserId = String(targetUser.UserId).trim();
+
+    // Delete all sessions for this user
+    await pool
+      .request()
+      .input("UserId", targetUserId)
+      .query(`DELETE FROM [dbo].[UserSessions] WHERE UserId = @UserId`);
+
+    // Reset UserMaster session tracking
+    await pool
+      .request()
+      .input("UserId", targetUserId)
+      .query(`UPDATE [dbo].[UserMaster] SET IsLoggedIn = 0, ActiveSessionId = NULL, LastHeartbeat = NULL WHERE UserId = @UserId`);
+
+    console.log(`[AUTH] Force unlocked admin user "${targetUser.UserName}" (${targetUserId}). All sessions cleared.`);
+
+    return res.json({
+      success: true,
+      message: "All sessions cleared and account unlocked successfully.",
+    });
+  } catch (err) {
+    console.error("[AUTH] Force Unlock Error:", err);
+    return res.status(500).json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -754,33 +995,10 @@ router.post("/verify", async (req, res) => {
           ) {
             isValid = true;
             matchedUser = u;
-            needsRehash = true;
             break;
           }
         }
         if (isValid) break;
-      }
-    }
-
-    // Auto-migrate legacy password to bcrypt during verification
-    if (isValid && needsRehash && matchedUser) {
-      try {
-        const hashedPassword = await bcrypt.hash(password, 10);
-        await pool
-          .request()
-          .input("UserId", matchedUser.UserId)
-          .input("HashedPassword", hashedPassword)
-          .query(
-            "UPDATE [dbo].[UserMaster] SET UserPassword = @HashedPassword WHERE UserId = @UserId",
-          );
-        console.log(
-          `[AUTH] Successfully migrated password to bcrypt for user "${matchedUser.UserName}" during verification.`,
-        );
-      } catch (e) {
-        console.error(
-          `[AUTH] Failed to migrate password to bcrypt during verification:`,
-          e,
-        );
       }
     }
 

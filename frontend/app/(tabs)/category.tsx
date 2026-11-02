@@ -1,4 +1,5 @@
 import CalendarPicker from "@/components/CalendarPicker";
+import FloorPlanBrandLogo from "@/components/FloorPlanBrandLogo";
 import { socket } from "@/constants/socket";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { API_URL } from "@/constants/Config";
@@ -71,6 +72,11 @@ import { useTerminalPaymentStore } from "../../stores/terminalPaymentStore";
 const SOLID_LIGHT_GREEN = "#F0FDF4";
 
 let lastTablesFetchTime = 0;
+let tablesFetchThrottleTimer: any = null;
+let cachedAllTables: any[] | null = null;
+let inFlightTablesPromise: Promise<any> | null = null;
+const sectionSettingsCache = new Map<string, { theme: string; chairs: boolean; time: number }>();
+const inFlightSectionSettingsPromises = new Map<string, Promise<{ theme: string; chairs: boolean }>>();
 const SOLID_LIGHT_RED = "#FEF2F2";
 const SOLID_LIGHT_BLUE = "#F0F9FF";
 const SOLID_LIGHT_AMBER = "#FFFBEB";
@@ -413,12 +419,264 @@ const CanvasBackground = ({ theme, children, style, isCategory = true }: { theme
   );
 };
 
-const formatSectionGlobal = (sec: string) => {
+const formatSectionGlobal = (sec: string, short = false) => {
   if (!sec) return "";
-  if (sec === "TAKEAWAY") return "Takeaway";
+  if (sec === "TAKEAWAY") return short ? "TW" : "Takeaway";
+  if (short) {
+    const match = sec.match(/^SECTION_(\d+)$/);
+    if (match) return `SEC-${match[1]}`;
+    return sec.replace("SECTION_", "SEC-").replace("SECTION-", "SEC-");
+  }
   // Convert SECTION_1 -> Section 1 or "Section-1" -> Section 1
   return sec.replace("_", " ").replace("-", " ").replace("SECTION", "Section");
 };
+
+// --- MEMOIZED SECTION TAB COMPONENTS FOR HIGH-PERFORMANCE RENDERING ---
+const MobileSectionTab = React.memo(({
+  section,
+  isActive,
+  onPress,
+  sectionTables,
+}: {
+  section: string;
+  isActive: boolean;
+  onPress: () => void;
+  sectionTables: TableItem[];
+}) => {
+  const occupied = useTableStatusStore((state) => {
+    let count = 0;
+    for (let i = 0; i < sectionTables.length; i++) {
+      const t = sectionTables[i];
+      const td = state.tableMap[t.id];
+      const s = td ? (td.status === "SENT" ? 1 : td.status === "BILL_REQUESTED" ? 2 : td.status === "HOLD" ? 3 : td.status === "LOCKED" ? 5 : 0) : Number(t.Status);
+      if (s !== 0) count++;
+    }
+    return count;
+  });
+
+  return (
+    <TouchableOpacity
+      key={section}
+      onPress={onPress}
+      activeOpacity={0.75}
+      style={[
+        styles.tabBtn,
+        isActive && styles.activeTabBtn,
+        { paddingVertical: 6, paddingHorizontal: 12 },
+      ]}
+    >
+      <Ionicons
+        name={getSectionIcon(section) as any}
+        size={12}
+        color={isActive ? "#fff" : Theme.textSecondary}
+        style={{ marginRight: 4 }}
+      />
+      <Text
+        style={[
+          styles.tabText,
+          isActive && styles.activeTabText,
+          { fontSize: 12 },
+        ]}
+      >
+        {getSectionLabel(section)}
+      </Text>
+      {occupied > 0 && (
+        <View
+          style={[
+            styles.tabBadge,
+            isActive && styles.activeTabBadge,
+            { marginLeft: 4, height: 16, minWidth: 16 },
+          ]}
+        >
+          <Text
+            style={[
+              styles.tabBadgeText,
+              isActive && styles.activeTabBadgeText,
+              { fontSize: 9 },
+            ]}
+          >
+            {occupied}
+          </Text>
+        </View>
+      )}
+    </TouchableOpacity>
+  );
+});
+
+const TabletSectionTab = React.memo(({
+  section,
+  isActive,
+  onPress,
+  sectionTables,
+  isTablet,
+  isLandscape,
+}: {
+  section: string;
+  isActive: boolean;
+  onPress: () => void;
+  sectionTables: TableItem[];
+  isTablet: boolean;
+  isLandscape: boolean;
+}) => {
+  const occupied = useTableStatusStore((state) => {
+    let count = 0;
+    for (let i = 0; i < sectionTables.length; i++) {
+      const t = sectionTables[i];
+      const td = state.tableMap[t.id];
+      const s = td ? (td.status === "SENT" ? 1 : td.status === "BILL_REQUESTED" ? 2 : td.status === "HOLD" ? 3 : td.status === "LOCKED" ? 5 : 0) : Number(t.Status);
+      if (s !== 0) count++;
+    }
+    return count;
+  });
+
+  return (
+    <TouchableOpacity
+      key={section}
+      onPress={onPress}
+      activeOpacity={0.75}
+      style={[
+        styles.tabBtn,
+        isActive && styles.activeTabBtn,
+        !isTablet && isLandscape && {
+          paddingVertical: 6,
+          paddingHorizontal: 12,
+        },
+      ]}
+    >
+      <Ionicons
+        name={getSectionIcon(section) as any}
+        size={14}
+        color={isActive ? "#fff" : Theme.textSecondary}
+        style={{ marginRight: 5 }}
+      />
+      <Text
+        style={[
+          styles.tabText,
+          isActive && styles.activeTabText,
+          { fontSize: isTablet ? 16 : 13 },
+        ]}
+      >
+        {getSectionLabel(section)}
+      </Text>
+      {occupied > 0 && (
+        <View
+          style={[
+            styles.tabBadge,
+            isActive && styles.activeTabBadge,
+          ]}
+        >
+          <Text
+            style={[
+              styles.tabBadgeText,
+              isActive && styles.activeTabBadgeText,
+            ]}
+          >
+            {occupied}
+          </Text>
+        </View>
+      )}
+    </TouchableOpacity>
+  );
+});
+
+const DesktopSectionTab = React.memo(({
+  section,
+  isActive,
+  onPress,
+  sectionTables,
+}: {
+  section: string;
+  isActive: boolean;
+  onPress: () => void;
+  sectionTables: TableItem[];
+}) => {
+  const occupied = useTableStatusStore((state) => {
+    let count = 0;
+    for (let i = 0; i < sectionTables.length; i++) {
+      const t = sectionTables[i];
+      const td = state.tableMap[t.id];
+      const s = td ? (td.status === "SENT" ? 1 : td.status === "BILL_REQUESTED" ? 2 : td.status === "HOLD" ? 3 : td.status === "LOCKED" ? 5 : 0) : Number(t.Status);
+      if (s !== 0) count++;
+    }
+    return count;
+  });
+
+  const label = formatSectionGlobal(getSectionLabel(section), true);
+
+  return (
+    <TouchableOpacity
+      key={section}
+      onPress={onPress}
+      activeOpacity={0.8}
+      style={[
+        styles.tabBtn,
+        {
+          borderRadius: 22,
+          paddingVertical: 7,
+          paddingHorizontal: 16,
+          backgroundColor: isActive ? "#FF5E1A" : "#FFFFFF",
+          borderColor: isActive ? "#FF5E1A" : "#E5E7EB",
+          borderWidth: 1.5,
+          shadowColor: isActive ? "#FF5E1A" : "#000",
+          shadowOffset: { width: 0, height: 1 },
+          shadowOpacity: isActive ? 0.25 : 0.04,
+          shadowRadius: 3,
+          elevation: isActive ? 2 : 1,
+        },
+      ]}
+    >
+      <Ionicons
+        name={getSectionIcon(section) as any}
+        size={15}
+        color={isActive ? "#FFFFFF" : "#6B7280"}
+        style={{ marginRight: 6 }}
+      />
+      <Text
+        style={[
+          styles.tabText,
+          {
+            fontSize: 13,
+            fontWeight: isActive ? "800" : "600",
+            color: isActive ? "#FFFFFF" : "#4B5563",
+            letterSpacing: 0.2,
+          },
+        ]}
+      >
+        {label}
+      </Text>
+      {occupied > 0 && (
+        <View
+          style={[
+            styles.tabBadge,
+            {
+              marginLeft: 6,
+              backgroundColor: isActive ? "rgba(255,255,255,0.28)" : "#F3F4F6",
+              borderRadius: 10,
+              minWidth: 18,
+              height: 18,
+              paddingHorizontal: 5,
+              justifyContent: "center",
+              alignItems: "center",
+            },
+          ]}
+        >
+          <Text
+            style={[
+              styles.tabBadgeText,
+              {
+                color: isActive ? "#FFFFFF" : "#4B5563",
+                fontSize: 10,
+                fontWeight: "700",
+              },
+            ]}
+          >
+            {occupied}
+          </Text>
+        </View>
+      )}
+    </TouchableOpacity>
+  );
+});
 
 const getStatusUI = (status: number, diningSection?: number) => {
   const s = Number(status);
@@ -842,6 +1100,13 @@ const TableItemComponent = React.memo(
     }
 
     if (!isAbsoluteLayout) {
+      const isVacant = status === 0;
+      const isCheckout = status === 2;
+      const statusColor = isPaid ? "#F43F5E" : ui.color;
+      const cardBg = isVacant ? "#FFFFFF" : ui.lightBg;
+      const cardBorderColor = isVacant ? "#E5E7EB" : (isCheckout ? "#F59E0B" : statusColor);
+      const cardBorderWidth = isVacant ? 1 : 2;
+
       return (
         <TouchableOpacity
           activeOpacity={isPaid ? 1 : 0.8}
@@ -851,15 +1116,18 @@ const TableItemComponent = React.memo(
             {
               width: itemSize,
               height: itemSize,
-              borderColor,
-              backgroundColor: bgColor,
-              borderWidth,
-              elevation: status !== 0 ? 0 : 2,
-              opacity: isPaid ? 0.92 : 1,
+              borderColor: cardBorderColor,
+              backgroundColor: cardBg,
+              borderWidth: cardBorderWidth,
+              borderRadius: 16,
               justifyContent: "center",
               alignItems: "center",
-              borderRadius: 12,
               position: "relative",
+              shadowColor: "#000",
+              shadowOffset: { width: 0, height: 1 },
+              shadowOpacity: 0.05,
+              shadowRadius: 3,
+              elevation: 1,
             },
           ]}
           onPress={() => onPress(item, tableData)}
@@ -889,29 +1157,35 @@ const TableItemComponent = React.memo(
               </View>
             )}
 
+          {/* Table Number */}
           <Text
             style={[
               styles.tableNumber,
               { 
-                fontSize: numberFont, 
-                color: "#000000", 
-                fontWeight: "900"
+                fontSize: isVacant ? numberFont * 1.08 : numberFont * 0.95, 
+                color: "#111827", 
+                fontWeight: "900",
+                marginTop: 0,
+                marginBottom: isVacant ? 0 : 2,
               },
             ]}
           >
             {item.label}
           </Text>
 
-          {status !== 0 && (
-            <View style={[styles.tableInfo, { gap: 1 }]}>
+          {/* Active Table Details (Status Badge, Duration Timer, Bill Amount) */}
+          {!isVacant && (
+            <View style={[styles.tableInfo, { gap: 2, alignItems: "center", width: "90%" }]}>
+              {/* Outline Status Badge (CHECKOUT, DINING, HOLD, etc.) */}
               <View
                 style={[
                   styles.statusChip,
                   { 
-                    backgroundColor: activeBg, 
-                    borderColor: activeColor,
-                    paddingHorizontal: 4,
-                    paddingVertical: 2,
+                    backgroundColor: "transparent", 
+                    borderColor: cardBorderColor,
+                    borderWidth: 1,
+                    paddingHorizontal: 6,
+                    paddingVertical: 1.5,
                     borderRadius: 6,
                     marginBottom: 1,
                   },
@@ -920,7 +1194,12 @@ const TableItemComponent = React.memo(
                 <Text
                   style={[
                     styles.statusChipText,
-                    { color: activeColor, fontSize: smallFont },
+                    {
+                      color: cardBorderColor,
+                      fontSize: Math.max(9, smallFont - 1),
+                      fontWeight: "800",
+                      letterSpacing: 0.5,
+                    },
                   ]}
                   numberOfLines={1}
                 >
@@ -929,14 +1208,37 @@ const TableItemComponent = React.memo(
               </View>
 
               {status !== 5 && (
-                <View style={styles.tableStats}>
+                <View style={[styles.tableStats, { alignItems: "center", gap: 1 }]}>
                   {timeText ? (
-                    <Text style={[styles.timeText, { fontSize: smallFont - 1, color: textColor }]}>
-                      <Ionicons name="time-outline" size={smallFont - 1} color={textColor} /> {timeText}
-                    </Text>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 3 }}>
+                      <Ionicons name="time-outline" size={smallFont - 1} color={cardBorderColor} />
+                      <Text
+                        style={[
+                          styles.timeText,
+                          {
+                            fontSize: smallFont - 1,
+                            color: cardBorderColor,
+                            fontWeight: "600",
+                            fontFamily: Fonts.medium || "System",
+                          },
+                        ]}
+                      >
+                        {timeText}
+                      </Text>
+                    </View>
                   ) : null}
                   {billAmount >= 0 && (
-                    <Text style={[styles.billText, { fontSize: smallFont + 1, color: textColor, fontWeight: "800" }]}>
+                    <Text
+                      style={[
+                        styles.billText,
+                        {
+                          fontSize: smallFont + 2,
+                          color: cardBorderColor,
+                          fontWeight: "900",
+                          fontFamily: Fonts.black || "System",
+                        },
+                      ]}
+                    >
                       {(useCompanySettingsStore.getState().settings.currencySymbol || "$")}{billAmount.toFixed(2)}
                     </Text>
                   )}
@@ -1101,16 +1403,16 @@ type TableItem = {
 const SECTIONS = ["SECTION_1", "SECTION_2", "SECTION_3", "TAKEAWAY"];
 
 const SECTION_LABELS: Record<string, string> = {
-  SECTION_1: "Section 1",
-  SECTION_2: "Section 2",
-  SECTION_3: "Section 3",
-  TAKEAWAY: "Takeaway",
+  SECTION_1: "SEC-1",
+  SECTION_2: "SEC-2",
+  SECTION_3: "SEC-3",
+  TAKEAWAY: "TW",
 };
 
 const SECTION_SHORT: Record<string, string> = {
-  SECTION_1: "S1",
-  SECTION_2: "S2",
-  SECTION_3: "S3",
+  SECTION_1: "SEC-1",
+  SECTION_2: "SEC-2",
+  SECTION_3: "SEC-3",
   TAKEAWAY: "TW",
 };
 
@@ -1119,6 +1421,29 @@ const SECTION_ICONS: Record<string, string> = {
   SECTION_2: "restaurant-outline",
   SECTION_3: "restaurant-outline",
   TAKEAWAY: "bag-handle-outline",
+};
+
+const getSectionLabel = (sec: string) => {
+  if (!sec) return "";
+  if (sec === "TAKEAWAY") return "TW";
+  if (SECTION_LABELS[sec]) return SECTION_LABELS[sec];
+  const match = sec.match(/^SECTION_(\d+)$/);
+  if (match) return `SEC-${match[1]}`;
+  return formatSectionGlobal(sec, true);
+};
+
+const getSectionShort = (sec: string) => {
+  if (!sec) return "";
+  if (sec === "TAKEAWAY") return "TW";
+  if (SECTION_SHORT[sec]) return SECTION_SHORT[sec];
+  const match = sec.match(/^SECTION_(\d+)$/);
+  if (match) return `SEC-${match[1]}`;
+  return sec;
+};
+
+const getSectionIcon = (sec: string) => {
+  if (sec === "TAKEAWAY") return "bag-handle-outline";
+  return SECTION_ICONS[sec] || "restaurant-outline";
 };
 
 // Track the last table that was opened with guest details.
@@ -1150,41 +1475,50 @@ export default function Category() {
 
   const [backgroundTheme, setBackgroundTheme] = useState("champagne_fizz");
 
-  const [activeTab, setActiveTab] = useState<string>("SECTION_1");
-
+  const { section: urlSection } = useLocalSearchParams<{ section?: string }>();
   const orderContext = useOrderContextStore((state) => state.currentOrder);
+  const initialSection = urlSection || orderContext?.section || "SECTION_1";
+  const [activeTab, setActiveTab] = useState<string>(initialSection);
 
+  const { showToast } = useToast();
+  const isWindows = Platform.OS === "windows" || (Platform.OS === "web" && typeof navigator !== "undefined" && /win/i.test(navigator.platform || navigator.userAgent));
+  const [allTables, setAllTables] = useState<TableItem[]>(cachedAllTables || []);
+
+  // Dynamically compute all table floor sections:
+  // 1. Gather all unique Dine-In sections (excluding 4 which is Takeaway)
+  // 2. Ensure baseline Dine-In sections 1, 2, 3 exist
+  // 3. Sort Dine-In sections in numerical order
+  // 4. ALWAYS append TAKEAWAY as the final section
   const visibleSections = useMemo(() => {
-    if (settings?.enableQuickServe === false) {
-      return SECTIONS;
-    }
-    if (orderContext?.orderType === "TAKEAWAY") {
-      return ["TAKEAWAY"];
-    }
-    if (orderContext?.orderType === "DINE_IN") {
-      return ["SECTION_1", "SECTION_2", "SECTION_3"];
-    }
-    return SECTIONS;
-  }, [orderContext?.orderType, settings?.enableQuickServe]);
-
-  useEffect(() => {
-    if (settings?.enableQuickServe === false) {
-      return;
-    }
-    if (orderContext?.orderType === "TAKEAWAY") {
-      setActiveTab("TAKEAWAY");
-    } else if (orderContext?.orderType === "DINE_IN") {
-      if (activeTab === "TAKEAWAY") {
-        setActiveTab("SECTION_1");
+    const dineInSectionNums = new Set<number>([1, 2, 3]);
+    allTables.forEach((t) => {
+      const ds = Number(t.DiningSection);
+      if (ds && ds !== 4 && ds > 0) {
+        dineInSectionNums.add(ds);
       }
+    });
+
+    const sortedDineIn = Array.from(dineInSectionNums)
+      .sort((a, b) => a - b)
+      .map((num) => `SECTION_${num}`);
+
+    return [...sortedDineIn, "TAKEAWAY"];
+  }, [allTables]);
+
+  // Context-aware section restoration:
+  // When urlSection changes or sections finish loading, prioritize urlSection or active order context.
+  useEffect(() => {
+    if (urlSection && (visibleSections.includes(urlSection) || urlSection === "TAKEAWAY")) {
+      setActiveTab(urlSection);
+    } else if (orderContext?.section && visibleSections.includes(orderContext.section)) {
+      setActiveTab(orderContext.section);
     }
-  }, [orderContext?.orderType, settings?.enableQuickServe]);
+  }, [urlSection, orderContext?.section, visibleSections]);
 
   const getSectionNum = (tab: string) => {
     if (tab === "TAKEAWAY") return "4";
-    if (tab === "SECTION_1") return "1";
-    if (tab === "SECTION_2") return "2";
-    if (tab === "SECTION_3") return "3";
+    const match = tab.match(/^SECTION_(\d+)$/);
+    if (match) return match[1];
     return "1";
   };
 
@@ -1192,28 +1526,52 @@ export default function Category() {
 
   const loadSectionSettings = async (sectionKey: string) => {
     try {
-      // 1. Instant local cache fallback
+      // 1. In-memory hot cache hit
+      const memoryCached = sectionSettingsCache.get(sectionKey);
+      if (memoryCached) {
+        setBackgroundTheme(memoryCached.theme);
+        setShowChairs(memoryCached.chairs);
+        if (Date.now() - memoryCached.time < 60000) {
+          return;
+        }
+      }
+
+      // 2. Instant local AsyncStorage fallback
       const savedTheme = await AsyncStorage.getItem(`layout_background_theme_${sectionKey}`);
       if (savedTheme) setBackgroundTheme(savedTheme);
       const savedChairs = await AsyncStorage.getItem(`layout_show_chairs_${sectionKey}`);
       if (savedChairs !== null) setShowChairs(savedChairs === "true");
 
-      // 2. Fetch live settings from central server
-      const res = await fetch(`${API_URL}/api/tables/section-layout?section=${sectionKey}`);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.backgroundTheme) {
-          setBackgroundTheme(data.backgroundTheme);
-          await AsyncStorage.setItem(`layout_background_theme_${sectionKey}`, data.backgroundTheme);
-        }
-        if (data.showChairs !== undefined) {
-          const chairsBool = Boolean(data.showChairs);
-          setShowChairs(chairsBool);
-          await AsyncStorage.setItem(`layout_show_chairs_${sectionKey}`, String(chairsBool));
-        }
+      // 3. Deduplicated network fetch
+      let fetchPromise = inFlightSectionSettingsPromises.get(sectionKey);
+      if (!fetchPromise) {
+        fetchPromise = (async () => {
+          try {
+            const res = await fetch(`${API_URL}/api/tables/section-layout?section=${sectionKey}`);
+            if (res.ok) {
+              const data = await res.json();
+              const theme = data.backgroundTheme || "champagne_fizz";
+              const chairs = data.showChairs !== undefined ? Boolean(data.showChairs) : true;
+              sectionSettingsCache.set(sectionKey, { theme, chairs, time: Date.now() });
+              await AsyncStorage.setItem(`layout_background_theme_${sectionKey}`, theme);
+              await AsyncStorage.setItem(`layout_show_chairs_${sectionKey}`, String(chairs));
+              return { theme, chairs };
+            }
+          } catch (netErr) {
+            console.warn("⚠️ [Category] Could not load section settings from backend:", netErr);
+          } finally {
+            inFlightSectionSettingsPromises.delete(sectionKey);
+          }
+          return { theme: savedTheme || "champagne_fizz", chairs: savedChairs !== null ? savedChairs === "true" : true };
+        })();
+        inFlightSectionSettingsPromises.set(sectionKey, fetchPromise);
       }
+
+      const freshSettings = await fetchPromise;
+      if (freshSettings && freshSettings.theme) setBackgroundTheme(freshSettings.theme);
+      if (freshSettings && freshSettings.chairs !== undefined) setShowChairs(freshSettings.chairs);
     } catch (e) {
-      console.warn("⚠️ [Category] Could not load section settings from backend:", e);
+      console.warn("⚠️ [Category] Could not load section settings:", e);
     }
   };
 
@@ -1222,11 +1580,7 @@ export default function Category() {
     loadSectionSettings(secNum);
   }, [activeTab]);
 
-  const { showToast } = useToast();
-  const { section: urlSection } = useLocalSearchParams<{ section?: string }>();
-  const isWindows = Platform.OS === "windows" || (Platform.OS === "web" && typeof navigator !== "undefined" && /win/i.test(navigator.platform || navigator.userAgent));
-  const [allTables, setAllTables] = useState<TableItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(cachedAllTables === null || cachedAllTables.length === 0);
   const [isMenuVisible, setIsMenuVisible] = useState(false);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [isAvatarModalVisible, setIsAvatarModalVisible] = useState(false);
@@ -1384,12 +1738,12 @@ export default function Category() {
         width - paddingVal * 2 - insetsValue.left - insetsValue.right - 2;
 
       let cols = 3;
-      if (isTablet) {
+      if (width >= 1024) {
+        cols = 10;
+      } else if (isTablet) {
         if (width < 768) cols = 4;
         else if (width < 1024) cols = 6;
-        else if (width < 1280) cols = 8;
-        else if (width < 1920) cols = 10;
-        else cols = 12;
+        else cols = 8;
       } else {
         if (isLandscape) {
           cols = Math.max(5, Math.floor(availableGridWidth / 115));
@@ -1433,6 +1787,29 @@ export default function Category() {
     (s: any) => s.canAccessReceiptSettings,
   );
   const isWaiter = useAuthStore((s: any) => s.isWaiter);
+  const isWaiterUser = Boolean(
+    (user?.role || "").toUpperCase() === "WAITER" ||
+    (user?.roleName || "").toUpperCase().includes("WAITER") ||
+    (typeof isWaiter === "function" && isWaiter())
+  );
+
+  const isQuickServeEnabled = useMemo(() => {
+    if (isWaiterUser) return false;
+    const qs: any = settings?.enableQuickServe;
+    return qs === true || qs === 1 || String(qs) === "1" || String(qs).toLowerCase() === "true";
+  }, [settings?.enableQuickServe, isWaiterUser]);
+
+  const handleNavigateQuickServe = () => {
+    if (isQuickServeEnabled) {
+      const token = `QS-${Math.floor(1000 + Math.random() * 9000)}`;
+      useOrderContextStore.getState().setOrderContext({
+        orderType: "TAKEAWAY",
+        takeawayNo: token,
+      });
+      router.push("/quick-serve" as any);
+    }
+  };
+
   const enableKDS = useGeneralSettingsStore((s: any) => s.settings.enableKDS);
   const enableGuestDetailsPopup = useGeneralSettingsStore((s: any) =>
     s.settings.enableGuestDetailsPopup !== undefined
@@ -1476,9 +1853,19 @@ export default function Category() {
 
   // 🔔 Real-time sync now handled globally via useGlobalSocketSync
 
-  // ——— Route guard: redirect to login if not authenticated ———
+  // ——— Route guard & default section reset ———
   useFocusEffect(
     React.useCallback(() => {
+      // Context-aware Floor Plan default:
+      // If returning with an explicit urlSection, or continuing an active uncompleted table workflow,
+      // preserve that originating section. Otherwise (fresh entry / login / settled), default to SECTION_1.
+      if (urlSection && (visibleSections.includes(urlSection) || urlSection === "TAKEAWAY")) {
+        setActiveTab(urlSection);
+      } else if (orderContext?.section && visibleSections.includes(orderContext.section)) {
+        setActiveTab(orderContext.section);
+      } else {
+        setActiveTab("SECTION_1");
+      }
       checkActiveBusinessDay();
       const { user: currentUser, loginDate, logout } = useAuthStore.getState();
       if (!currentUser) {
@@ -1675,8 +2062,22 @@ export default function Category() {
         })
       );
 
-      // 2. Also trigger a background fetch to keep full table collection in sync with DB
-      fetchTables();
+      // 2. Safely throttle background fetch with guaranteed trailing refresh
+      const now = Date.now();
+      if (now - lastTablesFetchTime > 15000) {
+        if (tablesFetchThrottleTimer) {
+          clearTimeout(tablesFetchThrottleTimer);
+          tablesFetchThrottleTimer = null;
+        }
+        fetchTables();
+      } else if (!tablesFetchThrottleTimer) {
+        // Schedule trailing refresh so updates during the throttle window are not lost
+        const remaining = Math.max(1000, 15000 - (now - lastTablesFetchTime));
+        tablesFetchThrottleTimer = setTimeout(() => {
+          tablesFetchThrottleTimer = null;
+          fetchTables();
+        }, remaining);
+      }
     };
 
     socket.on("table_status_updated", handleTableStatusUpdated);
@@ -1684,6 +2085,10 @@ export default function Category() {
     socket.on("section_layout_updated", handleSectionLayoutUpdated);
 
     return () => {
+      if (tablesFetchThrottleTimer) {
+        clearTimeout(tablesFetchThrottleTimer);
+        tablesFetchThrottleTimer = null;
+      }
       socket.off("table_status_updated", handleTableStatusUpdated);
       socket.off("table_config_updated", handleTableConfigUpdated);
       socket.off("section_layout_updated", handleSectionLayoutUpdated);
@@ -1693,20 +2098,25 @@ export default function Category() {
   // fetchLockedTables consolidated into fetchTables
 
   const fetchTables = async () => {
-    lastTablesFetchTime = Date.now();
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000);
-      const response = await fetch(`${API_URL}/api/tables/all`, {
-        signal: controller.signal,
-        headers: { Accept: "application/json" },
-      });
-      clearTimeout(timeoutId);
+    if (inFlightTablesPromise) {
+      return inFlightTablesPromise;
+    }
 
-      if (!response.ok)
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    inFlightTablesPromise = (async () => {
+      lastTablesFetchTime = Date.now();
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000);
+        const response = await fetch(`${API_URL}/api/tables/all`, {
+          signal: controller.signal,
+          headers: { Accept: "application/json" },
+        });
+        clearTimeout(timeoutId);
 
-      const data = await response.json();
+        if (!response.ok)
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+
+        const data = await response.json();
       let tablesArray: any[] = [];
       if (Array.isArray(data)) tablesArray = data;
       else if (data?.data && Array.isArray(data.data)) tablesArray = data.data;
@@ -1799,6 +2209,7 @@ export default function Category() {
         });
 
         useTableStatusStore.getState().batchUpdateTableStatus(updates);
+        cachedAllTables = uniqueTables;
       } else {
         throw new Error("No tables returned from API");
       }
@@ -1808,10 +2219,16 @@ export default function Category() {
         `Failed to connect to server at ${API_URL}\n\nPlease ensure the backend server is running.`,
         [{ text: "OK" }],
       );
-      setAllTables([]);
+      if (!cachedAllTables || cachedAllTables.length === 0) {
+        setAllTables([]);
+      }
     } finally {
+      inFlightTablesPromise = null;
       setLoading(false);
     }
+  })();
+
+  return inFlightTablesPromise;
   };
 
   const confirmUnlock = (tableId: string, tableLabel: string) => {
@@ -1868,18 +2285,14 @@ export default function Category() {
     );
   };
 
-  useEffect(() => {
-    if (urlSection && SECTIONS.includes(urlSection)) {
-      setActiveTab(urlSection);
-    }
-  }, [urlSection]);
+
 
   useEffect(() => {
-    const index = SECTIONS.indexOf(activeTab);
+    const index = visibleSections.indexOf(activeTab);
     if (index !== -1 && sectionScrollRef.current) {
       sectionScrollRef.current.scrollTo({ x: index * 120, animated: true });
     }
-  }, [activeTab]);
+  }, [activeTab, visibleSections]);
 
   // 🚀 PERFORMANCE FIX: Removed direct dependency on 'tables' array to prevent full screen re-renders.
   // Individual TableItemComponents now subscribe to their own status.
@@ -1887,9 +2300,8 @@ export default function Category() {
   const currentTables = useMemo(() => {
     const filtered = allTables.filter((table: TableItem) => {
       if (activeTab === "TAKEAWAY") return table.DiningSection === 4;
-      else if (activeTab === "SECTION_1") return table.DiningSection === 1;
-      else if (activeTab === "SECTION_2") return table.DiningSection === 2;
-      else if (activeTab === "SECTION_3") return table.DiningSection === 3;
+      const match = activeTab.match(/^SECTION_(\d+)$/);
+      if (match) return table.DiningSection === parseInt(match[1], 10);
       return false;
     });
 
@@ -1925,7 +2337,7 @@ export default function Category() {
       ).length,
   );
 
-  const tableMap = useTableStatusStore((state) => state.tableMap);
+  // tableMap subscription removed from Category root to prevent full screen re-renders on table status update
 
   // ———— STATUS HANDLERS (OPTIMISTIC) ————
   const updateTableStatus = async (
@@ -1994,10 +2406,8 @@ export default function Category() {
   };
 
   const getSectionFromDiningSection = (ds: number) => {
-    if (ds === 1) return "SECTION_1";
-    if (ds === 2) return "SECTION_2";
-    if (ds === 3) return "SECTION_3";
-    return "TAKEAWAY";
+    if (ds === 4) return "TAKEAWAY";
+    return `SECTION_${ds}`;
   };
 
   const handleDining = (id: string) => updateTableStatus(id, 1); // Dining
@@ -2325,17 +2735,17 @@ export default function Category() {
     const status = effectiveStatus;
 
     let newContext: any;
-    if (activeTab !== "TAKEAWAY") {
+    if (activeTab === "TAKEAWAY" || item.DiningSection === 4) {
       newContext = {
-        orderType: "DINE_IN" as const,
-        section: activeTab,
-        tableNo: item.label,
+        orderType: "TAKEAWAY" as const,
+        takeawayNo: item.label,
         tableId: item.id,
       };
     } else {
       newContext = {
-        orderType: "TAKEAWAY" as const,
-        takeawayNo: item.label,
+        orderType: "DINE_IN" as const,
+        section: activeTab,
+        tableNo: item.label,
         tableId: item.id,
       };
     }
@@ -2673,9 +3083,8 @@ export default function Category() {
     );
   }
 
-  const renderLicenseView = (isFloating: boolean) => {
-    if (!companyInfo) return null;
-    if (user?.role === "WAITER" || (typeof isWaiter === "function" && isWaiter())) return null;
+  const renderLicenseCard = () => {
+    if (!companyInfo || !user || isWaiterUser) return null;
 
     const fromDate = (user?.licenseFromDate || companyInfo.LicenseFromDate)
       ? (user?.licenseFromDate || companyInfo.LicenseFromDate).split("T")[0]
@@ -2686,165 +3095,231 @@ export default function Category() {
 
     const hasLicense = (user?.licenseFromDate || user?.licenseToDate || companyInfo.LicenseFromDate || companyInfo.LicenseToDate);
 
+    // Expiry check
+    let isExpired = false;
+    const userLicenseToDate = user?.licenseToDate || companyInfo?.LicenseToDate;
+    if (userLicenseToDate) {
+      const today = new Date();
+      const licDate = new Date(userLicenseToDate);
+      today.setHours(0, 0, 0, 0);
+      licDate.setHours(0, 0, 0, 0);
+      if (today > licDate) {
+        isExpired = true;
+      }
+    }
+
     return (
-      <View style={isFloating ? {
-        position: "absolute",
-        bottom: isWindows ? 16 : Math.max(insets.bottom, 16) + 24,
-        left: Math.max(insets.left, 16) + 8,
-        backgroundColor: "transparent",
-        pointerEvents: "none",
-        zIndex: 9999,
-      } : {
-        paddingHorizontal: PADDING,
-        paddingTop: 16,
-        paddingBottom: Math.max(insets.bottom + 24, 36),
-        alignItems: "flex-start",
-        justifyContent: "center",
-        marginTop: 12,
-      }}>
-        <LinearGradient
-          colors={["#FFFFFF", "#F8FAFC"]}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            borderRadius: 16,
-            padding: 12,
-            borderWidth: 1,
-            borderColor: "#E2E8F0",
-            maxWidth: 380,
-            width: isFloating ? 320 : "100%",
-            gap: 12,
-            shadowColor: "#6366F1",
-            shadowOffset: { width: 0, height: 2 },
-            shadowOpacity: 0.04,
-            shadowRadius: 6,
-            elevation: 1,
-          }}
-        >
+      <View
+        style={{
+          marginTop: 10,
+          backgroundColor: "#FFF8F3",
+          borderRadius: 16,
+          borderWidth: 1.5,
+          borderColor: "#FDBA74",
+          padding: 10,
+          gap: 8,
+        }}
+      >
+        {/* Top Row: Logo, Name & Address, Status Badge */}
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
           {companyInfo.CompanyLogoUrl ? (
-            <View style={{
-              borderRadius: 8,
-              borderWidth: 1,
-              borderColor: "#E2E8F0",
-              padding: 2,
-              backgroundColor: "#FFFFFF",
-              shadowColor: "#000",
-              shadowOffset: { width: 0, height: 1 },
-              shadowOpacity: 0.03,
-              shadowRadius: 1,
-              elevation: 1,
-            }}>
+            <View
+              style={{
+                width: 44,
+                height: 44,
+                borderRadius: 10,
+                borderWidth: 1,
+                borderColor: "#FED7AA",
+                padding: 2,
+                backgroundColor: "#FFFFFF",
+                justifyContent: "center",
+                alignItems: "center",
+              }}
+            >
               <Image
                 source={{
-                  uri: companyInfo.CompanyLogoUrl.startsWith("http") || companyInfo.CompanyLogoUrl.startsWith("data:")
-                    ? companyInfo.CompanyLogoUrl
-                    : `${API_URL}${companyInfo.CompanyLogoUrl.startsWith("/") ? "" : "/"}${companyInfo.CompanyLogoUrl}`
+                  uri:
+                    companyInfo.CompanyLogoUrl.startsWith("http") ||
+                    companyInfo.CompanyLogoUrl.startsWith("data:")
+                      ? companyInfo.CompanyLogoUrl
+                      : `${API_URL}${
+                          companyInfo.CompanyLogoUrl.startsWith("/") ? "" : "/"
+                        }${companyInfo.CompanyLogoUrl}`,
                 }}
-                style={{ width: 46, height: 46, borderRadius: 8 }}
+                style={{ width: 38, height: 38, borderRadius: 8 }}
                 contentFit="contain"
               />
             </View>
           ) : (
-            <LinearGradient
-              colors={["#EEF2FF", "#E0E7FF"]}
+            <View
               style={{
-                width: 48,
-                height: 48,
+                width: 44,
+                height: 44,
                 borderRadius: 10,
+                backgroundColor: "#FFFFFF",
+                borderWidth: 1,
+                borderColor: "#FED7AA",
                 alignItems: "center",
                 justifyContent: "center",
-                borderWidth: 1,
-                borderColor: "#E0E7FF",
               }}
             >
-              <Ionicons name="storefront" size={22} color="#4F46E5" />
-            </LinearGradient>
+              <Ionicons name="restaurant-outline" size={22} color="#EA580C" />
+            </View>
           )}
 
-          <View style={{ flex: 1, gap: 2 }}>
-            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 6 }}>
-              <Text style={{
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text
+              style={{
                 fontFamily: Fonts.bold,
-                fontSize: 14,
+                fontSize: 13.5,
                 color: "#1E293B",
-                letterSpacing: 0.1,
-              }}>
-                {companyInfo.CompanyName || "Smart POS"}
-              </Text>
-
-              {hasLicense && (
-                <View style={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  backgroundColor: "#DCFCE7",
-                  paddingHorizontal: 7,
-                  paddingVertical: 3,
-                  borderRadius: 8,
-                  gap: 3,
-                }}>
-                  <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: "#15803D" }} />
-                  <Text style={{
-                    fontFamily: Fonts.bold,
-                    fontSize: 10,
-                    color: "#166534",
-                    textTransform: "uppercase",
-                    letterSpacing: 0.2,
-                  }}>
-                    Active
-                  </Text>
-                </View>
-              )}
-            </View>
+              }}
+              numberOfLines={1}
+            >
+              {companyInfo.CompanyName || "My Restaurant"}
+            </Text>
 
             {companyInfo.Address ? (
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-                <Ionicons name="location-outline" size={12} color="#64748B" />
-                <Text style={{
-                  fontFamily: Fonts.medium,
-                  fontSize: 11.5,
-                  color: "#64748B",
-                  flex: 1,
-                }} numberOfLines={1}>
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 3,
+                  marginTop: 2,
+                }}
+              >
+                <Ionicons name="location-sharp" size={11} color="#64748B" />
+                <Text
+                  style={{
+                    fontFamily: Fonts.medium,
+                    fontSize: 11,
+                    color: "#64748B",
+                  }}
+                  numberOfLines={1}
+                >
                   {companyInfo.Address}
                 </Text>
               </View>
             ) : null}
+          </View>
 
-            {hasLicense ? (
-              <View style={{
+          {hasLicense && (
+            <View
+              style={{
                 flexDirection: "row",
                 alignItems: "center",
-                gap: 4,
-                marginTop: 2,
-                backgroundColor: "#F1F5F9",
+                backgroundColor: isExpired ? "#FEE2E2" : "#DCFCE7",
+                borderWidth: 1,
+                borderColor: isExpired ? "#FCA5A5" : "#86EFAC",
                 paddingHorizontal: 8,
                 paddingVertical: 3,
-                borderRadius: 6,
-                alignSelf: "flex-start"
-              }}>
-                <Ionicons name="shield-checkmark" size={13} color="#10B981" />
-                <Text style={{
-                  fontFamily: Fonts.semiBold,
-                  fontSize: 10.5,
-                  color: "#475569",
-                }}>
-                  Valid: <Text style={{ color: "#0F172A", fontFamily: Fonts.bold }}>{fromDate}</Text> to <Text style={{ color: "#0F172A", fontFamily: Fonts.bold }}>{toDate}</Text>
+                borderRadius: 12,
+                gap: 4,
+              }}
+            >
+              <View
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: 3,
+                  backgroundColor: isExpired ? "#DC2626" : "#16A34A",
+                }}
+              />
+              <Text
+                style={{
+                  fontFamily: Fonts.bold,
+                  fontSize: 10,
+                  color: isExpired ? "#B91C1C" : "#15803D",
+                  letterSpacing: 0.3,
+                }}
+              >
+                {isExpired ? "EXPIRED" : "ACTIVE"}
+              </Text>
+            </View>
+          )}
+        </View>
+
+        {/* Middle Pill: Valid From -> Valid Until */}
+        {hasLicense && (
+          <View
+            style={{
+              backgroundColor: "#FFFBF7",
+              borderRadius: 10,
+              borderWidth: 1,
+              borderColor: "#FFEDD5",
+              paddingVertical: 6,
+              paddingHorizontal: 10,
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "space-between",
+            }}
+          >
+            {/* Valid From */}
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              <Ionicons name="calendar" size={15} color="#F97316" />
+              <View>
+                <Text
+                  style={{
+                    fontFamily: Fonts.medium,
+                    fontSize: 9,
+                    color: "#94A3B8",
+                  }}
+                >
+                  Valid From
+                </Text>
+                <Text
+                  style={{
+                    fontFamily: Fonts.bold,
+                    fontSize: 11.5,
+                    color: "#1E293B",
+                  }}
+                >
+                  {fromDate}
                 </Text>
               </View>
-            ) : null}
+            </View>
 
-            <Text style={{
-              fontFamily: Fonts.medium,
-              fontSize: 9.5,
-              color: "#94A3B8",
-              marginTop: 2,
-            }}>
-              © 2026 UNIPRO. All rights reserved.
-            </Text>
+            {/* Arrow */}
+            <Ionicons name="arrow-forward" size={14} color="#CBD5E1" />
+
+            {/* Valid Until */}
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              <Ionicons name="calendar" size={15} color="#16A34A" />
+              <View>
+                <Text
+                  style={{
+                    fontFamily: Fonts.medium,
+                    fontSize: 9,
+                    color: "#94A3B8",
+                  }}
+                >
+                  Valid Until
+                </Text>
+                <Text
+                  style={{
+                    fontFamily: Fonts.bold,
+                    fontSize: 11.5,
+                    color: "#1E293B",
+                  }}
+                >
+                  {toDate}
+                </Text>
+              </View>
+            </View>
           </View>
-        </LinearGradient>
+        )}
+
+        {/* Copyright */}
+        <Text
+          style={{
+            fontFamily: Fonts.medium,
+            fontSize: 9.5,
+            color: "#94A3B8",
+            textAlign: "center",
+          }}
+        >
+          © 2026 UNIPRO POS. All rights reserved.
+        </Text>
       </View>
     );
   };
@@ -2864,7 +3339,7 @@ export default function Category() {
             paddingBottom: 6,
           }}
         >
-          {/* Row 1: Section Tabs & Menu Button */}
+          {/* Row 1: Quick Serve Toggle, Section Tabs & Menu Button */}
           <View
             style={{
               flexDirection: "row",
@@ -2874,6 +3349,27 @@ export default function Category() {
               gap: 8,
             }}
           >
+            {/* Quick Serve Navigation Toggle Icon */}
+            <TouchableOpacity
+              onPress={handleNavigateQuickServe}
+              activeOpacity={isQuickServeEnabled ? 0.75 : 1}
+              style={{
+                width: 32,
+                height: 32,
+                borderRadius: 16,
+                backgroundColor: "#FF5E1A",
+                justifyContent: "center",
+                alignItems: "center",
+                shadowColor: "#FF5E1A",
+                shadowOffset: { width: 0, height: 2 },
+                shadowOpacity: 0.3,
+                shadowRadius: 3,
+                elevation: 2,
+              }}
+            >
+              <Ionicons name="flash" size={16} color="#FFFFFF" />
+            </TouchableOpacity>
+
             <ScrollView
               ref={sectionScrollRef}
               horizontal
@@ -2882,102 +3378,21 @@ export default function Category() {
               style={{ flex: 1 }}
             >
               <View style={[styles.tabsWrapper, { gap: 6 }]}>
-                {settings?.enableQuickServe === true && (
-                  <TouchableOpacity
-                    onPress={() => router.push("/order-type")}
-                    activeOpacity={0.75}
-                    style={[
-                      styles.tabBtn,
-                      {
-                        backgroundColor: "#F1F5F9",
-                        borderColor: "#CBD5E1",
-                        borderWidth: 1,
-                        paddingVertical: 6,
-                        paddingHorizontal: 10,
-                        marginRight: 4,
-                      },
-                    ]}
-                  >
-                    <Ionicons name="arrow-back" size={14} color="#0F172A" style={{ marginRight: 4 }} />
-                    <Text style={[styles.tabText, { color: "#0F172A", fontSize: 12, fontFamily: Fonts.bold }]}>
-                      Order Type
-                    </Text>
-                  </TouchableOpacity>
-                )}
                 {visibleSections.map((section) => {
-                  const isActive = activeTab === section;
                   const sectionTables = allTables.filter((t: TableItem) => {
                     if (section === "TAKEAWAY") return t.DiningSection === 4;
-                    if (section === "SECTION_1") return t.DiningSection === 1;
-                    if (section === "SECTION_2") return t.DiningSection === 2;
-                    if (section === "SECTION_3") return t.DiningSection === 3;
+                    const match = section.match(/^SECTION_(\d+)$/);
+                    if (match) return t.DiningSection === parseInt(match[1], 10);
                     return false;
                   });
-                  const occupied = sectionTables.filter((t: TableItem) => {
-                    const tableData = tableMap[t.id];
-                    const status = tableData
-                      ? (tableData.status === "SENT"
-                        ? 1
-                        : tableData.status === "BILL_REQUESTED"
-                          ? 2
-                          : tableData.status === "HOLD"
-                            ? 3
-                            : tableData.status === "LOCKED"
-                              ? 5
-                              : 0)
-                      : Number(t.Status);
-                    return status !== 0;
-                  }).length;
-
                   return (
-                    <TouchableOpacity
+                    <MobileSectionTab
                       key={section}
+                      section={section}
+                      isActive={activeTab === section}
                       onPress={() => setActiveTab(section)}
-                      activeOpacity={0.75}
-                      style={[
-                        styles.tabBtn,
-                        isActive && styles.activeTabBtn,
-                        { paddingVertical: 6, paddingHorizontal: 12 },
-                      ]}
-                    >
-                      <Ionicons
-                        name={SECTION_ICONS[section] as any}
-                        size={12}
-                        color={isActive ? "#fff" : Theme.textSecondary}
-                        style={{ marginRight: 4 }}
-                      />
-                      <Text
-                        style={[
-                          styles.tabText,
-                          isActive && styles.activeTabText,
-                          { fontSize: 12 },
-                        ]}
-                      >
-                        {formatSectionGlobal(SECTION_LABELS[section]).replace(
-                          "Section ",
-                          "Sec-",
-                        )}
-                      </Text>
-                      {occupied > 0 && (
-                        <View
-                          style={[
-                            styles.tabBadge,
-                            isActive && styles.activeTabBadge,
-                            { marginLeft: 4, height: 16, minWidth: 16 },
-                          ]}
-                        >
-                          <Text
-                            style={[
-                              styles.tabBadgeText,
-                              isActive && styles.activeTabBadgeText,
-                              { fontSize: 9 },
-                            ]}
-                          >
-                            {occupied}
-                          </Text>
-                        </View>
-                      )}
-                    </TouchableOpacity>
+                      sectionTables={sectionTables}
+                    />
                   );
                 })}
               </View>
@@ -3186,6 +3601,28 @@ export default function Category() {
               isLandscape && { height: 42, paddingVertical: 2, gap: 8 },
             ]}
           >
+            {/* Quick Serve Navigation Toggle Icon */}
+            <TouchableOpacity
+              onPress={handleNavigateQuickServe}
+              activeOpacity={isQuickServeEnabled ? 0.75 : 1}
+              style={{
+                width: 36,
+                height: 36,
+                borderRadius: 18,
+                backgroundColor: "#FF5E1A",
+                justifyContent: "center",
+                alignItems: "center",
+                shadowColor: "#FF5E1A",
+                shadowOffset: { width: 0, height: 2 },
+                shadowOpacity: 0.3,
+                shadowRadius: 3,
+                elevation: 2,
+                marginRight: 6,
+              }}
+            >
+              <Ionicons name="flash" size={18} color="#FFFFFF" />
+            </TouchableOpacity>
+
             {/* CENTER — Section Tabs */}
             <ScrollView
               ref={sectionScrollRef}
@@ -3195,106 +3632,23 @@ export default function Category() {
               style={styles.tabsScrollView}
             >
               <View style={[styles.tabsWrapper, { gap: isTablet ? 8 : 6 }]}>
-                {settings?.enableQuickServe === true && (
-                  <TouchableOpacity
-                    onPress={() => router.push("/order-type")}
-                    activeOpacity={0.75}
-                    style={[
-                      styles.tabBtn,
-                      {
-                        backgroundColor: "#F1F5F9",
-                        borderColor: "#CBD5E1",
-                        borderWidth: 1,
-                        paddingVertical: 6,
-                        paddingHorizontal: 12,
-                        marginRight: 4,
-                      },
-                    ]}
-                  >
-                    <Ionicons name="arrow-back" size={16} color="#0F172A" style={{ marginRight: 5 }} />
-                    <Text style={[styles.tabText, { color: "#0F172A", fontSize: isTablet ? 15 : 13, fontFamily: Fonts.bold }]}>
-                      Order Type
-                    </Text>
-                  </TouchableOpacity>
-                )}
                 {visibleSections.map((section) => {
-                  const isActive = activeTab === section;
                   const sectionTables = allTables.filter((t: TableItem) => {
                     if (section === "TAKEAWAY") return t.DiningSection === 4;
-                    if (section === "SECTION_1") return t.DiningSection === 1;
-                    if (section === "SECTION_2") return t.DiningSection === 2;
-                    if (section === "SECTION_3") return t.DiningSection === 3;
+                    const match = section.match(/^SECTION_(\d+)$/);
+                    if (match) return t.DiningSection === parseInt(match[1], 10);
                     return false;
                   });
-                  const occupied = sectionTables.filter((t: TableItem) => {
-                    const tableData = tableMap[t.id];
-                    const status = tableData
-                      ? (tableData.status === "SENT"
-                        ? 1
-                        : tableData.status === "BILL_REQUESTED"
-                          ? 2
-                          : tableData.status === "HOLD"
-                            ? 3
-                            : tableData.status === "LOCKED"
-                              ? 5
-                              : 0)
-                      : Number(t.Status);
-                    return status !== 0;
-                  }).length;
-
                   return (
-                    <TouchableOpacity
+                    <TabletSectionTab
                       key={section}
+                      section={section}
+                      isActive={activeTab === section}
                       onPress={() => setActiveTab(section)}
-                      activeOpacity={0.75}
-                      style={[
-                        styles.tabBtn,
-                        isActive && styles.activeTabBtn,
-                        !isTablet &&
-                        isLandscape && {
-                          paddingVertical: 6,
-                          paddingHorizontal: 12,
-                        },
-                      ]}
-                    >
-                      <Ionicons
-                        name={SECTION_ICONS[section] as any}
-                        size={14}
-                        color={isActive ? "#fff" : Theme.textSecondary}
-                        style={{ marginRight: 5 }}
-                      />
-                      <Text
-                        style={[
-                          styles.tabText,
-                          isActive && styles.activeTabText,
-                          { fontSize: isTablet ? 16 : 13 },
-                        ]}
-                      >
-                        {!isTablet && !isLandscape
-                          ? formatSectionGlobal(SECTION_LABELS[section]).replace(
-                            "Section ",
-                            "Sec-",
-                          )
-                          : formatSectionGlobal(SECTION_LABELS[section])}
-                      </Text>
-                      {occupied > 0 && (
-                        <View
-                          style={[
-                            styles.tabBadge,
-                            isActive && styles.activeTabBadge,
-                          ]}
-                        >
-                          <Text
-                            style={[
-                              styles.tabBadgeText,
-                              isActive && styles.activeTabBadgeText,
-                            ]}
-                          >
-                            {occupied}
-                          </Text>
-                        </View>
-                      )}
-                    </TouchableOpacity>
+                      sectionTables={sectionTables}
+                      isTablet={isTablet}
+                      isLandscape={isLandscape}
+                    />
                   );
                 })}
               </View>
@@ -3491,215 +3845,233 @@ export default function Category() {
         <View
           style={[
             styles.topNavContainer,
-            { paddingHorizontal: isTablet ? 20 : 12 },
-            !isTablet &&
-            isLandscape && { height: 42, paddingVertical: 2, gap: 8 },
+            {
+              paddingHorizontal: 16,
+              height: 56,
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "space-between",
+              backgroundColor: "#FFFFFF",
+              borderBottomWidth: 1,
+              borderBottomColor: "#F3F4F6",
+              gap: 12,
+            },
           ]}
         >
-          {/* CENTER — Section Tabs */}
+          {/* LEFT — Brand POS Logo & Subtitle */}
+          <TouchableOpacity
+            onPress={handleNavigateQuickServe}
+            activeOpacity={isQuickServeEnabled ? 0.75 : 1}
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 12,
+              flexShrink: 0,
+              cursor: isQuickServeEnabled ? "pointer" : "default",
+            } as any}
+          >
+            {/* Orange rounded-square receipt-and-cutlery icon */}
+            <FloorPlanBrandLogo size={42} />
+
+            {/* Thin vertical divider */}
+            <View
+              style={{
+                width: 1.5,
+                height: 28,
+                backgroundColor: "#E5E7EB",
+              }}
+            />
+
+            {/* POS Title & Subtitle */}
+            <View style={{ justifyContent: "center" }}>
+              <Text
+                style={{
+                  fontFamily: Fonts.black || Fonts.extraBold || "System",
+                  fontSize: 22,
+                  fontWeight: "900",
+                  color: "#FF5E1A",
+                  lineHeight: 24,
+                  letterSpacing: -0.5,
+                }}
+              >
+                POS
+              </Text>
+              <Text
+                style={{
+                  fontFamily: Fonts.medium || "System",
+                  fontSize: 11,
+                  fontWeight: "500",
+                  color: "#6B7280",
+                  letterSpacing: 0.1,
+                  marginTop: 1,
+                }}
+              >
+                Restaurant Billing System
+              </Text>
+            </View>
+          </TouchableOpacity>
+
+          {/* CENTER-LEFT — Section Tabs */}
           <ScrollView
             ref={sectionScrollRef}
             horizontal
             showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.tabsScrollContent}
-            style={styles.tabsScrollView}
+            contentContainerStyle={{ alignItems: "center", paddingHorizontal: 4 }}
+            style={{ flexGrow: 0, flexShrink: 1 }}
           >
-            <View style={[styles.tabsWrapper, { gap: isTablet ? 8 : 6 }]}>
-              {settings?.enableQuickServe === true && (
-                <TouchableOpacity
-                  onPress={() => router.push("/order-type")}
-                  activeOpacity={0.75}
-                  style={[
-                    styles.tabBtn,
-                    {
-                      backgroundColor: "#F1F5F9",
-                      borderColor: "#CBD5E1",
-                      borderWidth: 1,
-                      paddingVertical: 6,
-                      paddingHorizontal: 12,
-                      marginRight: 4,
-                    },
-                  ]}
-                >
-                  <Ionicons name="arrow-back" size={16} color="#0F172A" style={{ marginRight: 5 }} />
-                  <Text style={[styles.tabText, { color: "#0F172A", fontSize: isTablet ? 15 : 13, fontFamily: Fonts.bold }]}>
-                    Order Type
-                  </Text>
-                </TouchableOpacity>
-              )}
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
               {visibleSections.map((section) => {
-                const isActive = activeTab === section;
                 const sectionTables = allTables.filter((t: TableItem) => {
                   if (section === "TAKEAWAY") return t.DiningSection === 4;
-                  if (section === "SECTION_1") return t.DiningSection === 1;
-                  if (section === "SECTION_2") return t.DiningSection === 2;
-                  if (section === "SECTION_3") return t.DiningSection === 3;
+                  const match = section.match(/^SECTION_(\d+)$/);
+                  if (match) return t.DiningSection === parseInt(match[1], 10);
                   return false;
                 });
-                const occupied = sectionTables.filter((t: TableItem) => {
-                  const tableData = tableMap[t.id];
-                  const status = tableData
-                    ? (tableData.status === "SENT"
-                      ? 1
-                      : tableData.status === "BILL_REQUESTED"
-                        ? 2
-                        : tableData.status === "HOLD"
-                          ? 3
-                          : tableData.status === "LOCKED"
-                            ? 5
-                            : 0)
-                    : Number(t.Status);
-                  return status !== 0;
-                }).length;
-
                 return (
-                  <TouchableOpacity
+                  <DesktopSectionTab
                     key={section}
+                    section={section}
+                    isActive={activeTab === section}
                     onPress={() => setActiveTab(section)}
-                    activeOpacity={0.75}
-                    style={[
-                      styles.tabBtn,
-                      isActive && styles.activeTabBtn,
-                      !isTablet &&
-                      isLandscape && {
-                        paddingVertical: 6,
-                        paddingHorizontal: 12,
-                      },
-                    ]}
-                  >
-                    <Ionicons
-                      name={SECTION_ICONS[section] as any}
-                      size={14}
-                      color={isActive ? "#fff" : Theme.textSecondary}
-                      style={{ marginRight: 5 }}
-                    />
-                    <Text
-                      style={[
-                        styles.tabText,
-                        isActive && styles.activeTabText,
-                        { fontSize: isTablet ? 16 : 13 },
-                      ]}
-                    >
-                      {!isTablet && !isLandscape
-                        ? formatSectionGlobal(SECTION_LABELS[section]).replace(
-                          "Section ",
-                          "Sec-",
-                        )
-                        : formatSectionGlobal(SECTION_LABELS[section])}
-                    </Text>
-                    {occupied > 0 && (
-                      <View
-                        style={[
-                          styles.tabBadge,
-                          isActive && styles.activeTabBadge,
-                        ]}
-                      >
-                        <Text
-                          style={[
-                            styles.tabBadgeText,
-                            isActive && styles.activeTabBadgeText,
-                          ]}
-                        >
-                          {occupied}
-                        </Text>
-                      </View>
-                    )}
-                  </TouchableOpacity>
+                    sectionTables={sectionTables}
+                  />
                 );
               })}
             </View>
           </ScrollView>
 
-          {/* DATE PICKER & DAY START BUTTON */}
+          {/* CENTER-RIGHT — Date Pill & Day Start Status */}
           <View
             style={{
               flexDirection: "row",
               alignItems: "center",
-              gap: 8,
-              marginHorizontal: 8,
+              backgroundColor: "#F9FAFB",
+              borderWidth: 1,
+              borderColor: "#E5E7EB",
+              borderRadius: 24,
+              paddingVertical: 3,
+              paddingHorizontal: 4,
+              gap: 6,
             }}
           >
             <TouchableOpacity
               style={{
                 flexDirection: "row",
                 alignItems: "center",
-                backgroundColor: "#f5eee6",
-                borderWidth: 1,
-                borderColor: "#e5dec9",
-                borderRadius: 20,
-                paddingHorizontal: 16,
-                paddingVertical: 7,
-                gap: 10,
-                opacity: isDayStarted ? 0.7 : 1,
+                gap: 8,
+                paddingVertical: 4,
+                paddingHorizontal: 10,
               }}
               disabled={isDayStarted}
               onPress={() => setShowBusinessCalendar(true)}
+              activeOpacity={0.7}
             >
+              <View
+                style={{
+                  width: 26,
+                  height: 26,
+                  borderRadius: 7,
+                  backgroundColor: "#FF5E1A",
+                  justifyContent: "center",
+                  alignItems: "center",
+                }}
+              >
+                <Ionicons name="calendar-outline" size={15} color="#FFFFFF" />
+              </View>
               <Text
                 style={{
-                  fontFamily: Fonts.bold,
-                  fontSize: 15,
-                  color: "#1c2d42",
+                  fontFamily: Fonts.bold || "System",
+                  fontSize: 13,
+                  fontWeight: "700",
+                  color: "#1F2937",
                 }}
               >
                 {selectedBusinessDate
-                  ? formatDateToDMY(selectedBusinessDate)
-                  : "dd-mm-yyyy"}
+                  ? formatDateToDMY(selectedBusinessDate).replace(/-/g, ".")
+                  : "dd.mm.yyyy"}
               </Text>
-              <Ionicons name="calendar-outline" size={18} color="#556e8a" />
             </TouchableOpacity>
 
             <TouchableOpacity
               style={{
-                backgroundColor: isDayStarted
-                  ? "#22c55e"
-                  : Theme.primary || "#fd7e14",
-                borderRadius: 20,
-                paddingHorizontal: 14,
-                paddingVertical: 7,
-                justifyContent: "center",
+                flexDirection: "row",
                 alignItems: "center",
+                gap: 6,
+                backgroundColor: isDayStarted ? "#ECFDF5" : "#FFF7ED",
+                borderWidth: 1,
+                borderColor: isDayStarted ? "#A7F3D0" : "#FDBA74",
+                borderRadius: 20,
+                paddingHorizontal: 12,
+                paddingVertical: 5,
                 opacity: isStartingDay ? 0.7 : 1,
               }}
               disabled={isDayStarted || isStartingDay}
               onPress={handleStartDay}
+              activeOpacity={0.75}
             >
+              {isDayStarted ? (
+                <Ionicons name="checkmark-circle" size={15} color="#10B981" />
+              ) : (
+                <Ionicons name="play-circle-outline" size={15} color="#F97316" />
+              )}
               <Text
-                style={{ fontFamily: Fonts.bold, fontSize: 14, color: "#fff" }}
+                style={{
+                  fontFamily: Fonts.bold || "System",
+                  fontSize: 12,
+                  fontWeight: "700",
+                  color: isDayStarted ? "#047857" : "#C2410C",
+                }}
               >
                 {isDayStarted ? "Day Started" : "Start Day"}
               </Text>
             </TouchableOpacity>
           </View>
 
-          {/* RIGHT — Action Buttons */}
-          <View style={[styles.navRightGroup, { gap: isTablet ? 8 : 6 }]}>
-            {/* Kitchen Status — moved from menu */}
+          {/* RIGHT — Fast Action Buttons */}
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            {/* Kitchen Status Pill Button */}
             {enableKDS && (
               <TouchableOpacity
-                style={[styles.headerActionBtn, { position: "relative" }]}
+                style={[
+                  styles.headerActionBtn,
+                  {
+                    backgroundColor: "#ECFDF5",
+                    borderColor: "#A7F3D0",
+                    borderWidth: 1,
+                    borderRadius: 20,
+                    paddingHorizontal: 14,
+                    paddingVertical: 7,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 6,
+                    position: "relative",
+                  },
+                ]}
                 onPress={() => router.push("/kitchen-status")}
                 activeOpacity={0.75}
               >
                 <Ionicons
                   name="restaurant-outline"
-                  size={20}
-                  color={Theme.success}
+                  size={16}
+                  color="#10B981"
                 />
-                {isTablet && isLandscape && (
-                  <Text
-                    style={[styles.headerActionText, { color: Theme.success }]}
-                  >
-                    Status
-                  </Text>
-                )}
+                <Text
+                  style={{
+                    color: "#10B981",
+                    fontSize: 13,
+                    fontWeight: "700",
+                    fontFamily: Fonts.bold || "System",
+                  }}
+                >
+                  Status
+                </Text>
                 {readyItemsCount > 0 && (
                   <View
                     style={{
                       position: "absolute",
-                      top: -6,
-                      right: -6,
-                      backgroundColor: Theme.danger || "#ef4444",
+                      top: -4,
+                      right: -4,
+                      backgroundColor: "#EF4444",
                       borderRadius: 9,
                       minWidth: 18,
                       height: 18,
@@ -3707,21 +4079,14 @@ export default function Category() {
                       alignItems: "center",
                       paddingHorizontal: 4,
                       borderWidth: 1.5,
-                      borderColor: "#FFF",
-                      shadowColor: "#000",
-                      shadowOffset: { width: 0, height: 1 },
-                      shadowOpacity: 0.2,
-                      shadowRadius: 1,
-                      elevation: 2,
+                      borderColor: "#FFFFFF",
                     }}
                   >
                     <Text
                       style={{
-                        color: "#fff",
+                        color: "#FFFFFF",
                         fontSize: 9,
-                        fontFamily: Fonts.black || "System",
-                        lineHeight: 11,
-                        textAlign: "center",
+                        fontWeight: "900",
                       }}
                     >
                       {readyItemsCount}
@@ -3731,70 +4096,117 @@ export default function Category() {
               </TouchableOpacity>
             )}
 
-            {/* KDS — gated by OPRSTK and General Settings */}
+            {/* KDS Button */}
             {canAccessKDS() && enableKDS && (
               <TouchableOpacity
-                style={styles.headerActionBtn}
+                style={[
+                  styles.headerActionBtn,
+                  {
+                    backgroundColor: "#EFF6FF",
+                    borderColor: "#BFDBFE",
+                    borderWidth: 1,
+                    borderRadius: 20,
+                    paddingHorizontal: 14,
+                    paddingVertical: 7,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 6,
+                  },
+                ]}
                 onPress={() => router.push("/kds" as any)}
                 activeOpacity={0.75}
               >
-                <Ionicons name="tv-outline" size={20} color={Theme.info} />
-                {isTablet && isLandscape && (
-                  <Text
-                    style={[styles.headerActionText, { color: Theme.info }]}
-                  >
-                    KDS
-                  </Text>
-                )}
+                <Ionicons name="tv-outline" size={16} color="#3B82F6" />
+                <Text
+                  style={{
+                    color: "#3B82F6",
+                    fontSize: 13,
+                    fontWeight: "700",
+                    fontFamily: Fonts.bold || "System",
+                  }}
+                >
+                  KDS
+                </Text>
               </TouchableOpacity>
             )}
 
             {/* Alerts/Notifications Button */}
             <TouchableOpacity
-              style={[styles.headerActionBtn, { width: 40, height: 40, justifyContent: "center", paddingHorizontal: 0 }]}
+              style={[
+                styles.headerActionBtn,
+                {
+                  width: 38,
+                  height: 38,
+                  borderRadius: 19,
+                  backgroundColor: "#FFFFFF",
+                  borderColor: "#E5E7EB",
+                  borderWidth: 1,
+                  justifyContent: "center",
+                  alignItems: "center",
+                  paddingHorizontal: 0,
+                  position: "relative",
+                },
+              ]}
               onPress={() => setIsNotifModalVisible(true)}
               activeOpacity={0.75}
             >
-              <Ionicons name="notifications-outline" size={20} color={Theme.primary} />
+              <Ionicons name="notifications-outline" size={18} color="#FF5E1A" />
               {unreadCount > 0 && (
-                <View style={{
-                  position: "absolute",
-                  top: 2,
-                  right: 2,
-                  backgroundColor: Theme.danger || "#ef4444",
-                  borderRadius: 6,
-                  minWidth: 12,
-                  height: 12,
-                  justifyContent: "center",
-                  alignItems: "center",
-                  borderWidth: 1,
-                  borderColor: "#FFF",
-                }} />
+                <View
+                  style={{
+                    position: "absolute",
+                    top: 2,
+                    right: 2,
+                    backgroundColor: "#EF4444",
+                    borderRadius: 6,
+                    minWidth: 12,
+                    height: 12,
+                    borderWidth: 1.5,
+                    borderColor: "#FFFFFF",
+                  }}
+                />
               )}
             </TouchableOpacity>
 
-            <WindowControls buttonStyle={[styles.headerActionBtn, { width: 40, height: 40, justifyContent: "center", paddingHorizontal: 0 }]} iconSize={20} hideHome={true} />
+            <WindowControls
+              buttonStyle={[
+                styles.headerActionBtn,
+                { width: 38, height: 38, borderRadius: 19, justifyContent: "center", paddingHorizontal: 0 },
+              ]}
+              iconSize={18}
+              hideHome={true}
+            />
 
-            {/* NEW CONSOLIDATED MENU BUTTON */}
+            {/* Menu Hamburger Button */}
             <TouchableOpacity
               style={[
                 styles.headerActionBtn,
                 {
-                  backgroundColor: Theme.primaryLight,
-                  borderColor: Theme.primaryBorder,
+                  backgroundColor: "#FFF7ED",
+                  borderColor: "#FFEDD5",
+                  borderWidth: 1,
+                  borderRadius: 20,
+                  paddingHorizontal: 14,
+                  paddingVertical: 7,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 6,
                 },
               ]}
               onPress={() => setIsMenuVisible(true)}
               activeOpacity={0.75}
             >
-              <Ionicons name="menu-outline" size={24} color={Theme.primary} />
-              {isTablet && (
-                <Text
-                  style={[styles.headerActionText, { color: Theme.primary }]}
-                >
-                  Menu
-                </Text>
-              )}
+              <Ionicons name="menu-outline" size={20} color="#EA580C" />
+              <Text
+                style={{
+                  color: "#EA580C",
+                  fontSize: 13,
+                  fontWeight: "700",
+                  fontFamily: Fonts.bold || "System",
+                }}
+              >
+                Menu
+              </Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -3894,7 +4306,7 @@ export default function Category() {
             style={[
               styles.menuContent,
               isTablet && { width: 300, right: 20 },
-              { maxHeight: height * 0.8 },
+              { maxHeight: height * 0.88, display: "flex", flexDirection: "column" },
             ]}
           >
             {/* User Info Header */}
@@ -3930,7 +4342,7 @@ export default function Category() {
             <View style={styles.menuDivider} />
 
             {/* Menu Options */}
-            <ScrollView showsVerticalScrollIndicator={false}>
+            <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
               {/* 1. Tables Dropdown */}
               <TouchableOpacity
                 activeOpacity={0.7}
@@ -4708,6 +5120,9 @@ export default function Category() {
                 </Text>
               </TouchableOpacity>
             </ScrollView>
+
+            {/* Fixed License Details Card below scrollable menu and Logout */}
+            {renderLicenseCard()}
           </View>
         </TouchableOpacity>
       </Modal>
@@ -4720,76 +5135,139 @@ export default function Category() {
         currentAvatarUrl={avatarUrl}
       />
 
-      {/* 〰〰 Section Header Row (Hidden on Mobile Landscape) 〰〰 */}
-      {(!isLandscape || isTablet) && (
-        <View
-          style={[
-            styles.sectionHeader,
-            !isTablet &&
-            isLandscape && { paddingVertical: 4, paddingHorizontal: 14 },
-          ]}
-        >
-          <View style={styles.sectionHeaderLeft}>
-            <View
-              style={[
-                styles.sectionAccentBar,
-                !isTablet && isLandscape && { height: 14 },
-              ]}
-            />
+      {/* 〰〰 Section Sub-Header & Status Legend 〰〰 */}
+      <View
+        style={[
+          styles.sectionHeader,
+          {
+            backgroundColor: "#FFFFFF",
+            borderBottomWidth: 1,
+            borderBottomColor: "#F3F4F6",
+            paddingHorizontal: 20,
+            paddingVertical: 10,
+          },
+        ]}
+      >
+        <View style={styles.sectionHeaderLeft}>
+          <View
+            style={[
+              styles.sectionAccentBar,
+              {
+                width: 3.5,
+                height: 18,
+                borderRadius: 2,
+                backgroundColor: "#FF5E1A",
+              },
+            ]}
+          />
+          <Text
+            style={[
+              styles.sectionHeaderTitle,
+              {
+                fontFamily: Fonts.extraBold || "System",
+                fontSize: 16,
+                fontWeight: "800",
+                color: "#111827",
+              },
+            ]}
+          >
+            {getSectionLabel(activeTab) || "SEC-1"}
+          </Text>
+          <View
+            style={[
+              styles.sectionCountBadge,
+              {
+                backgroundColor: "#F3F4F6",
+                borderColor: "#E5E7EB",
+                borderWidth: 1,
+                borderRadius: 12,
+                paddingHorizontal: 10,
+                paddingVertical: 3,
+              },
+            ]}
+          >
             <Text
               style={[
-                styles.sectionHeaderTitle,
-                !isTablet && isLandscape && { fontSize: 13 },
+                styles.sectionCountText,
+                { color: "#6B7280", fontSize: 12, fontWeight: "600" },
               ]}
             >
-              {SECTION_LABELS[activeTab]}
+              {currentTables.length} tables
             </Text>
+          </View>
+          {occupiedCount > 0 && (
             <View
               style={[
-                styles.sectionCountBadge,
-                !isTablet && isLandscape && { paddingVertical: 1 },
+                styles.occupiedBadge,
+                {
+                  backgroundColor: "#ECFDF5",
+                  borderColor: "#A7F3D0",
+                  borderWidth: 1,
+                  borderRadius: 12,
+                  paddingHorizontal: 10,
+                  paddingVertical: 3,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 5,
+                },
               ]}
             >
-              <Text style={styles.sectionCountText}>
-                {currentTables.length} tables
-              </Text>
-            </View>
-            {occupiedCount > 0 && (
               <View
                 style={[
-                  styles.occupiedBadge,
-                  !isTablet && isLandscape && { paddingVertical: 1 },
+                  styles.occupiedDot,
+                  { width: 6, height: 6, borderRadius: 3, backgroundColor: "#10B981" },
+                ]}
+              />
+              <Text
+                style={[
+                  styles.occupiedText,
+                  { color: "#047857", fontSize: 12, fontWeight: "700" },
                 ]}
               >
-                <View style={styles.occupiedDot} />
-                <Text style={styles.occupiedText}>
-                  {occupiedCount} occupied
-                </Text>
-              </View>
-            )}
-          </View>
-
-          {/* Legend - Only show on tablets directly on screen */}
-          {isTablet && (
-            <View style={styles.legend}>
-              {[
-                { color: "#81C995", label: "Dining" },
-                { color: "#93C5FD", label: "Hold" },
-                { color: "#FCD34D", label: "Checkout" },
-                { color: "#FCA5A5", label: "Reserved" },
-                { color: "#C084FC", label: "Overtime" },
-              ].map((item) => (
-                <View key={item.label} style={styles.legendItem}>
-                  <View
-                    style={[styles.legendDot, { backgroundColor: item.color }]}
-                  />
-                  <Text style={styles.legendText}>{item.label}</Text>
-                </View>
-              ))}
+                {occupiedCount} occupied
+              </Text>
             </View>
           )}
         </View>
-      )}
+
+        {/* Status Legend */}
+        <View style={[styles.legend, { gap: 14 }]}>
+          {[
+            { color: "#81C995", label: "Dining" },
+            { color: "#93C5FD", label: "Hold" },
+            { color: "#FCD34D", label: "Checkout" },
+            { color: "#FCA5A5", label: "Reserved" },
+            { color: "#C084FC", label: "Overtime" },
+          ].map((item) => (
+            <View key={item.label} style={[styles.legendItem, { gap: 6 }]}>
+              <View
+                style={[
+                  styles.legendDot,
+                  {
+                    backgroundColor: item.color,
+                    width: 7,
+                    height: 7,
+                    borderRadius: 4,
+                  },
+                ]}
+              />
+              <Text
+                style={[
+                  styles.legendText,
+                  {
+                    color: "#9CA3AF",
+                    fontSize: 11,
+                    fontWeight: "500",
+                    fontFamily: Fonts.medium || "System",
+                  },
+                ]}
+              >
+                {item.label}
+              </Text>
+            </View>
+          ))}
+        </View>
+      </View>
 
       {/* â•â•â•â•â•â•â•â•â•â•â• TABLE GRID â•â•â•â•â•â•â•â•â•â•â• */}
       {/* ═════════════ TABLE VISUAL FLOOR MAP ═════════════ */}
@@ -5231,7 +5709,7 @@ export default function Category() {
               contentContainerStyle={styles.moveSectionTabsContent}
               style={styles.moveSectionTabsRow}
             >
-              {SECTIONS.map((sec) => {
+              {visibleSections.map((sec) => {
                 const isAct = moveActiveSection === sec;
                 return (
                   <TouchableOpacity
@@ -5247,7 +5725,7 @@ export default function Category() {
                     activeOpacity={0.75}
                   >
                     <Ionicons
-                      name={SECTION_ICONS[sec] as any}
+                      name={getSectionIcon(sec) as any}
                       size={13}
                       color={isAct ? "#fff" : Theme.textSecondary}
                     />
@@ -5257,7 +5735,7 @@ export default function Category() {
                         isAct && styles.moveSectionTabTextActive,
                       ]}
                     >
-                      {SECTION_SHORT[sec]}
+                      {getSectionShort(sec)}
                     </Text>
                   </TouchableOpacity>
                 );
@@ -5326,14 +5804,7 @@ export default function Category() {
                 );
               } else {
                 // Show only available tables in selected section
-                const secNum =
-                  moveActiveSection === "TAKEAWAY"
-                    ? 4
-                    : moveActiveSection === "SECTION_1"
-                      ? 1
-                      : moveActiveSection === "SECTION_2"
-                        ? 2
-                        : 3;
+                const secNum = Number(getSectionNum(moveActiveSection));
                 let list = realTimeTables.filter(
                   (t) =>
                     t.DiningSection === secNum &&
@@ -5653,8 +6124,7 @@ export default function Category() {
                           // If it is a QR order, we can close modal and help them locate the table
                           setIsNotifModalVisible(false);
                           if (item.tableNo && item.section) {
-                            const sectionMap: Record<string, string> = { "1": "SECTION_1", "2": "SECTION_2", "3": "SECTION_3", "4": "TAKEAWAY" };
-                            const normalizedSection = sectionMap[String(item.section)] || item.section;
+                            const normalizedSection = getSectionFromDiningSection(Number(item.section));
                             setActiveTab(normalizedSection);
                             showToast({
                               type: "info",
@@ -5777,22 +6247,26 @@ export default function Category() {
 
       {/* General Settings Modal */}
 
-      {/* Floating AI Chat Assistant Button */}
-      {user?.role === "ADMIN" && (
-        <TouchableOpacity
-          style={[
-            styles.floatingAiBtn,
-            {
-              bottom: Math.max(insets.bottom, 16) + 16,
-              right: Math.max(insets.right, 16) + 16,
-            },
-          ]}
-          onPress={() => router.push("/ai-chat")}
-          activeOpacity={0.8}
-        >
-          <Ionicons name="sparkles" size={24} color="#fff" />
-        </TouchableOpacity>
-      )}
+      {/* Floating Action Button (FAB) — AI Chat Assistant */}
+      <TouchableOpacity
+        style={[
+          styles.floatingAiBtn,
+          {
+            bottom: Math.max(insets.bottom, 20) + 12,
+            right: Math.max(insets.right, 20) + 12,
+            backgroundColor: "#FF5E1A",
+            shadowColor: "#FF5E1A",
+            shadowOffset: { width: 0, height: 4 },
+            shadowOpacity: 0.35,
+            shadowRadius: 8,
+            elevation: 8,
+          },
+        ]}
+        onPress={() => router.push("/ai-chat")}
+        activeOpacity={0.85}
+      >
+        <Ionicons name="sparkles" size={24} color="#FFFFFF" />
+      </TouchableOpacity>
 
       {/* Calendar Modal for Business Date */}
       <Modal
@@ -5874,8 +6348,6 @@ export default function Category() {
           </View>
         </TouchableWithoutFeedback>
       </Modal>
-
-      {renderLicenseView(true)}
     </SafeAreaView>
   );
 }
@@ -6186,7 +6658,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   menuContent: {
-    width: 260,
+    width: 290,
     backgroundColor: "#FFF",
     borderRadius: 20,
     padding: 10,

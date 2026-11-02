@@ -64,13 +64,15 @@ export interface PaymentSuccessParams {
 
 /* ─────────────────────────────────────────────────────────────────────────
    ROLE GUARD
-   ADMIN and CASHIER users are allowed to trigger Customer Display updates.
-   Waiter, KDS, and all other roles are silently blocked.
+   Cashier-facing roles (ADMIN, CASHIER, MANAGER, SUPERVISOR, OWNER) 
+   are allowed to trigger Customer Display updates.
+   Waiter, KDS, and non-billing roles are silently blocked.
    ───────────────────────────────────────────────────────────────────────── */
 const isAllowedRole = (): boolean => {
   const user = useAuthStore.getState().user;
   if (!user) return false;
-  return user.role === "ADMIN" || user.role === "CASHIER";
+  const role = String(user.role || "").toUpperCase();
+  return ["ADMIN", "CASHIER", "MANAGER", "SUPERVISOR", "OWNER"].includes(role);
 };
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -85,6 +87,7 @@ const getTerminalCode = (): string | null => {
 export const CustomerDisplaySync = {
   isPaymentActive: false,
   isSuccessActive: false,
+  lastPaymentSuccessTime: 0,
   idleTimeout: null as any,
 
   cancelPendingIdle: () => {
@@ -96,11 +99,12 @@ export const CustomerDisplaySync = {
 
   syncCart: (params: SyncCartParams) => {
     CustomerDisplaySync.isSuccessActive = false;
+    CustomerDisplaySync.lastPaymentSuccessTime = 0;
     CustomerDisplaySync.cancelPendingIdle();
     try {
-      // 🛡️ ROLE GUARD: Only ADMIN users trigger Customer Display updates
+      // 🛡️ ROLE GUARD: Only cashier-facing users trigger Customer Display updates
       if (!isAllowedRole()) {
-        console.log("🖥️ [CustomerDisplaySync] syncCart blocked — user role is not ADMIN.");
+        console.log("🖥️ [CustomerDisplaySync] syncCart blocked — user role is not authorized cashier/admin.");
         return;
       }
 
@@ -278,9 +282,9 @@ export const CustomerDisplaySync = {
     CustomerDisplaySync.idleTimeout = setTimeout(() => {
       CustomerDisplaySync.idleTimeout = null;
       try {
-        // 🛡️ ROLE GUARD: Only ADMIN users trigger Customer Display updates
+        // 🛡️ ROLE GUARD: Only cashier-facing users trigger Customer Display updates
         if (!isAllowedRole()) {
-          console.log("🖥️ [CustomerDisplaySync] syncIdle blocked — user role is not ADMIN.");
+          console.log("🖥️ [CustomerDisplaySync] syncIdle blocked — user role is not authorized cashier/admin.");
           return;
         }
 
@@ -294,6 +298,13 @@ export const CustomerDisplaySync = {
 
         if (CustomerDisplaySync.isSuccessActive) {
           console.log("🖥️ [CustomerDisplaySync] syncIdle blocked because success screen is active");
+          return;
+        }
+
+        // 🛡️ Flicker Guard: Prevent premature idle transitions within 3 seconds of a payment success
+        const timeSinceSuccess = Date.now() - (CustomerDisplaySync.lastPaymentSuccessTime || 0);
+        if (timeSinceSuccess < 3000) {
+          console.log(`🖥️ [CustomerDisplaySync] syncIdle blocked by post-payment grace window (${timeSinceSuccess}ms < 3000ms)`);
           return;
         }
 
@@ -323,11 +334,12 @@ export const CustomerDisplaySync = {
 
   syncPaymentSuccess: (params: PaymentSuccessParams) => {
     CustomerDisplaySync.isSuccessActive = true;
+    CustomerDisplaySync.lastPaymentSuccessTime = Date.now();
     CustomerDisplaySync.cancelPendingIdle();
     try {
-      // 🛡️ ROLE GUARD: Only ADMIN users trigger Customer Display updates
+      // 🛡️ ROLE GUARD: Only cashier-facing users trigger Customer Display updates
       if (!isAllowedRole()) {
-        console.log("🖥️ [CustomerDisplaySync] syncPaymentSuccess blocked — user role is not ADMIN.");
+        console.log("🖥️ [CustomerDisplaySync] syncPaymentSuccess blocked — user role is not authorized cashier/admin.");
         return;
       }
 
@@ -347,6 +359,7 @@ export const CustomerDisplaySync = {
         paymentMethod: params.method,
         terminalCode: getTerminalCode(), // 🖥️ Room routing key
         companyName: companySettings?.name || paymentSettings?.shopName || "Restaurant",
+        companyLogo: companySettings?.companyLogo ? (companySettings.companyLogo.startsWith("data:") || companySettings.companyLogo.startsWith("http") ? companySettings.companyLogo : `${API_URL}${companySettings.companyLogo.startsWith("/") ? "" : "/"}${companySettings.companyLogo}`) : "",
         currencySymbol: companySettings?.currencySymbol || "₹",
       };
 

@@ -308,7 +308,7 @@ private static escapeHtml(str: string): string {
                      new Date();
     
     const isReprint = saleData.isReprint === true;
-    const billNo = saleData.invoiceNumber || saleData.orderId || saleData.id || `ORD-${saleDate.getFullYear()}${(saleDate.getMonth()+1).toString().padStart(2,'0')}${saleDate.getDate().toString().padStart(2,'0')}-${Math.floor(1000 + Math.random()*9000)}`;
+    const billNo = saleData.invoiceNumber || saleData.billNo || saleData.orderId || saleData.id || `ORD-${saleDate.getFullYear()}${(saleDate.getMonth()+1).toString().padStart(2,'0')}${saleDate.getDate().toString().padStart(2,'0')}-${Math.floor(1000 + Math.random()*9000)}`;
     
     const hasGST = company.gstPercentage > 0;
     const gstRate = company.gstPercentage !== undefined && company.gstPercentage !== null ? company.gstPercentage : 9;
@@ -913,40 +913,66 @@ private static escapeHtml(str: string): string {
           
           <!-- Payment Info -->
           <div class="payment-info">
-            ${saleData.isCheckout ? `
-              <div class="payment-row" style="margin-top: 5mm; border: 2px solid #000; padding: 2mm; text-align: center; justify-content: center;">
-                <span class="payment-label" style="font-size: 14px;">PAYMENT STATUS: PENDING</span>
-              </div>
-            ` : `
-              ${saleData.payments && Array.isArray(saleData.payments) && saleData.payments.length > 0 ? `
-                <div style="font-weight: bold; border-top: 1px dashed #ccc; margin-top: 2mm; padding-top: 2mm; font-size: 10px; text-align: left; text-transform: uppercase; margin-bottom: 1.5mm;">PAYMENT DETAILS</div>
-                ${saleData.payments.map((p: any) => {
-                  let mode = String(p.payMode || p.payModeName || p.Remarks || 'Payment').toUpperCase();
-                  if (mode.trim() === "FOC") mode = "FOC (DISCOUNT)";
-                  return `
-                  <div class="payment-row" style="font-size: 10px; font-weight: 700; display: flex; justify-content: space-between;">
-                    <span>${mode}</span>
-                    <span>${currencySymbol}${parseFloat(p.amount).toFixed(2)}</span>
+            ${(() => {
+              const isCash = /^(CAS|CASH|CASH\s.*)$/i.test(String(saleData.paymentMethod || '').trim()) ||
+                (saleData.payments && Array.isArray(saleData.payments) && saleData.payments.some((p: any) => /^(CAS|CASH|CASH\s.*)$/i.test(String(p.payMode || p.payModeName || p.Remarks || '').trim())));
+              const cashReceived = Number(saleData.cashPaid ?? saleData.cashReceived ?? saleData.tenderedAmount ?? saleData.paidAmount ?? 0);
+              const changeReturn = Number(saleData.change ?? saleData.changeAmount ?? 0);
+
+              if (saleData.isCheckout) {
+                return `
+                  <div class="payment-row" style="margin-top: 5mm; border: 2px solid #000; padding: 2mm; text-align: center; justify-content: center;">
+                    <span class="payment-label" style="font-size: 14px;">PAYMENT STATUS: PENDING</span>
                   </div>
-                  `;
-                }).join('')}
-              ` : `
+                `;
+              }
+
+              if (saleData.payments && Array.isArray(saleData.payments) && saleData.payments.length > 0) {
+                return `
+                  <div style="font-weight: bold; border-top: 1px dashed #ccc; margin-top: 2mm; padding-top: 2mm; font-size: 10px; text-align: left; text-transform: uppercase; margin-bottom: 1.5mm;">PAYMENT DETAILS</div>
+                  ${saleData.payments.map((p: any) => {
+                    let mode = String(p.payMode || p.payModeName || p.Remarks || 'Payment').toUpperCase();
+                    if (mode.trim() === "FOC") mode = "FOC (DISCOUNT)";
+                    if (mode.trim() === "CAS") mode = "CASH";
+                    return `
+                    <div class="payment-row" style="font-size: 10px; font-weight: 700; display: flex; justify-content: space-between;">
+                      <span>${mode}</span>
+                      <span>${currencySymbol}${parseFloat(p.amount).toFixed(2)}</span>
+                    </div>
+                    `;
+                  }).join('')}
+                  ${isCash && cashReceived > 0 ? `
+                  <div class="payment-row" style="font-size: 10px; font-weight: 600; display: flex; justify-content: space-between; margin-top: 1mm;">
+                    <span>Cash Received:</span>
+                    <span>${currencySymbol}${cashReceived.toFixed(2)}</span>
+                  </div>
+                  <div class="payment-row" style="font-size: 10px; font-weight: 600; display: flex; justify-content: space-between;">
+                    <span>Change Return:</span>
+                    <span>${currencySymbol}${changeReturn.toFixed(2)}</span>
+                  </div>
+                  ` : ''}
+                `;
+              }
+
+              let displayMethod = String(saleData.paymentMethod || 'Cash');
+              if (displayMethod.toUpperCase().trim() === "CAS") displayMethod = "CASH";
+              return `
                 <div class="payment-row">
                   <span>PAYMENT:</span>
-                  <span>${saleData.paymentMethod || 'Cash'}</span>
+                  <span>${displayMethod}</span>
                 </div>
-                ${saleData.cashPaid ? `
-                <div class="payment-row">
-                  <span>PAID:</span>
-                  <span>${currencySymbol}${saleData.cashPaid.toFixed(2)}</span>
+                ${isCash && cashReceived > 0 ? `
+                <div class="payment-row" style="font-size: 10px; font-weight: 600; display: flex; justify-content: space-between; margin-top: 1mm;">
+                  <span>Cash Received:</span>
+                  <span>${currencySymbol}${cashReceived.toFixed(2)}</span>
                 </div>
-                <div class="payment-row">
-                  <span>CHANGE:</span>
-                  <span>${currencySymbol}${(saleData.change || 0).toFixed(2)}</span>
+                <div class="payment-row" style="font-size: 10px; font-weight: 600; display: flex; justify-content: space-between;">
+                  <span>Change Return:</span>
+                  <span>${currencySymbol}${changeReturn.toFixed(2)}</span>
                 </div>
                 ` : ''}
-              `}
-            `}
+              `;
+            })()}
             
             <!-- 🏆 Print Reward point transaction stats on PDF Invoice -->
             ${parseFloat(saleData.rewardPointsEarned) > 0 ? `

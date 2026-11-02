@@ -1,4 +1,4 @@
-const { getPool, getRemotePool, isRemoteOnline, connectRemote, sql } = require("../config/db");
+const { getPool, getRemotePool, isRemoteOnline, connectRemote, onRemoteReconnected, getRemoteSupervisorStatus, sql } = require("../config/db");
 
 let isSyncing = false;
 let syncIntervalObj = null;
@@ -319,46 +319,75 @@ async function pullMasterDataFromRemote() {
   const localPool = getPool();
   if (!localPool) return false;
 
-  console.log("📥 [Sync Engine] Running 5-minute Master Data Pull from Remote DB -> Local DB...");
+  console.log("📥 [Sync Engine] Running scheduled Master Catalog & Settings Pull from Remote DB -> Local DB...");
 
   try {
-    const { syncSchemaFromRemoteToLocal } = require("./autoProvisionLocalDb");
-    await syncSchemaFromRemoteToLocal();
-    console.log("✅ [Sync Engine] 5-minute Master Data Pull completed successfully.");
+    const { syncMasterCatalog2Way } = require("./autoProvisionLocalDb");
+    await syncMasterCatalog2Way(remotePool, localPool);
+    console.log("✅ [Sync Engine] Scheduled Master Catalog & Settings Pull completed successfully.");
     return true;
   } catch (err) {
-    console.warn("⚠️ [Sync Engine] Error during 5-minute Master Data Pull:", err.message);
+    console.warn("⚠️ [Sync Engine] Error during scheduled Master Catalog Pull:", err.message);
     return false;
   }
 }
 
 let pullIntervalObj = null;
 
+// Register automatic reconnection listener to immediately resume sync when Remote DB comes back ONLINE
+onRemoteReconnected(async (pool) => {
+  console.log("[Sync Engine] Remote DB reconnected. Resuming pending synchronization...");
+  try {
+    // 1. Immediately trigger pending queue push
+    await triggerSyncProcess();
+    // 2. Perform a master catalog pull
+    await pullMasterDataFromRemote();
+  } catch (err) {
+    console.error("⚠️ [Sync Engine] Error during reconnect auto-sync:", err.message);
+  }
+});
+
 // Start periodic heartbeat & sync worker
-function startSyncWorker(pushIntervalMs = 5000, pullIntervalMs = 5 * 60 * 1000) {
+function startSyncWorker(pushIntervalMs = 5000, pullIntervalMs = 3 * 60 * 1000) {
   initSyncQueue();
   if (syncIntervalObj) clearInterval(syncIntervalObj);
   if (pullIntervalObj) clearInterval(pullIntervalObj);
   
-  // 1. Push local transactions to Remote DB every 5 seconds
+  // 1. Push local transactions to Remote DB every 5 seconds (configurable)
   syncIntervalObj = setInterval(() => {
     triggerSyncProcess();
   }, pushIntervalMs);
 
-  // 2. Pull / Fetch updated Master Data from Remote DB every 5 minutes (300,000ms)
+  // 2. Pull / Fetch updated Master Data from Remote DB every 3-5 minutes (default 3 minutes)
   pullIntervalObj = setInterval(() => {
     pullMasterDataFromRemote();
   }, pullIntervalMs);
   
-  console.log(`🚀 [Sync Engine] Automatic 2-Way Sync Worker Started:`);
+  console.log(`🚀 [Sync Engine] Automatic Synchronization Worker Started:`);
   console.log(`   ⬆️ Push Local Transactions -> Remote DB: Every ${pushIntervalMs / 1000} seconds`);
-  console.log(`   ⬇️ Pull Master Data & Prices <- Remote DB: Every ${pullIntervalMs / 60000} minutes`);
+  console.log(`   ⬇️ Pull Master Data & Operational State <- Remote DB: Every ${pullIntervalMs / 60000} minutes`);
 }
+
+function stopSyncWorker() {
+  if (syncIntervalObj) {
+    clearInterval(syncIntervalObj);
+    syncIntervalObj = null;
+  }
+  if (pullIntervalObj) {
+    clearInterval(pullIntervalObj);
+    pullIntervalObj = null;
+  }
+  console.log("🛑 [Sync Engine] Automatic Sync Worker gracefully stopped.");
+}
+
+process.once('SIGINT', stopSyncWorker);
+process.once('SIGTERM', stopSyncWorker);
 
 const { pushActiveOrderToRemote } = require("./autoProvisionLocalDb");
 
 module.exports = {
   startSyncWorker,
+  stopSyncWorker,
   triggerSyncProcess,
   pullMasterDataFromRemote,
   enqueueSync,
@@ -366,6 +395,7 @@ module.exports = {
   getSyncStats: () => ({
     ...syncStats,
     isOnline: isRemoteOnline(),
+    remoteSupervisor: typeof getRemoteSupervisorStatus === 'function' ? getRemoteSupervisorStatus() : null,
     lastSyncTime: lastSyncTime ? lastSyncTime.toISOString() : null
   })
 };

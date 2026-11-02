@@ -1,6 +1,9 @@
 const path = require("path");
-// Adjust path to root of backend folder where .env is located
-require("dotenv").config({ path: path.resolve(__dirname, "../.env") });
+const fs = require("fs");
+const plainEnvPath = path.resolve(__dirname, "../.env");
+if (fs.existsSync(plainEnvPath)) {
+  require("dotenv").config({ path: plainEnvPath });
+}
 const sql = require("mssql"); 
 
 // --- Local Database Config (Primary for fast offline & online operations) ---
@@ -51,12 +54,12 @@ const remoteDbConfig = remoteDbServer ? {
     encrypt: false,
     trustServerCertificate: true,
     enableArithAbort: true,
-    connectTimeout: 30000, 
+    connectTimeout: 15000, 
     requestTimeout: 30000,
     appName: "POS_System_RemoteSync",
     keepAlive: true
   },
-  connectionTimeout: 30000,
+  connectionTimeout: 15000,
   requestTimeout: 30000,
   pool: {
     max: 50,
@@ -77,6 +80,12 @@ if (remoteDbConfig) {
 let localPoolInstance = null;
 let remotePoolInstance = null;
 let isRemoteConnected = false;
+let isReconnecting = false;
+let supervisorTimer = null;
+let currentRetryDelay = 5000;
+let lastRemoteError = null;
+let lastHealthyCheckTime = null;
+let onRemoteReconnectedCallbacks = [];
 
 // Step 0: Ensure target database exists on Local SQL Server before connecting
 async function ensureLocalDatabaseExists() {
@@ -151,51 +160,205 @@ async function connectLocalWithRetry(retries = 3, delay = 2000) {
   return null;
 }
 
-async function connectRemote() {
-  if (!remoteDbConfig) return null;
-  if (remotePoolInstance && remotePoolInstance.connected) return remotePoolInstance;
+/**
+ * Safely disposes and cleans up an existing remote pool instance
+ */
+async function disposeRemotePool(poolToDispose) {
+  const target = poolToDispose || remotePoolInstance;
+  if (!target) return;
   try {
-    console.log(`🌐 [Remote Cloud DB] Attempting connection to ${remoteDbConfig.server}:${remoteDbConfig.port}...`);
-    const pool = await new sql.ConnectionPool(remoteDbConfig).connect();
-    console.log("✅ [Remote Cloud DB] Connected Successfully");
-    pool.on("error", (err) => {
-      console.error("⚠️ [Remote Cloud DB Pool Error]:", err.message);
-      isRemoteConnected = false;
-    });
-    remotePoolInstance = pool;
-    isRemoteConnected = true;
-    return pool;
-  } catch (err) {
-    console.warn(`🟡 [Remote Cloud DB Offline]: ${err.message} - Backend operating smoothly in Offline Local Mode.`);
-    isRemoteConnected = false;
+    target.removeAllListeners("error");
+    await target.close();
+  } catch (_) {}
+  if (target === remotePoolInstance) {
     remotePoolInstance = null;
-    return null;
   }
 }
 
-// Ensure remote pool promise is created FIRST before fallback check
-const remotePoolPromise = connectRemote();
+/**
+ * Marks remote DB as offline, disposes pool, and schedules reconnection supervisor
+ */
+function handleRemoteDisconnect(reason = "Connection lost") {
+  const wasOnline = isRemoteConnected;
+  isRemoteConnected = false;
+  lastRemoteError = reason;
+  
+  if (wasOnline) {
+    console.warn(`[Remote DB Supervisor] Remote connection lost: ${reason}`);
+  }
+  
+  if (remotePoolInstance) {
+    const stale = remotePoolInstance;
+    remotePoolInstance = null;
+    disposeRemotePool(stale).catch(() => {});
+  }
+
+  scheduleRemoteReconnect();
+}
+
+/**
+ * Connects or reconnects to Remote Cloud DB with SQL verification
+ */
+async function connectRemote() {
+  if (!remoteDbConfig) return null;
+
+  // If pool exists and is connected, verify with quick health check
+  if (remotePoolInstance && remotePoolInstance.connected && isRemoteConnected) {
+    try {
+      await remotePoolInstance.request().query("SELECT 1 AS health");
+      lastHealthyCheckTime = new Date();
+      return remotePoolInstance;
+    } catch (err) {
+      handleRemoteDisconnect(err.message);
+    }
+  }
+
+  // Prevent concurrent connection attempts
+  if (isReconnecting) {
+    return null;
+  }
+
+  isReconnecting = true;
+  console.log(`[Remote DB Supervisor] Attempting reconnection to ${remoteDbConfig.server}:${remoteDbConfig.port}...`);
+
+  // Safely dispose old pool before allocating new one
+  if (remotePoolInstance) {
+    await disposeRemotePool(remotePoolInstance);
+  }
+
+  let newPool = null;
+  try {
+    newPool = new sql.ConnectionPool(remoteDbConfig);
+    newPool.on("error", (err) => {
+      console.error("⚠️ [Remote Cloud DB Pool Error]:", err.message);
+      handleRemoteDisconnect(err.message);
+    });
+
+    await newPool.connect();
+    console.log("[Remote DB Supervisor] SQL connection established.");
+
+    // Verify authentication and query execution via SELECT 1
+    await newPool.request().query("SELECT 1 AS healthCheck");
+    console.log("[Remote DB Supervisor] SELECT 1 health check successful.");
+
+    remotePoolInstance = newPool;
+    isRemoteConnected = true;
+    lastRemoteError = null;
+    lastHealthyCheckTime = new Date();
+    currentRetryDelay = 5000; // Reset backoff
+    console.log("[Remote DB Supervisor] Remote DB status: ONLINE.");
+
+    // Notify registered listeners (e.g. Sync Engine)
+    notifyRemoteReconnected(newPool);
+
+    return newPool;
+  } catch (err) {
+    lastRemoteError = err.message;
+    console.warn(`[Remote DB Supervisor] Remote connection failed: ${err.message} (${err.code || "ERR_DB_OFFLINE"})`);
+    isRemoteConnected = false;
+    if (newPool) {
+      await disposeRemotePool(newPool);
+    }
+    remotePoolInstance = null;
+    scheduleRemoteReconnect();
+    return null;
+  } finally {
+    isReconnecting = false;
+  }
+}
+
+/**
+ * Schedules the next reconnection attempt with bounded exponential backoff & jitter
+ */
+function scheduleRemoteReconnect() {
+  if (supervisorTimer) return; // Timer already active
+  if (!remoteDbConfig) return;
+
+  // Exponential backoff: 5s, 10s, 20s, 40s, max 60s
+  const baseDelay = currentRetryDelay;
+  const jitter = Math.floor(Math.random() * 1500);
+  const nextDelay = Math.min(60000, baseDelay + jitter);
+
+  console.log(`[Remote DB Supervisor] Next retry in ${(nextDelay / 1000).toFixed(1)} seconds.`);
+
+  supervisorTimer = setTimeout(async () => {
+    supervisorTimer = null;
+    // Step up backoff for next round
+    currentRetryDelay = Math.min(60000, currentRetryDelay * 2);
+    try {
+      await connectRemote();
+    } catch (_) {}
+  }, nextDelay);
+}
+
+/**
+ * Register callback to be called whenever Remote DB transitions to ONLINE
+ */
+function onRemoteReconnected(fn) {
+  if (typeof fn === "function") {
+    onRemoteReconnectedCallbacks.push(fn);
+  }
+}
+
+function notifyRemoteReconnected(pool) {
+  for (const cb of onRemoteReconnectedCallbacks) {
+    try {
+      cb(pool);
+    } catch (err) {
+      console.error("⚠️ [Remote DB Supervisor] Error executing reconnect callback:", err.message);
+    }
+  }
+}
+
+// Supervisor background monitor: periodic check to verify connection if idle
+setInterval(async () => {
+  if (!remoteDbConfig) return;
+  if (!isRemoteConnected || !remotePoolInstance || !remotePoolInstance.connected) {
+    if (!supervisorTimer && !isReconnecting) {
+      scheduleRemoteReconnect();
+    }
+  } else {
+    // Health probe every 60s if connected
+    try {
+      await remotePoolInstance.request().query("SELECT 1 AS probe");
+      lastHealthyCheckTime = new Date();
+    } catch (err) {
+      handleRemoteDisconnect(`Health probe failed: ${err.message}`);
+    }
+  }
+}, 30000);
 
 const poolPromise = (async () => {
-  const localPool = await connectLocalWithRetry(2, 2000); // Try local DB fast
+  const localPool = await connectLocalWithRetry(3, 2000);
   if (localPool && localPool.connected) {
     return localPool;
   }
-  console.log("🌐 [Fallback] Local DB unavailable. Falling back seamlessly to Remote Cloud DB...");
-  const remotePool = await remotePoolPromise || await connectRemote();
-  return remotePool;
+  console.warn("⚠️ [Local DB Warning] Local database could not connect initially. Local operations will retry connecting to local DB.");
+  return localPoolInstance;
 })();
 
 module.exports = { 
     sql, 
     poolPromise, 
-    remotePoolPromise,
+    // Always returns a dynamic promise connecting to remote
+    remotePoolPromise: () => connectRemote(),
     dbConfig: localDbConfig,
     remoteDbConfig,
     ensureLocalDatabaseExists,
-    getPool: () => (localPoolInstance && localPoolInstance.connected) ? localPoolInstance : remotePoolInstance,
-    getRemotePool: () => (remotePoolInstance && remotePoolInstance.connected) ? remotePoolInstance : null,
+    // POS application always uses Local SQL Server
+    getPool: () => (localPoolInstance && localPoolInstance.connected) ? localPoolInstance : null,
+    // Remote Cloud DB is strictly used only by the background sync service
+    getRemotePool: () => (remotePoolInstance && remotePoolInstance.connected && isRemoteConnected) ? remotePoolInstance : null,
     connectRemote,
-    isRemoteOnline: () => isRemoteConnected && remotePoolInstance && remotePoolInstance.connected
+    isRemoteOnline: () => isRemoteConnected && remotePoolInstance && remotePoolInstance.connected,
+    onRemoteReconnected,
+    handleRemoteDisconnect,
+    getRemoteSupervisorStatus: () => ({
+      isConfigured: !!remoteDbConfig,
+      isOnline: isRemoteConnected && remotePoolInstance && remotePoolInstance.connected,
+      isReconnecting,
+      lastError: lastRemoteError,
+      lastHealthyCheck: lastHealthyCheckTime ? lastHealthyCheckTime.toISOString() : null,
+      server: remoteDbConfig ? `${remoteDbConfig.server}:${remoteDbConfig.port}` : null
+    })
 };
-

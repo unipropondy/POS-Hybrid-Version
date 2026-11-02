@@ -398,12 +398,14 @@ class SunmiPrinterService {
         try {
           if (SunmiModule.setBold) await SunmiModule.setBold(true);
         } catch (_) {}
-        await SunmiModule.printText(formatter.twoCols(`INVOICE NO: ${saleData.invoiceNumber || saleData.id}`, `TABLE: ${cleanTableNo}`));
+        const effectiveInvNo = saleData.invoiceNumber || saleData.billNo || saleData.orderId || saleData.id || "";
+        await SunmiModule.printText(formatter.twoCols(`INVOICE NO: ${effectiveInvNo}`, `TABLE: ${cleanTableNo}`));
         try {
           if (SunmiModule.setBold) await SunmiModule.setBold(false);
         } catch (_) {}
       } else {
-        await SunmiModule.printText(formatter.left(`INVOICE NO: ${saleData.invoiceNumber || saleData.id}`));
+        const effectiveInvNo = saleData.invoiceNumber || saleData.billNo || saleData.orderId || saleData.id || "";
+        await SunmiModule.printText(formatter.left(`INVOICE NO: ${effectiveInvNo}`));
       }
       await SunmiModule.printText(formatter.left(`DATE: ${dateStr} ${timeStr}`));
       if (saleData.waiterName && saleData.waiterName !== "Staff") {
@@ -665,13 +667,18 @@ class SunmiPrinterService {
       if (saleData.isCheckout) {
         await SunmiModule.printText(formatter.center("PAYMENT STATUS: PENDING"));
       } else {
-        await SunmiModule.printText(formatter.twoCols("PAYMENT:", saleData.paymentMethod || "Cash"));
+        const isCash = /^(CAS|CASH|CASH\s.*)$/i.test(String(saleData.paymentMethod || "").trim()) ||
+          (saleData.payments && Array.isArray(saleData.payments) && saleData.payments.some((p: any) => /^(CAS|CASH|CASH\s.*)$/i.test(String(p.payMode || p.payModeName || p.Remarks || "").trim())));
+        const cashReceived = Number(saleData.cashPaid ?? saleData.cashReceived ?? saleData.tenderedAmount ?? saleData.paidAmount ?? 0);
+        const changeReturn = Number(saleData.change ?? saleData.changeAmount ?? 0);
 
-        if (saleData.cashPaid && saleData.cashPaid > 0) {
-          await SunmiModule.printText(formatter.twoCols("PAID:", `${symbol}${saleData.cashPaid.toFixed(2)}`));
-          if (saleData.change && saleData.change > 0) {
-            await SunmiModule.printText(formatter.twoCols("CHANGE:", `${symbol}${saleData.change.toFixed(2)}`));
-          }
+        let displayMethod = String(saleData.paymentMethod || "Cash");
+        if (displayMethod.toUpperCase().trim() === "CAS") displayMethod = "CASH";
+        await SunmiModule.printText(formatter.twoCols("PAYMENT:", displayMethod));
+
+        if (isCash && cashReceived > 0) {
+          await SunmiModule.printText(formatter.twoCols("Cash Received:", `${symbol}${cashReceived.toFixed(2)}`));
+          await SunmiModule.printText(formatter.twoCols("Change Return:", `${symbol}${changeReturn.toFixed(2)}`));
         }
       }
 

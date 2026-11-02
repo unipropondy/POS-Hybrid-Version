@@ -798,6 +798,7 @@ export default function CustomerMenuScreen() {
         isServiceCharge: dish.isServiceCharge !== undefined ? dish.isServiceCharge : (dish.IsServiceCharge !== undefined ? dish.IsServiceCharge : 1),
       });
       Alert.alert("Added to Cart", `${dish.Name} has been added to your cart.`);
+      if (search) setSearch("");
     }
   };
 

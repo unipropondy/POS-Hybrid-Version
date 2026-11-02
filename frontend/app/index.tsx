@@ -25,10 +25,11 @@ export default function Index() {
     if (userName === "KDS") {
       return <Redirect href="/(tabs)/kds" />;
     }
-    if (settings && settings.enableQuickServe === false) {
+    const isWaiter = (user.role || "").toUpperCase() === "WAITER" || (user.roleName || "").toUpperCase().includes("WAITER");
+    if (isWaiter) {
       return <Redirect href="/(tabs)/category" />;
     }
-    return <Redirect href="/order-type" />;
+    return <Redirect href="/(tabs)/category" />;
   }
 
   return <Redirect href="/login" />;

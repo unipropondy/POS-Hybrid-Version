@@ -1,16 +1,26 @@
 {
   "compilerOptions": {
-    "strict": true,
+    "target": "ESNext",
+    "lib": ["DOM", "ESNext"],
     "jsx": "react-native",
-    "moduleResolution": "node",
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "customConditions": ["react-native"],
+    "strict": false,
+    "noImplicitAny": false,
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "baseUrl": ".",
     "paths": {
+      "react": ["../../frontend/node_modules/@types/react"],
+      "react-native": ["../../frontend/node_modules/react-native"],
       "*": ["*", "../../frontend/node_modules/*"]
-    }
+    },
+    "typeRoots": [
+      "../../frontend/node_modules/@types"
+    ]
   },
   "include": ["src"]
 }

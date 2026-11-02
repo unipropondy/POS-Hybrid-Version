@@ -38,9 +38,15 @@ export default function OrderTypeSelectionScreen() {
   const { width, height } = useWindowDimensions();
   const isLandscape = width > height; // True landscape detection based on orientation
 
-  const { user, logout } = useAuthStore();
+  const { user, logout, isWaiter } = useAuthStore();
   const toast = useToast();
   const { settings, fetchSettings } = useGeneralSettingsStore();
+
+  const isWaiterUser = Boolean(
+    (user?.role || "").toUpperCase() === "WAITER" ||
+    (user?.roleName || "").toUpperCase().includes("WAITER") ||
+    (typeof isWaiter === "function" && isWaiter())
+  );
 
   const [showQuickServeModal, setShowQuickServeModal] = useState(false);
   const [currentTime, setCurrentTime] = useState<string>("");
@@ -59,10 +65,8 @@ export default function OrderTypeSelectionScreen() {
   }, []);
 
   useEffect(() => {
-    if (settings && settings.enableQuickServe === false) {
-      router.replace("/(tabs)/category" as any);
-    }
-  }, [settings?.enableQuickServe]);
+    router.replace("/(tabs)/category" as any);
+  }, []);
 
   useEffect(() => {
     fetch(`${API_URL}/api/company-settings/1`)
@@ -100,7 +104,7 @@ export default function OrderTypeSelectionScreen() {
     return () => clearInterval(interval);
   }, []);
 
-  if (settings && settings.enableQuickServe === false) {
+  if (isWaiterUser || (settings && settings.enableQuickServe === false)) {
     return (
       <View style={{ flex: 1, backgroundColor: "#F8FAFC", justifyContent: "center", alignItems: "center" }}>
         <ActivityIndicator size="large" color="#FF9500" />
@@ -113,17 +117,9 @@ export default function OrderTypeSelectionScreen() {
     useOrderContextStore.getState().setOrderContext({
       orderType: "DINE_IN",
     });
-    router.push("/(tabs)/category");
+    router.push({ pathname: "/(tabs)/category", params: { section: "SECTION_1" } } as any);
   };
 
-  const handleTakeAway = () => {
-    const takeawayNo = `TW-${Math.floor(1000 + Math.random() * 9000)}`;
-    useOrderContextStore.getState().setOrderContext({
-      orderType: "TAKEAWAY",
-      takeawayNo,
-    });
-    router.push("/(tabs)/category");
-  };
 
   const handleQuickServe = () => {
     const token = `QS-${Math.floor(1000 + Math.random() * 9000)}`;
@@ -283,46 +279,6 @@ export default function OrderTypeSelectionScreen() {
                 </View>
               </Pressable>
 
-              {/* CARD 2: TAKE AWAY */}
-              <Pressable
-                style={({ pressed }) => [
-                  styles.card,
-                  styles.cardDesktop,
-                  hoveredCard === 2 && styles.cardHovered,
-                  pressed ? styles.cardPressed : null,
-                ]}
-                onPress={handleTakeAway}
-                onHoverIn={() => setHoveredCard(2)}
-                onHoverOut={() => setHoveredCard(null)}
-              >
-                <View style={[styles.cardHeaderAccent, { backgroundColor: "#FF9500" }]} />
-                <View style={styles.cardContentMinimal}>
-                  <View style={[styles.minimalIconCircle, { borderColor: "#FF9500", backgroundColor: "#FFF7ED" }]}>
-                    <Ionicons name="bag-handle-outline" size={26} color="#FF9500" />
-                  </View>
-                  <Text style={styles.cardTitle}>TAKE AWAY</Text>
-                  <View style={[styles.titleUnderline, { backgroundColor: "#FF9500" }]} />
-                  <Text style={styles.cardSubtitle}>Quick order processing for carry-out & pickup orders</Text>
-                  <View style={styles.featureChipsRow}>
-                    <View style={styles.chip}>
-                      <Ionicons name="checkmark-circle" size={12} color="#FF9500" />
-                      <Text style={styles.chipText}>Auto Token No.</Text>
-                    </View>
-                    <View style={styles.chip}>
-                      <Ionicons name="checkmark-circle" size={12} color="#FF9500" />
-                      <Text style={styles.chipText}>Fast Checkout</Text>
-                    </View>
-                  </View>
-                  <TouchableOpacity
-                    style={[styles.actionButton, { backgroundColor: "#FF9500" }]}
-                    onPress={handleTakeAway}
-                    activeOpacity={0.85}
-                  >
-                    <Text style={styles.actionButtonText}>Start Take Away</Text>
-                    <Ionicons name="arrow-forward" size={16} color="#FFFFFF" style={{ marginLeft: 6 }} />
-                  </TouchableOpacity>
-                </View>
-              </Pressable>
 
               {/* CARD 3: QUICK SERVE */}
               {settings.enableQuickServe !== false && (
@@ -453,53 +409,6 @@ export default function OrderTypeSelectionScreen() {
               </View>
             </Pressable>
 
-            {/* CARD 2: TAKE AWAY */}
-            <Pressable
-              style={({ pressed }) => [
-                styles.card,
-                isMobile && styles.cardMobile,
-                isTabletPortrait && styles.cardTabletPortrait,
-                isTablet && !isTabletPortrait && styles.cardTablet,
-                pressed ? styles.cardPressed : null,
-              ]}
-              onPress={handleTakeAway}
-            >
-              <View style={[styles.cardHeaderAccent, { backgroundColor: "#FF9500" }]} />
-              <View style={[styles.cardContentMinimal, isMobile && styles.cardContentMinimalMobile]}>
-                <View
-                  style={[
-                    styles.minimalIconCircle,
-                    isMobile && styles.minimalIconCircleMobile,
-                    { borderColor: "#FF9500", backgroundColor: "#FFF7ED" },
-                  ]}
-                >
-                  <Ionicons name="bag-handle-outline" size={isMobile ? 22 : 26} color="#FF9500" />
-                </View>
-                <Text style={[styles.cardTitle, isMobile && styles.cardTitleMobile]}>TAKE AWAY</Text>
-                <View style={[styles.titleUnderline, { backgroundColor: "#FF9500" }]} />
-                <Text style={[styles.cardSubtitle, isMobile && styles.cardSubtitleMobile]}>
-                  Quick order processing for carry-out & pickup orders
-                </Text>
-                <View style={styles.featureChipsRow}>
-                  <View style={styles.chip}>
-                    <Ionicons name="checkmark-circle" size={11} color="#FF9500" />
-                    <Text style={styles.chipText}>Auto Token No.</Text>
-                  </View>
-                  <View style={styles.chip}>
-                    <Ionicons name="checkmark-circle" size={11} color="#FF9500" />
-                    <Text style={styles.chipText}>Fast Checkout</Text>
-                  </View>
-                </View>
-                <TouchableOpacity
-                  style={[styles.actionButton, styles.actionButtonMobile, { backgroundColor: "#FF9500" }]}
-                  onPress={handleTakeAway}
-                  activeOpacity={0.85}
-                >
-                  <Text style={styles.actionButtonText}>Start Take Away</Text>
-                  <Ionicons name="arrow-forward" size={15} color="#FFFFFF" style={{ marginLeft: 6 }} />
-                </TouchableOpacity>
-              </View>
-            </Pressable>
 
             {/* CARD 3: QUICK SERVE */}
             {settings.enableQuickServe !== false && (
@@ -1288,8 +1197,8 @@ const styles = StyleSheet.create({
   },
   cardDesktop: {
     flex: 1,
-    minWidth: 260,
-    maxWidth: 355,
+    minWidth: 280,
+    maxWidth: 380,
   },
   cardHovered: {
     ...Platform.select({

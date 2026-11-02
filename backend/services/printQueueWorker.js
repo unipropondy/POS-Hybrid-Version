@@ -7,6 +7,7 @@ const { getPool, sql } = require("../config/db");
 
 let isWorkerRunning = false;
 let workerIntervalId = null;
+let lastHeartbeatUpdate = 0;
 
 function parseFormatting(content) {
   const chunks = [];
@@ -248,8 +249,12 @@ async function processPrintQueue() {
       return;
     }
 
-    // Always update heartbeat so backend bridge is marked active
-    await pool.request().query("UPDATE CompanySettings SET LastBridgeHeartbeat = GETDATE() WHERE Id = '1'").catch(() => {});
+    // Update heartbeat every 3 seconds (threshold in bridge-status is 8 seconds) to eliminate 2 SQL queries/sec
+    const now = Date.now();
+    if (now - lastHeartbeatUpdate >= 3000) {
+      lastHeartbeatUpdate = now;
+      await pool.request().query("UPDATE CompanySettings SET LastBridgeHeartbeat = GETDATE() WHERE Id = '1'").catch(() => {});
+    }
 
     // Fetch pending jobs
     const pendingRes = await pool.request().query(`

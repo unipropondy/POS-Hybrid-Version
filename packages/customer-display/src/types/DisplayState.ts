@@ -50,6 +50,8 @@ export interface DisplayState {
     amount: number;
     status: string;
   }>;
+  companyLogo?: string;
+  terminalCode?: string;
   // Quick Serve Screen Mirroring Fields
   isQuickServe?: boolean;
   quickServeGroups?: Array<{

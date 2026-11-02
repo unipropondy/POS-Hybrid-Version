@@ -52,12 +52,14 @@ export default function ComboCustomizer({
   dish,
   kitchenName,
   kitchenCode,
+  onSuccess,
 }: {
   visible: boolean;
   onClose: () => void;
   dish: any | null;
   kitchenName: string;
   kitchenCode: string;
+  onSuccess?: () => void;
 }) {
   const [loading, setLoading] = useState(false);
   const [config, setConfig] = useState<ComboConfig | null>(null);
@@ -425,6 +427,7 @@ export default function ComboCustomizer({
       IsOpenItem: dish.IsOpenItem,
     } as any);
 
+    onSuccess?.();
     onClose();
   };
 
@@ -464,6 +467,7 @@ export default function ComboCustomizer({
       isServiceCharge: dish.isServiceCharge,
       IsOpenItem: dish.IsOpenItem,
     } as any);
+    onSuccess?.();
     onClose();
   };
 

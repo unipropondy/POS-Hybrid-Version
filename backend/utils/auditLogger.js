@@ -56,7 +56,10 @@ const FIELD_DEFINITIONS = {
   EnableSkipSummaryScreen: { category: "GENERAL_SETTINGS", label: "Skip Summary Screen" },
   EnableReceiptPrint: { category: "GENERAL_SETTINGS", label: "Enable Receipt Print" },
   EnableVoiceSuccess: { category: "GENERAL_SETTINGS", label: "Enable Voice Announcement" },
-  EnableNotificationSound: { category: "GENERAL_SETTINGS", label: "Enable Notification Sound" }
+  EnableNotificationSound: { category: "GENERAL_SETTINGS", label: "Enable Notification Sound" },
+  QuickServeEnableKOT: { category: "GENERAL_SETTINGS", label: "Quick Serve KOT Print" },
+  QuickServeEnableKDS: { category: "GENERAL_SETTINGS", label: "Quick Serve KDS" },
+  QuickServeEnableKDSPrinter: { category: "GENERAL_SETTINGS", label: "Quick Serve KDS Printer" }
 };
 
 // Fields explicitly excluded from audit logging (e.g. Printer IPs)

@@ -16,119 +16,85 @@ function resolveLogsDirectory() {
     } catch { }
   }
 
-  // Check if running inside Electron packaged resources/backend
-  if (__dirname.includes("resources") && __dirname.includes("backend")) {
-    const electronAppRootLogs = path.resolve(__dirname, "..", "..", "logs");
-    try {
-      if (!fs.existsSync(electronAppRootLogs)) fs.mkdirSync(electronAppRootLogs, { recursive: true });
-      return electronAppRootLogs;
-    } catch { }
-  }
-
-  const adjacentDir = path.resolve(__dirname, "..", "logs");
+  // Standardized production logs directory: %ProgramData%\SmartPOS\logs
+  const programData = process.env.ProgramData || "C:\\ProgramData";
+  const standardLogDir = path.join(programData, "SmartPOS", "logs");
   try {
-    if (!fs.existsSync(adjacentDir)) {
-      fs.mkdirSync(adjacentDir, { recursive: true });
+    if (!fs.existsSync(standardLogDir)) {
+      fs.mkdirSync(standardLogDir, { recursive: true });
     }
-    const testFile = path.join(adjacentDir, ".write_test");
+    const testFile = path.join(standardLogDir, ".perm_test");
     fs.writeFileSync(testFile, "test");
     fs.unlinkSync(testFile);
-    return adjacentDir;
+    return standardLogDir;
   } catch (err) {
-    // If adjacent directory is read-only (e.g. C:\Program Files\UniPro POS), fallback to LocalAppData or ProgramData
-    const fallbackBase = process.env.LOCALAPPDATA || process.env.APPDATA || "C:\\ProgramData";
-    const userLogDir = path.join(fallbackBase, "UniPro POS", "logs");
+    // Fallback to local app directory if ProgramData is unavailable
+    const fallbackBase = process.env.LOCALAPPDATA || process.env.APPDATA || path.resolve(__dirname, "..");
+    const userLogDir = path.join(fallbackBase, "SmartPOS", "logs");
     try {
-      if (!fs.existsSync(userLogDir)) {
-        fs.mkdirSync(userLogDir, { recursive: true });
-      }
+      if (!fs.existsSync(userLogDir)) fs.mkdirSync(userLogDir, { recursive: true });
       return userLogDir;
     } catch {
-      return adjacentDir;
+      return path.resolve(__dirname, "..", "logs");
     }
   }
 }
 
 const logsDir = resolveLogsDirectory();
-const backendLogPath = path.join(logsDir, "backend.log");
-const frontendLogPath = path.join(logsDir, "frontend.log");
+const backendSubDir = path.join(logsDir, "backend");
+const frontendSubDir = path.join(logsDir, "frontend");
 
-const MAX_LOG_SIZE = 20 * 1024 * 1024; // 20 MB max
-function rotateLogIfNeeded(filePath) {
-  try {
-    if (fs.existsSync(filePath)) {
-      const stats = fs.statSync(filePath);
-      if (stats.size > MAX_LOG_SIZE) {
-        const backup = `${filePath}.1`;
-        if (fs.existsSync(backup)) {
-          try { fs.unlinkSync(backup); } catch { }
-        }
-        try { fs.renameSync(filePath, backup); } catch { }
-      }
-    }
-  } catch { }
+try {
+  if (!fs.existsSync(backendSubDir)) fs.mkdirSync(backendSubDir, { recursive: true });
+  if (!fs.existsSync(frontendSubDir)) fs.mkdirSync(frontendSubDir, { recursive: true });
+} catch { }
+
+const { writeToLogFile, cleanOldLogs, getDateTag } = require("./utils/logManager");
+const { loadSecureEnvironment } = require("./utils/envSecurity");
+
+function getDailyBackendLogPath() {
+  return path.join(backendSubDir, `backend-${getDateTag()}.log`);
 }
 
-const logToFile = (filePath, message) => {
-  const timestamp = new Date().toISOString();
-  const line = `[${timestamp}] ${message}\n`;
-  try {
-    rotateLogIfNeeded(filePath);
-    fs.appendFileSync(filePath, line);
-  } catch { }
+function getDailyFrontendLogPath() {
+  return path.join(frontendSubDir, `frontend-${getDateTag()}.log`);
+}
+
+const backendLogPath = getDailyBackendLogPath();
+const frontendLogPath = getDailyFrontendLogPath();
+
+// Execute log rotation cleanup on startup and periodically every 6 hours across all log folders
+cleanOldLogs(logsDir);
+setInterval(() => {
+  cleanOldLogs(logsDir);
+}, 6 * 60 * 60 * 1000);
+
+const logToFile = (filePath, message, level = "INFO") => {
+  writeToLogFile(filePath, message, level);
 };
 
-// Mirror console.log, console.warn and console.error to logs/backend.log
+// Mirror console.log, console.warn and console.error to logs/backend/backend-YYYY-MM-DD.log
 const origLog = console.log;
 const origError = console.error;
 const origWarn = console.warn;
 
 console.log = (...args) => {
   origLog(...args);
-  logToFile(backendLogPath, args.map(a => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" "));
+  logToFile(getDailyBackendLogPath(), args.map(a => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" "), "INFO");
 };
 
 console.error = (...args) => {
   origError(...args);
-  logToFile(backendLogPath, "[ERROR] " + args.map(a => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" "));
+  logToFile(getDailyBackendLogPath(), args.map(a => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" "), "ERROR");
 };
 
 console.warn = (...args) => {
   origWarn(...args);
-  logToFile(backendLogPath, "[WARN] " + args.map(a => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" "));
+  logToFile(getDailyBackendLogPath(), args.map(a => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" "), "WARN");
 };
 
-const envPath = path.resolve(__dirname, ".env");
-
-// 1. Ensure the .env file exists (safely)
-try {
-  if (!fs.existsSync(envPath)) {
-    fs.writeFileSync(envPath, "");
-  }
-} catch { }
-
-// 2. Read current .env content
-let envContent = "";
-try {
-  envContent = fs.readFileSync(envPath, "utf8");
-} catch { }
-
-// 3. If JWT_SECRET is not defined in .env, generate a unique one and save it
-if (!envContent.includes("JWT_SECRET=")) {
-  try {
-    const secureSecret = crypto.randomBytes(32).toString("hex");
-    const prefix = envContent.endsWith("\n") || envContent.trim() === "" ? "" : "\n";
-    fs.appendFileSync(envPath, `${prefix}JWT_SECRET=${secureSecret}\n`);
-    console.log("🔒 [Security] JWT_SECRET generated and saved to .env.");
-  } catch { }
-}
-
-// 4. Load env variables
-require("dotenv").config({ path: envPath });
-
-if (!process.env.JWT_SECRET) {
-  process.env.JWT_SECRET = "unipro_pos_secure_default_secret_key_2026";
-}
+// 🔒 Load environment variables with DPAPI protection, fallback recovery, and NTFS hardening
+loadSecureEnvironment();
 
 const { poolPromise } = require("./config/db");
 const { initDB, syncKitchensToPrintMaster } = require("./config/init");
@@ -471,14 +437,15 @@ app.use(express.static(path.join(__dirname, "dist"), { extensions: ["html"] }));
 // 🩺 Health check endpoint for frontend warmup ping
 app.get("/health", (req, res) => res.json({ status: "ok", timestamp: new Date() }));
 
-// 📥 CLIENT LOGS ENDPOINT: Allows frontend to stream logs directly to local frontend.log file
+// 📥 CLIENT LOGS ENDPOINT: Allows frontend to stream logs directly to local frontend/frontend-YYYY-MM-DD.log file
 app.post("/api/logs/client", express.json(), (req, res) => {
   const items = Array.isArray(req.body) ? req.body : [req.body];
+  const targetFrontendLog = getDailyFrontendLogPath();
   for (const item of items) {
     const { level, message, details } = item || {};
     if (message) {
       const detailStr = details ? ` | ${typeof details === "object" ? JSON.stringify(details) : details}` : "";
-      logToFile(frontendLogPath, `[${(level || "INFO").toUpperCase()}] ${message}${detailStr}`);
+      logToFile(targetFrontendLog, `[${(level || "INFO").toUpperCase()}] ${message}${detailStr}`);
     }
   }
   res.status(204).end();
@@ -486,18 +453,22 @@ app.post("/api/logs/client", express.json(), (req, res) => {
 
 // 🔍 SYSTEM LOGS DIAGNOSTICS & VIEWER (Available even if database is offline)
 app.get("/api/logs/info", (req, res) => {
+  const currentBackendPath = getDailyBackendLogPath();
+  const currentFrontendPath = getDailyFrontendLogPath();
   let backendSize = 0;
   let frontendSize = 0;
-  try { if (fs.existsSync(backendLogPath)) backendSize = fs.statSync(backendLogPath).size; } catch { }
-  try { if (fs.existsSync(frontendLogPath)) frontendSize = fs.statSync(frontendLogPath).size; } catch { }
+  try { if (fs.existsSync(currentBackendPath)) backendSize = fs.statSync(currentBackendPath).size; } catch { }
+  try { if (fs.existsSync(currentFrontendPath)) frontendSize = fs.statSync(currentFrontendPath).size; } catch { }
 
   res.json({
     status: "ok",
     logsDir,
-    backendLogPath,
+    backendSubDir,
+    frontendSubDir,
+    backendLogPath: currentBackendPath,
     backendLogSizeBytes: backendSize,
     backendLogSizeMB: (backendSize / (1024 * 1024)).toFixed(2),
-    frontendLogPath,
+    frontendLogPath: currentFrontendPath,
     frontendLogSizeBytes: frontendSize,
     frontendLogSizeMB: (frontendSize / (1024 * 1024)).toFixed(2),
   });
@@ -516,18 +487,24 @@ app.all("/api/logs/open-folder", (req, res) => {
 });
 
 app.get("/api/logs/download/backend", (req, res) => {
-  if (fs.existsSync(backendLogPath)) {
-    res.download(backendLogPath, "backend.log");
+  const currentBackendPath = getDailyBackendLogPath();
+  if (fs.existsSync(currentBackendPath)) {
+    res.download(currentBackendPath, path.basename(currentBackendPath));
+  } else if (fs.existsSync(path.join(logsDir, "backend.log"))) {
+    res.download(path.join(logsDir, "backend.log"), "backend.log");
   } else {
-    res.status(404).send("backend.log does not exist yet.");
+    res.status(404).send("backend log does not exist yet.");
   }
 });
 
 app.get("/api/logs/download/frontend", (req, res) => {
-  if (fs.existsSync(frontendLogPath)) {
-    res.download(frontendLogPath, "frontend.log");
+  const currentFrontendPath = getDailyFrontendLogPath();
+  if (fs.existsSync(currentFrontendPath)) {
+    res.download(currentFrontendPath, path.basename(currentFrontendPath));
+  } else if (fs.existsSync(path.join(logsDir, "frontend.log"))) {
+    res.download(path.join(logsDir, "frontend.log"), "frontend.log");
   } else {
-    res.status(404).send("frontend.log does not exist yet.");
+    res.status(404).send("frontend log does not exist yet.");
   }
 });
 
@@ -543,8 +520,10 @@ app.get("/api/logs/view", (req, res) => {
     }
   };
 
-  const backendTail = getTail(backendLogPath);
-  const frontendTail = getTail(frontendLogPath);
+  const currentBackendPath = getDailyBackendLogPath();
+  const currentFrontendPath = getDailyFrontendLogPath();
+  const backendTail = getTail(currentBackendPath);
+  const frontendTail = getTail(currentFrontendPath);
 
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.send(`<!DOCTYPE html>
@@ -573,9 +552,9 @@ app.get("/api/logs/view", (req, res) => {
     <span style="font-size: 12px; color: #94a3b8; font-weight: normal;">Updated: ${new Date().toLocaleTimeString()}</span>
   </h1>
   <div class="path-box">
-    <strong>📁 Local Logs Folder:</strong> ${logsDir}<br>
-    <strong>⚙️ Backend Log:</strong> ${backendLogPath}<br>
-    <strong>💻 Frontend Log:</strong> ${frontendLogPath}
+    <strong>📁 Local Logs Root:</strong> ${logsDir}<br>
+    <strong>⚙️ Active Backend Log:</strong> ${currentBackendPath}<br>
+    <strong>💻 Active Frontend Log:</strong> ${currentFrontendPath}
   </div>
   <div class="actions">
     <button class="btn" onclick="fetch('/api/logs/open-folder').then(r=>r.json()).then(d=>alert(d.message || 'Folder opened'))">📂 Open Logs Folder in Explorer</button>
@@ -772,7 +751,7 @@ setInterval(async () => {
 }, 15 * 60 * 1000); // 15 Minutes
 
 // 📊 TEMPORARY DIAGNOSTICS LOGGING (Every 5 minutes)
-const DIAGNOSTICS_LOG_FILE = path.join(__dirname, "logs", "diagnostics.log");
+const DIAGNOSTICS_LOG_FILE = path.join(logsDir, "diagnostics.log");
 
 function logDiagnostics(label = "Interval") {
   try {
@@ -975,3 +954,53 @@ process.on("unhandledRejection", async (reason, promise) => {
     console.error("⚠️ Failed to clean up transactions during unhandledRejection:", cleanErr);
   }
 });
+
+// 🛑 Graceful Shutdown Handler
+let isShuttingDown = false;
+async function performGracefulShutdown(reason = "NORMAL") {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  console.log(`🛑 [Shutdown] Received ${reason}. Performing controlled backend shutdown...`);
+
+  // Stop accepting new HTTP requests
+  if (typeof httpServer !== 'undefined' && httpServer) {
+    httpServer.close(() => {
+      console.log("🛑 [Shutdown] HTTP server closed to new requests.");
+    });
+  }
+
+  // Rollback active transactions to protect database consistency
+  try {
+    await rollbackAllActive();
+    console.log("🛑 [Shutdown] Active transactions rolled back safely.");
+  } catch (err) {
+    console.error("⚠️ [Shutdown] Error rolling back transactions:", err.message);
+  }
+
+  // Close database pools
+  try {
+    const pool = await poolPromise;
+    if (pool && pool.connected) {
+      await pool.close();
+      console.log("🛑 [Shutdown] Database connection pool closed.");
+    }
+  } catch (err) {
+    console.error("⚠️ [Shutdown] Error closing database pool:", err.message);
+  }
+
+  console.log("🛑 [Shutdown] Backend shutdown complete.");
+  process.exit(0);
+}
+
+// Endpoint for Electron main process to trigger graceful shutdown
+app.post("/api/admin/shutdown", async (req, res) => {
+  res.json({ success: true, message: "Graceful shutdown sequence initiated" });
+  setTimeout(() => {
+    performGracefulShutdown("ELECTRON_IPC");
+  }, 300);
+});
+
+process.on("SIGTERM", () => performGracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => performGracefulShutdown("SIGINT"));
+
+

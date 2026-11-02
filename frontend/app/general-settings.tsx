@@ -123,6 +123,15 @@ export default function GeneralSettingsScreen() {
   const [enableQuickServe, setEnableQuickServe] = useState(
     settings.enableQuickServe !== undefined ? settings.enableQuickServe : true,
   );
+  const [quickServeEnableKOT, setQuickServeEnableKOT] = useState(
+    settings.quickServeEnableKOT !== undefined ? settings.quickServeEnableKOT : true,
+  );
+  const [quickServeEnableKDS, setQuickServeEnableKDS] = useState(
+    settings.quickServeEnableKDS !== undefined ? settings.quickServeEnableKDS : true,
+  );
+  const [quickServeEnableKDSPrinter, setQuickServeEnableKDSPrinter] = useState(
+    settings.quickServeEnableKDSPrinter !== undefined ? settings.quickServeEnableKDSPrinter : true,
+  );
   const [showLoyalty, setShowLoyalty] = useState(
     settings.showLoyalty !== undefined ? settings.showLoyalty : true,
   );
@@ -181,6 +190,9 @@ export default function GeneralSettingsScreen() {
       ? settings.enableNotificationSound
       : true,
   );
+  const [menuNavigationMode, setMenuNavigationMode] = useState<"scroll" | "prev_next">(
+    settings.menuNavigationMode || "scroll"
+  );
 
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [showAuditModal, setShowAuditModal] = useState(false);
@@ -223,6 +235,15 @@ export default function GeneralSettingsScreen() {
     );
     setEnableQuickServe(
       settings.enableQuickServe !== undefined ? settings.enableQuickServe : true,
+    );
+    setQuickServeEnableKOT(
+      settings.quickServeEnableKOT !== undefined ? settings.quickServeEnableKOT : true,
+    );
+    setQuickServeEnableKDS(
+      settings.quickServeEnableKDS !== undefined ? settings.quickServeEnableKDS : true,
+    );
+    setQuickServeEnableKDSPrinter(
+      settings.quickServeEnableKDSPrinter !== undefined ? settings.quickServeEnableKDSPrinter : true,
     );
     setShowLoyalty(
       settings.showLoyalty !== undefined ? settings.showLoyalty : true,
@@ -313,12 +334,33 @@ export default function GeneralSettingsScreen() {
         ? settings.enableNotificationSound
         : true,
     );
+    setMenuNavigationMode(
+      (settings.menuNavigationMode === "prev_next" || (settings.menuNavigationMode as any) === "prevNext")
+        ? "prev_next"
+        : "scroll"
+    );
   }, [settings]);
 
   const [passwordAction, setPasswordAction] = useState<
     "CASHDRAWER" | "SAVE" | null
   >(null);
   const [passwordError, setPasswordError] = useState("");
+
+  const handleToggleScrollMode = (val: boolean) => {
+    if (val) {
+      setMenuNavigationMode("scroll");
+    } else {
+      setMenuNavigationMode("prev_next");
+    }
+  };
+
+  const handleTogglePrevNextMode = (val: boolean) => {
+    if (val) {
+      setMenuNavigationMode("prev_next");
+    } else {
+      setMenuNavigationMode("scroll");
+    }
+  };
 
   const handleToggleCheckoutFlow = (val: boolean) => {
     if (val) {
@@ -368,6 +410,9 @@ export default function GeneralSettingsScreen() {
         enableKDSPrint,
         enableCombo,
         enableQuickServe,
+        quickServeEnableKOT,
+        quickServeEnableKDS,
+        quickServeEnableKDSPrinter,
         showLoyalty,
         showRewardPoints,
         showPromoCode,
@@ -381,6 +426,7 @@ export default function GeneralSettingsScreen() {
         enableReceiptPrint,
         enableVoiceSuccess,
         enableNotificationSound,
+        menuNavigationMode,
       },
       {
         userName: user?.userName || user?.fullName || "",
@@ -513,6 +559,26 @@ export default function GeneralSettingsScreen() {
           icon: "close-circle-outline",
           value: enableComboPrint,
           onToggle: setEnableComboPrint,
+        },
+      ],
+    },
+    {
+      title: "Quick Serve Settings",
+      icon: "flash-outline",
+      items: [
+        {
+          title: "Quick Serve KOT Print",
+          desc: "Enable KOT printing for Quick Serve orders.",
+          icon: "receipt-outline",
+          value: quickServeEnableKOT,
+          onToggle: setQuickServeEnableKOT,
+        },
+        {
+          title: "Quick Serve KDS Printer",
+          desc: "Enable KDS printer functionality for Quick Serve orders.",
+          icon: "print-outline",
+          value: quickServeEnableKDSPrinter,
+          onToggle: setQuickServeEnableKDSPrinter,
         },
       ],
     },
@@ -650,6 +716,26 @@ export default function GeneralSettingsScreen() {
           icon: "notifications-outline",
           value: enableNotificationSound,
           onToggle: setEnableNotificationSound,
+        },
+      ],
+    },
+    {
+      title: "Menu",
+      icon: "restaurant-outline",
+      items: [
+        {
+          title: "Scroll",
+          desc: "Enable scrolling for Dish Groups and Dish Items. Hides Previous and Next buttons.",
+          icon: "swap-vertical-outline",
+          value: menuNavigationMode === "scroll",
+          onToggle: handleToggleScrollMode,
+        },
+        {
+          title: "Previous / Next",
+          desc: "Navigate through Dish Groups and Dish Items using Previous and Next pagination buttons. Disables scrolling.",
+          icon: "albums-outline",
+          value: menuNavigationMode === "prev_next",
+          onToggle: handleTogglePrevNextMode,
         },
       ],
     },

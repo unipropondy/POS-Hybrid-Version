@@ -40,6 +40,7 @@ const SECTIONS = [
   { id: 1, label: "Section 1" },
   { id: 2, label: "Section 2" },
   { id: 3, label: "Section 3" },
+  { id: 4, label: "Takeaway" },
 ];
 
 export default function TableSelectionScreen() {
@@ -186,16 +187,25 @@ export default function TableSelectionScreen() {
   // Select Table Handler
   const handleSelectTable = (table: TableItem) => {
     useCartStore.getState().cancelPendingSync();
+    const isTakeaway = table.DiningSection === 4;
     const sectionName = `SECTION_${table.DiningSection}`;
-    const newContext = {
-      orderType: "DINE_IN" as const,
-      tableId: table.id,
-      tableNo: table.label,
-      section: sectionName,
-    };
+    const newContext = isTakeaway
+      ? {
+          orderType: "TAKEAWAY" as const,
+          tableId: table.id,
+          takeawayNo: table.label,
+        }
+      : {
+          orderType: "DINE_IN" as const,
+          tableId: table.id,
+          tableNo: table.label,
+          section: sectionName,
+        };
     useOrderContextStore.getState().setOrderContext(newContext);
     
-    const contextId = `DINE_IN_${sectionName}_${table.label}`;
+    const contextId = isTakeaway
+      ? `TAKEAWAY_${table.label}`
+      : `DINE_IN_${sectionName}_${table.label}`;
     // Clear any stale cart session if table is available (Status === 0)
     if (table.Status === 0) {
       useCartStore.getState().clearTableSession(table.id);

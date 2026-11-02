@@ -46,6 +46,46 @@ function getNodeExecutable() {
   return 'node';
 }
 
+let isShowingCloseConfirm = false;
+
+// 🛑 Graceful shutdown helper for backend and Electron
+async function performControlledShutdown() {
+  if (isQuitting) return;
+  isQuitting = true;
+
+  console.log('🛑 [ControlledShutdown] Initiating graceful shutdown...');
+
+  // 1. Notify backend to rollback transactions and close database pools
+  try {
+    const postData = JSON.stringify({});
+    const req = http.request({
+      hostname: 'localhost',
+      port: 3000,
+      path: '/api/admin/shutdown',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(postData)
+      },
+      timeout: 1500
+    });
+    req.on('error', () => {});
+    req.write(postData);
+    req.end();
+  } catch {}
+
+  // Allow short grace period (600ms) for clean connection pool drain
+  await new Promise((resolve) => setTimeout(resolve, 600));
+
+  closeCustomerDisplayWindow();
+  killBackend();
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.destroy();
+  }
+  app.quit();
+}
+
 // 🛑 Kill backend process cleanly
 function killBackend() {
   if (backendProcess && backendProcess.pid) {
@@ -245,15 +285,16 @@ function startBackend() {
       const nodeBin = getNodeExecutable();
       console.log(`🚀 Starting backend with: ${nodeBin} at ${backendDir}`);
 
-      const appRootDir = isDev ? path.join(__dirname, '..') : path.dirname(process.execPath);
-      let logDir = path.join(appRootDir, 'logs');
+      // Standardized persistent log directory for Smart POS: %ProgramData%\SmartPOS\logs
+      const programData = process.env.ProgramData || "C:\\ProgramData";
+      let logDir = path.join(programData, "SmartPOS", "logs");
       try {
         if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
       } catch {
-        logDir = path.join(app.getPath('userData'), 'logs');
+        logDir = path.join(app.getPath("userData"), "logs");
         if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
       }
-      const backendStartupLog = path.join(logDir, 'backend-startup.log');
+      const backendStartupLog = path.join(logDir, "backend-startup.log");
       let startupErrors = '';
 
       backendProcess = spawn(nodeBin, ['server.js'], {
@@ -433,8 +474,8 @@ function createMainWindow() {
     // 📁 Quick Shortcut to Open Local Logs Folder (Ctrl+Shift+L)
     if (input.control && input.shift && input.key.toLowerCase() === 'l' && input.type === 'keyDown') {
       const { shell } = require('electron');
-      const appRootDir = isDev ? path.join(__dirname, '..') : path.dirname(process.execPath);
-      const targetLogDir = path.join(appRootDir, 'logs');
+      const programData = process.env.ProgramData || "C:\\ProgramData";
+      const targetLogDir = path.join(programData, "SmartPOS", "logs");
       if (fs.existsSync(targetLogDir)) {
         shell.openPath(targetLogDir);
       } else {
@@ -475,6 +516,40 @@ function createMainWindow() {
         closeCustomerDisplayWindow();
       }
       event.preventDefault();
+    }
+  });
+
+  // 🛑 Window close confirmation with Yes / No dialog
+  mainWindow.on('close', async (event) => {
+    if (isQuitting) return; // Allow close if intentional shutdown in progress
+
+    event.preventDefault(); // Prevent immediate closing
+
+    if (isShowingCloseConfirm) return; // Prevent duplicate confirmation dialogs
+    isShowingCloseConfirm = true;
+
+    try {
+      const { response } = await dialog.showMessageBox(mainWindow, {
+        type: 'question',
+        buttons: ['Yes', 'No'],
+        defaultId: 1, // Default to No (safe default)
+        cancelId: 1,  // Esc key selects No
+        title: 'Close Smart POS?',
+        message: 'Are you sure you want to close the application?'
+      });
+
+      isShowingCloseConfirm = false;
+
+      if (response === 0) {
+        // User clicked Yes: perform controlled graceful shutdown
+        await performControlledShutdown();
+      } else {
+        // User clicked No: cancel closing and keep running
+        console.log('ℹ️ [Window] Close canceled by user.');
+      }
+    } catch (err) {
+      isShowingCloseConfirm = false;
+      console.error('⚠️ [Window] Error in close confirmation:', err.message);
     }
   });
 

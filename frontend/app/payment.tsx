@@ -1,6 +1,6 @@
 import { API_URL } from "@/constants/Config";
 import { FontAwesome5, Ionicons } from "@expo/vector-icons";
-import { useLocalSearchParams, usePathname, useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, usePathname, useRouter } from "expo-router";
 import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -28,6 +28,7 @@ import { useToast } from "../components/Toast";
 import { Fonts } from "../constants/Fonts";
 import { Theme } from "../constants/theme";
 import WindowControls from "../components/WindowControls";
+import CancelOrderModal from "../components/CancelOrderModal";
 
 import PayNowPaymentModal from "../components/payment/PayNowPaymentModal";
 import SplitPaymentComponent from "../components/payment/SplitPaymentComponent";
@@ -265,9 +266,82 @@ export default function PaymentScreen() {
 
   const [method, setMethod] = useState("CAS");
   const [cashInput, setCashInput] = useState("");
+  const cashInputRef = React.useRef<TextInput>(null);
+  const [mobileSoftInputEnabled, setMobileSoftInputEnabled] = useState(false);
+  const cashFocusTimerRef = React.useRef<any>(null);
+
+  const requestCashFocus = React.useCallback(() => {
+    if (cashFocusTimerRef.current) clearTimeout(cashFocusTimerRef.current);
+    cashFocusTimerRef.current = setTimeout(() => {
+      if (cashInputRef.current && isCashMethod(method)) {
+        if (Platform.OS === "web") {
+          const domInput = cashInputRef.current as any;
+          if (domInput?.focus) {
+            domInput.focus({ preventScroll: true });
+          }
+        } else {
+          cashInputRef.current.focus();
+        }
+      }
+    }, 50);
+  }, [method]);
+
+  // Cleanup focus timer
+  useEffect(() => {
+    return () => {
+      if (cashFocusTimerRef.current) clearTimeout(cashFocusTimerRef.current);
+    };
+  }, []);
+
+  // Screen focus lifecycle: auto-focus cash received input when entering payment screen
+  useFocusEffect(
+    React.useCallback(() => {
+      if (Platform.OS !== "web") {
+        setMobileSoftInputEnabled(false);
+      }
+      requestCashFocus();
+    }, [requestCashFocus])
+  );
+
+  // Unified controlled keypad handler for Numeric Keypad UI
+  const handleKeypadPress = React.useCallback(
+    (val: string) => {
+      if (val === "clear") {
+        setCashInput("");
+      } else if (val === "backspace") {
+        setCashInput((prev) => (prev.length > 0 ? prev.slice(0, -1) : ""));
+      } else if (val === ".") {
+        setCashInput((prev) => {
+          if (!prev) return "0.";
+          if (prev.includes(".")) return prev;
+          return prev + ".";
+        });
+      } else {
+        // Numeric digit
+        setCashInput((prev) => {
+          // If previous was pure '0', replace with digit
+          if (prev === "0") return val;
+          // Disallow more than 2 decimal places if decimal exists
+          if (prev.includes(".")) {
+            const parts = prev.split(".");
+            if (parts[1] && parts[1].length >= 2) return prev;
+          }
+          return prev + val;
+        });
+      }
+      requestCashFocus();
+    },
+    [requestCashFocus]
+  );
   const [collectionAmount, setCollectionAmount] = useState("");
   const [processing, setProcessing] = useState(false);
-  const [checkoutSessionId, setCheckoutSessionId] = useState("");
+  const [checkoutSessionId, setCheckoutSessionId] = useState(() => {
+    // Generate standard GUID format for SettlementID and Idempotency key
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+      const r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
+      return v.toString(16);
+    });
+  });
   const cacheKey = (context?.tableId || displayOrderId || "").toString();
 
   // --- YEAPAY TERMINAL ZUSTAND STORE SUBSCRIPTION & RECOVERY ---
@@ -676,6 +750,184 @@ export default function PaymentScreen() {
   const [payNowQrAmount, setPayNowQrAmount] = useState(0);
   const [upiQrAmount, setUpiQrAmount] = useState(0);
 
+  // Cancel Bill States
+  const [showCancelBillModal, setShowCancelBillModal] = useState(false);
+  const [showFinalConfirmBill, setShowFinalConfirmBill] = useState(false);
+  const [pendingCancelReason, setPendingCancelReason] = useState("");
+  const [cancelReasons, setCancelReasons] = useState<
+    Array<{ CRCode: string; CRName: string }>
+  >([]);
+  const [loadingCancelReasons, setLoadingCancelReasons] = useState(false);
+  const [isCancellingBill, setIsCancellingBill] = useState(false);
+
+  const fetchCancelReasons = async () => {
+    try {
+      setLoadingCancelReasons(true);
+      const res = await fetch(`${API_URL}/api/admin/cancel-reasons`);
+      const data = await res.json();
+      setCancelReasons(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error("Error fetching cancel reasons:", err);
+      showToast({
+        type: "error",
+        message: "Failed to load cancellation reasons",
+      });
+    } finally {
+      setLoadingCancelReasons(false);
+    }
+  };
+
+  const openCancelBillModal = () => {
+    fetchCancelReasons();
+    setShowCancelBillModal(true);
+  };
+
+  const handleCancelBill = async (reason: string, password: string) => {
+    if (!reason) {
+      showToast({
+        type: "warning",
+        message: "Reason Required",
+        subtitle: "Please select or enter a cancellation reason",
+      });
+      return;
+    }
+    if (!password) {
+      showToast({
+        type: "warning",
+        message: "Password Required",
+        subtitle: "Please enter your admin password",
+      });
+      return;
+    }
+
+    setIsCancellingBill(true);
+    // 1. Validate Admin Password via backend authentication endpoint
+    try {
+      const verifyRes = await fetch(`${API_URL}/api/auth/verify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          password: password,
+          role: "ADMIN,SUPERVISOR,MANAGER,Owner,Void",
+        }),
+      });
+      const verifyData = await verifyRes.json();
+
+      if (!verifyData.success) {
+        showToast({
+          type: "error",
+          message: "Incorrect Password",
+          subtitle: "Valid Admin/Supervisor password required to cancel bill",
+        });
+        return;
+      }
+
+      // 2. Verified successfully: close reason modal and open final confirmation modal
+      setPendingCancelReason(reason);
+      setShowCancelBillModal(false);
+      setShowFinalConfirmBill(true);
+    } catch (err: any) {
+      console.error("Password verification error:", err);
+      showToast({
+        type: "error",
+        message: "Verification Failed",
+        subtitle: "Could not connect to authentication service",
+      });
+    } finally {
+      setIsCancellingBill(false);
+    }
+  };
+
+  const executeBillCancellation = async (reason: string) => {
+    setIsCancellingBill(true);
+    const cancelEndpoint = `${API_URL}/api/orders/cancel`;
+
+    try {
+      const cancelRes = await fetch(cancelEndpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          orderId: displayOrderId,
+          tableId: context?.tableId,
+          reason: reason,
+          userId: user?.userId || "SYSTEM",
+          userName: user?.userName || "Cashier",
+        }),
+      });
+
+      const contentType = cancelRes.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        const errorText = await cancelRes.text();
+        console.error("❌ [Payment] Server returned non-JSON response:", errorText.substring(0, 200));
+        throw new Error(`Server Error: Received ${cancelRes.status} ${cancelRes.statusText}`);
+      }
+
+      const cancelData = await cancelRes.json();
+      if (!cancelData.success) {
+        throw new Error(cancelData.error || "Failed to cancel bill in backend");
+      }
+
+      showToast({
+        type: "success",
+        message: `Bill #${displayOrderId || ""} Cancelled`,
+        subtitle: `Reason: ${reason}`,
+      });
+
+      setShowCancelBillModal(false);
+      setShowFinalConfirmBill(false);
+      setPendingCancelReason("");
+
+      setTimeout(() => {
+        // Reset Customer Display to idle
+        try {
+          CustomerDisplaySync.syncIdle();
+        } catch (_) {}
+
+        // Local state & session cleanup
+        if (context) {
+          if (activeOrder) {
+            closeActiveOrder(activeOrder.orderId);
+          } else if (displayOrderId) {
+            closeActiveOrder(displayOrderId);
+          }
+
+          if (context.tableId) {
+            const tblIdStr = String(context.tableId);
+            useCartStore.getState().setCartItems(context.tableId, [], true);
+            useCartStore.getState().clearTableSession(tblIdStr);
+            useTableNavigationStore.getState().clearTableLastScreen(tblIdStr);
+            useTableNavigationStore.getState().clearSelectedMethod(tblIdStr);
+            useTerminalPaymentStore.getState().clearSession(tblIdStr);
+            delete ongoingPayments[tblIdStr];
+          }
+
+          useCartStore.getState().clearCart();
+          useOrderContextStore.getState().clearOrderContext();
+
+          if (
+            context.orderType === "DINE_IN" &&
+            context.section &&
+            context.tableNo
+          ) {
+            clearTable(context.section, context.tableNo);
+          }
+        }
+
+        const targetSec = context?.section || "SECTION_1";
+        router.replace(`/(tabs)/category?section=${targetSec}`);
+      }, 400);
+    } catch (error: any) {
+      console.error("Cancel bill error:", error);
+      showToast({
+        type: "error",
+        message: "Error cancelling bill",
+        subtitle: error.message || "Failed to cancel bill",
+      });
+    } finally {
+      setIsCancellingBill(false);
+    }
+  };
+
   // ── Payment-mode normalizer (payment.tsx) ──────────────────────────────────
   // All routing decisions use EXACT normalized comparisons — never .includes().
   // This prevents "Yeahpay Paynow", "GPay", "QR" etc. from bleeding into the
@@ -850,7 +1102,10 @@ export default function PaymentScreen() {
     CustomerDisplaySync.isPaymentActive = true;
     return () => {
       CustomerDisplaySync.isPaymentActive = false;
-      CustomerDisplaySync.syncIdle();
+      // Do not force idle if transitioning to payment success or within post-settlement grace window
+      if (!CustomerDisplaySync.isSuccessActive && Date.now() - (CustomerDisplaySync.lastPaymentSuccessTime || 0) > 3000) {
+        CustomerDisplaySync.syncIdle();
+      }
     };
   }, []);
 
@@ -1071,6 +1326,8 @@ export default function PaymentScreen() {
     }
 
     CustomerDisplaySync.isPaymentActive = true;
+    CustomerDisplaySync.isSuccessActive = false;
+    CustomerDisplaySync.lastPaymentSuccessTime = 0;
 
     if (context && finalItems.length > 0) {
       // Use exact normalized mode names — regex broad checks would confuse
@@ -1278,6 +1535,7 @@ export default function PaymentScreen() {
       setRoundType(null);
     } else {
       setCashInput(total.toFixed(2));
+      requestCashFocus();
     }
     setSelectedDetail(m);
 
@@ -1775,6 +2033,9 @@ export default function PaymentScreen() {
         mobileNo: loyaltyPhone || null,
         pax: tableState?.pax || null,
         rewardMemberId: rewardMemberId || null,
+        cashPaid: paidNum,
+        tenderedAmount: paidNum,
+        changeAmount: change,
       };
 
     try {
@@ -1782,12 +2043,18 @@ export default function PaymentScreen() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "X-Request-ID": checkoutSessionId,
           ...(useAuthStore.getState().token ? { "Authorization": `Bearer ${useAuthStore.getState().token}` } : {})
         },
         body: JSON.stringify(saleData),
       });
       const result = await response.json();
-      if (result.success || response.status === 409) {
+      if (response.status === 409) {
+        // Request is already being processed by server - warn cashier to avoid double submission
+        showToast({ type: "info", message: "Processing", subtitle: "Transaction is already processing. Please wait." });
+        return;
+      }
+      if (result.success) {
         // Navigate first — let the success screen mount fully before mutating store state
         router.push({
           pathname: "/payment_success" as any,
@@ -2740,6 +3007,43 @@ export default function PaymentScreen() {
               )}
             </TouchableOpacity>
 
+            <TouchableOpacity
+              style={[
+                styles.backBtn,
+                {
+                  borderColor: Theme.dangerBorder || "#fecaca",
+                  backgroundColor: Theme.dangerBg || "#fee2e2",
+                },
+                !isMobile && {
+                  width: 140,
+                  paddingHorizontal: 12,
+                  flexDirection: "row",
+                  gap: 6,
+                },
+              ]}
+              onPress={openCancelBillModal}
+              disabled={isCancellingBill || processing}
+              activeOpacity={0.7}
+            >
+              <Ionicons
+                name="close-circle-outline"
+                size={20}
+                color={Theme.danger || "#ef4444"}
+              />
+              {!isMobile && (
+                <Text
+                  style={{
+                    color: Theme.danger || "#ef4444",
+                    fontFamily: Fonts.bold,
+                    fontSize: 14,
+                  }}
+                  numberOfLines={1}
+                >
+                  Cancel Bill
+                </Text>
+              )}
+            </TouchableOpacity>
+
           </View>
         </View>
 
@@ -2892,7 +3196,7 @@ export default function PaymentScreen() {
                                 styles.methodCard,
                                 isSelected && styles.activeMethodCard,
                                 !isSelected && isYeahPay && styles.yeahpayMethodCard,
-                                isMobile && { width: "30%", height: 80 },
+                                isMobile && { width: "31%", height: 74 },
                               ]}
                               onPress={() => handleSelectMethod(m)}
                             >
@@ -2900,12 +3204,12 @@ export default function PaymentScreen() {
                                 style={[
                                   styles.methodIconBox,
                                   isSelected && styles.activeIconBox,
-                                  isMobile && { width: 30, height: 30 },
+                                  isMobile && { width: 28, height: 28 },
                                 ]}
                               >
                                 <FontAwesome5
                                   name={m.icon}
-                                  size={isMobile ? 16 : 20}
+                                  size={isMobile ? 15 : 18}
                                   color={
                                     isSelected ? "#fff" :
                                       Theme.primary
@@ -2919,6 +3223,7 @@ export default function PaymentScreen() {
                                   !isSelected && isYeahPay && styles.yeahpayLabel,
                                   isMobile && { fontSize: 10 },
                                 ]}
+                                numberOfLines={1}
                               >
                                 {m.description}
                               </Text>
@@ -3140,95 +3445,258 @@ export default function PaymentScreen() {
 
                     {isCashMethod(method) && (
                       <View style={styles.cashSection}>
-                        <View style={styles.sectionHeader}>
-                          <Text style={styles.sectionTitle}>Cash Received</Text>
-                          {generalSettings.enableCashDrawer && (
-                            <TouchableOpacity
-                              onPress={openQuickCashEditor}
-                              style={{ padding: 4, marginLeft: 6 }}
-                              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                            >
-                              <Ionicons
-                                name="pencil"
-                                size={14}
-                                color={Theme.primary}
-                              />
-                            </TouchableOpacity>
-                          )}
-                        </View>
-                        <View style={styles.cashInputBox}>
-                          <Text style={styles.currencyPrefix}>
-                            {currencySymbol}
-                          </Text>
-                          <TextInput
-                            style={styles.cashInput}
-                            value={cashInput}
-                            onChangeText={setCashInput}
-                            keyboardType="numeric"
-                            placeholder="0.00"
-                            {...Platform.select({
-                              web: { outlineStyle: "none" } as any,
-                            })}
-                          />
-                        </View>
-                        <View style={styles.quickCashContainer}>
-                          {quickCash.map((v) => {
-                            const isSelected = parseFloat(cashInput) === v;
-                            return (
-                              <TouchableOpacity
-                                key={v}
-                                style={[
-                                  styles.quickCashBtn,
-                                  isSelected && styles.activeQuickCashBtn,
-                                ]}
-                                onPress={() => setCashInput(v.toString())}
-                              >
-                                <Text
-                                  style={[
-                                    styles.quickCashText,
-                                    isSelected && styles.activeQuickCashText,
-                                  ]}
+                        <View style={styles.cashAndKeypadRow}>
+                          {/* Left Column: Cash Received + Change + Quick Cash */}
+                          <View style={styles.cashLeftCol}>
+                            {/* Cash Received Label & Drawer Button */}
+                            <View style={styles.sectionHeader}>
+                              <Text style={styles.sectionTitle}>Cash Received</Text>
+                              {generalSettings.enableCashDrawer && (
+                                <TouchableOpacity
+                                  onPress={openQuickCashEditor}
+                                  style={{ padding: 4, marginLeft: 6 }}
+                                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                                 >
+                                  <Ionicons
+                                    name="pencil"
+                                    size={14}
+                                    color={Theme.primary}
+                                  />
+                                </TouchableOpacity>
+                              )}
+                            </View>
+
+                            {/* Side-by-side: Cash Received Input (Left) & Change to Return (Right) */}
+                            <View style={styles.cashAmountsRow}>
+                              <View style={styles.cashInputBox}>
+                                <Text style={styles.currencyPrefix}>
                                   {currencySymbol}
-                                  {v}
                                 </Text>
-                              </TouchableOpacity>
-                            );
-                          })}
-                          {(() => {
-                            const isExact =
-                              Math.abs(parseFloat(cashInput) - total) < 0.01;
-                            return (
-                              <TouchableOpacity
-                                style={[
-                                  styles.quickCashBtn,
-                                  isExact && styles.activeQuickCashBtn,
-                                ]}
-                                onPress={() => setCashInput(total.toFixed(2))}
-                              >
-                                <Text
-                                  style={[
-                                    styles.quickCashText,
-                                    isExact && styles.activeQuickCashText,
-                                  ]}
+                                <TextInput
+                                  ref={cashInputRef}
+                                  style={styles.cashInput}
+                                  value={cashInput}
+                                  onChangeText={(text) => {
+                                    // Sanitize to only numbers and at most one decimal point
+                                    const sanitized = text.replace(/[^0-9.]/g, '');
+                                    const parts = sanitized.split('.');
+                                    let clean = parts.length > 2 ? parts[0] + '.' + parts.slice(1).join('') : sanitized;
+                                    // Limit to 2 decimal places
+                                    if (clean.includes('.')) {
+                                      const [integerPart, decimalPart] = clean.split('.');
+                                      clean = integerPart + '.' + decimalPart.slice(0, 2);
+                                    }
+                                    setCashInput(clean);
+                                  }}
+                                  keyboardType="numeric"
+                                  placeholder="0.00"
+                                  showSoftInputOnFocus={Platform.OS === "web" ? true : mobileSoftInputEnabled}
+                                  onTouchStart={() => {
+                                    if (Platform.OS !== "web" && !mobileSoftInputEnabled) {
+                                      setMobileSoftInputEnabled(true);
+                                    }
+                                  }}
+                                  onPressIn={() => {
+                                    if (Platform.OS !== "web" && !mobileSoftInputEnabled) {
+                                      setMobileSoftInputEnabled(true);
+                                    }
+                                  }}
+                                  {...Platform.select({
+                                    web: { outlineStyle: "none" } as any,
+                                  })}
+                                />
+                              </View>
+
+                              <View style={styles.changeBox}>
+                                <Text style={styles.changeLabel}>
+                                  Change to Return
+                                </Text>
+                                <Text style={styles.changeValue}>
+                                  {currencySymbol}
+                                  {change.toFixed(2)}
+                                </Text>
+                              </View>
+                            </View>
+
+                            {/* Quick Cash Buttons in 2 Rows (4 buttons per row) */}
+                            <View style={styles.quickCashGrid}>
+                              {/* Row 1: First 4 Quick Cash amounts */}
+                              <View style={styles.quickCashRow}>
+                                {quickCash.slice(0, 4).map((v) => {
+                                  const isSelected = parseFloat(cashInput) === v;
+                                  return (
+                                    <TouchableOpacity
+                                      key={v}
+                                      style={[
+                                        styles.quickCashGridBtn,
+                                        isSelected && styles.activeQuickCashBtn,
+                                      ]}
+                                      onPress={() => {
+                                        setCashInput(v.toString());
+                                        requestCashFocus();
+                                      }}
+                                      activeOpacity={0.7}
+                                    >
+                                      <Text
+                                        style={[
+                                          styles.quickCashText,
+                                          isSelected && styles.activeQuickCashText,
+                                        ]}
+                                      >
+                                        {currencySymbol}
+                                        {v}
+                                      </Text>
+                                    </TouchableOpacity>
+                                  );
+                                })}
+                              </View>
+
+                              {/* Row 2: Remaining Quick Cash amounts + Exact + Clear */}
+                              <View style={styles.quickCashRow}>
+                                {quickCash.slice(4, 6).map((v) => {
+                                  const isSelected = parseFloat(cashInput) === v;
+                                  return (
+                                    <TouchableOpacity
+                                      key={v}
+                                      style={[
+                                        styles.quickCashGridBtn,
+                                        isSelected && styles.activeQuickCashBtn,
+                                      ]}
+                                      onPress={() => {
+                                        setCashInput(v.toString());
+                                        requestCashFocus();
+                                      }}
+                                      activeOpacity={0.7}
+                                    >
+                                      <Text
+                                        style={[
+                                          styles.quickCashText,
+                                          isSelected && styles.activeQuickCashText,
+                                        ]}
+                                      >
+                                        {currencySymbol}
+                                        {v}
+                                      </Text>
+                                    </TouchableOpacity>
+                                  );
+                                })}
+
+                                {(() => {
+                                  const isExact =
+                                    Math.abs(parseFloat(cashInput) - total) < 0.01;
+                                  return (
+                                    <TouchableOpacity
+                                      style={[
+                                        styles.quickCashGridBtn,
+                                        styles.quickCashExactBtn,
+                                        isExact && styles.activeQuickCashExactBtn,
+                                      ]}
+                                      onPress={() => {
+                                        setCashInput(total.toFixed(2));
+                                        requestCashFocus();
+                                      }}
+                                      activeOpacity={0.7}
+                                    >
+                                      <Text style={styles.quickCashExactText}>
+                                        Exact
+                                      </Text>
+                                    </TouchableOpacity>
+                                  );
+                                })()}
+
+                                <TouchableOpacity
+                                  style={[styles.quickCashGridBtn, styles.quickCashClearBtn]}
+                                  onPress={() => {
+                                    setCashInput("");
+                                    requestCashFocus();
+                                  }}
+                                  activeOpacity={0.7}
                                 >
-                                  Exact
-                                </Text>
-                              </TouchableOpacity>
-                            );
-                          })()}
-                        </View>
-                        {paidNum > 0 && (
-                          <View style={styles.changeBox}>
-                            <Text style={styles.changeLabel}>
-                              Change to Return
-                            </Text>
-                            <Text style={styles.changeValue}>
-                              {currencySymbol}
-                              {change.toFixed(2)}
-                            </Text>
+                                  <Text style={styles.quickCashClearText}>
+                                    Clear
+                                  </Text>
+                                </TouchableOpacity>
+                              </View>
+                            </View>
                           </View>
-                        )}
+
+                          {/* Right Column: Numeric Keypad */}
+                          <View style={styles.keypadCol}>
+                            <View style={styles.keypadHeader}>
+                              <Text style={styles.keypadTitle}>NUMERIC KEYPAD</Text>
+                            </View>
+                            <View style={styles.keypadGrid}>
+                              {/* Row 1: 7, 8, 9 */}
+                              <View style={styles.keypadRow}>
+                                {["7", "8", "9"].map((num) => (
+                                  <TouchableOpacity
+                                    key={num}
+                                    style={styles.keypadBtn}
+                                    onPress={() => handleKeypadPress(num)}
+                                    activeOpacity={0.7}
+                                  >
+                                    <Text style={styles.keypadBtnText}>{num}</Text>
+                                  </TouchableOpacity>
+                                ))}
+                              </View>
+
+                              {/* Row 2: 4, 5, 6 */}
+                              <View style={styles.keypadRow}>
+                                {["4", "5", "6"].map((num) => (
+                                  <TouchableOpacity
+                                    key={num}
+                                    style={styles.keypadBtn}
+                                    onPress={() => handleKeypadPress(num)}
+                                    activeOpacity={0.7}
+                                  >
+                                    <Text style={styles.keypadBtnText}>{num}</Text>
+                                  </TouchableOpacity>
+                                ))}
+                              </View>
+
+                              {/* Row 3: 1, 2, 3 */}
+                              <View style={styles.keypadRow}>
+                                {["1", "2", "3"].map((num) => (
+                                  <TouchableOpacity
+                                    key={num}
+                                    style={styles.keypadBtn}
+                                    onPress={() => handleKeypadPress(num)}
+                                    activeOpacity={0.7}
+                                  >
+                                    <Text style={styles.keypadBtnText}>{num}</Text>
+                                  </TouchableOpacity>
+                                ))}
+                              </View>
+
+                              {/* Row 4: . (Decimal), 0, Backspace */}
+                              <View style={styles.keypadRow}>
+                                <TouchableOpacity
+                                  style={styles.keypadBtn}
+                                  onPress={() => handleKeypadPress(".")}
+                                  activeOpacity={0.7}
+                                >
+                                  <Text style={styles.keypadBtnText}>.</Text>
+                                </TouchableOpacity>
+
+                                <TouchableOpacity
+                                  style={styles.keypadBtn}
+                                  onPress={() => handleKeypadPress("0")}
+                                  activeOpacity={0.7}
+                                >
+                                  <Text style={styles.keypadBtnText}>0</Text>
+                                </TouchableOpacity>
+
+                                <TouchableOpacity
+                                  style={[styles.keypadBtn, styles.keypadBackspaceBtn]}
+                                  onPress={() => handleKeypadPress("backspace")}
+                                  activeOpacity={0.7}
+                                >
+                                  <Ionicons name="backspace-outline" size={24} color="#EA580C" />
+                                </TouchableOpacity>
+                              </View>
+                            </View>
+                          </View>
+                        </View>
                       </View>
                     )}
 
@@ -3359,7 +3827,7 @@ export default function PaymentScreen() {
                       </View>
                     )}
 
-                    <View style={{ marginTop: 15 }}>
+                    <View style={{ marginTop: 15, gap: 10 }}>
                       <TouchableOpacity
                         style={[
                           styles.completeBtn,
@@ -4414,6 +4882,90 @@ export default function PaymentScreen() {
           </TouchableOpacity>
         </Modal>
       )}
+
+      {/* CANCEL BILL MODAL */}
+      <CancelOrderModal
+        visible={showCancelBillModal}
+        onClose={() => setShowCancelBillModal(false)}
+        onConfirm={(reason, password) => handleCancelBill(reason, password)}
+        cancelReasons={cancelReasons}
+        loadingReasons={loadingCancelReasons}
+        isCancelling={isCancellingBill}
+        title="Cancel Bill"
+        subtitle="Select a reason and enter Admin password to cancel this entire bill."
+        billNumber={displayOrderId ? `#${displayOrderId}` : undefined}
+        totalAmount={`${currencySymbol}${total.toFixed(2)}`}
+        passwordLabel="Enter Admin Password"
+      />
+
+      {/* FINAL CONFIRMATION MODAL - Web & Native Safe */}
+      <Modal
+        transparent
+        visible={showFinalConfirmBill}
+        animationType="fade"
+        onRequestClose={() => {
+          if (!isCancellingBill) setShowFinalConfirmBill(false);
+        }}
+      >
+        <View style={styles.cancelConfirmOverlay}>
+          <View style={styles.cancelConfirmBox}>
+            <View style={styles.cancelConfirmIconWrap}>
+              <Ionicons name="alert-circle-outline" size={36} color={Theme.danger} />
+            </View>
+            <Text style={styles.cancelConfirmTitle}>Cancel Entire Bill?</Text>
+            <Text style={styles.cancelConfirmDesc}>
+              Are you sure you want to cancel and void this bill?
+            </Text>
+
+            <View style={styles.cancelConfirmDetails}>
+              <View style={styles.cancelConfirmRow}>
+                <Text style={styles.cancelConfirmLabel}>Bill No</Text>
+                <Text style={styles.cancelConfirmVal}>#{displayOrderId}</Text>
+              </View>
+              <View style={styles.cancelConfirmRow}>
+                <Text style={styles.cancelConfirmLabel}>Payable</Text>
+                <Text style={[styles.cancelConfirmVal, { color: Theme.danger, fontSize: 16 }]}>
+                  {currencySymbol}{total.toFixed(2)}
+                </Text>
+              </View>
+              <View style={[styles.cancelConfirmRow, { borderBottomWidth: 0, paddingBottom: 0 }]}>
+                <Text style={styles.cancelConfirmLabel}>Reason</Text>
+                <Text style={[styles.cancelConfirmVal, { flex: 1, textAlign: "right" }]} numberOfLines={2}>
+                  {pendingCancelReason}
+                </Text>
+              </View>
+            </View>
+
+            <Text style={styles.cancelConfirmWarning}>
+              ⚠️ This will void all items and cannot be undone.
+            </Text>
+
+            <View style={styles.cancelConfirmBtnRow}>
+              <TouchableOpacity
+                style={[styles.cancelConfirmBtn, styles.cancelConfirmBtnBack]}
+                onPress={() => setShowFinalConfirmBill(false)}
+                disabled={isCancellingBill}
+              >
+                <Text style={styles.cancelConfirmBtnBackText}>No, Keep Bill</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.cancelConfirmBtn, styles.cancelConfirmBtnDanger, isCancellingBill && { opacity: 0.7 }]}
+                onPress={() => executeBillCancellation(pendingCancelReason)}
+                disabled={isCancellingBill}
+              >
+                {isCancellingBill ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <>
+                    <Ionicons name="trash-outline" size={16} color="#fff" />
+                    <Text style={styles.cancelConfirmBtnDangerText}>Yes, Cancel Bill</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -4534,17 +5086,17 @@ const styles = StyleSheet.create({
     marginBottom: 15,
   },
   methodCard: {
-    width: "31.8%",
-    height: 80,
+    width: "23.4%",
+    height: 76,
     backgroundColor: Theme.bgMuted,
-    borderRadius: 14,
+    borderRadius: 12,
     flexDirection: "column",
     justifyContent: "center",
     alignItems: "center",
     borderWidth: 1,
     borderColor: Theme.border,
-    paddingHorizontal: 4,
-    paddingVertical: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 6,
     gap: 4,
   },
   activeMethodCard: {
@@ -4629,22 +5181,37 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.bold,
     color: "#ea580c",
   },
-  cashInputBox: {
+  cashAndKeypadRow: {
     flexDirection: "row",
-    alignItems: "center",
-    height: 56,
-    backgroundColor: Theme.bgMuted,
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    borderWidth: 2,
-    borderColor: Theme.border,
+    gap: 16,
+    alignItems: "stretch",
+  },
+  cashLeftCol: {
+    flex: 1.35,
+    flexDirection: "column",
+    justifyContent: "space-between",
+  },
+  cashAmountsRow: {
+    flexDirection: "row",
+    gap: 12,
     marginBottom: 12,
   },
+  cashInputBox: {
+    flex: 1.3,
+    flexDirection: "row",
+    alignItems: "center",
+    height: 60,
+    backgroundColor: "#F5EFE6",
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    borderWidth: 1,
+    borderColor: "#EADDC8",
+  },
   currencyPrefix: {
-    fontSize: 20,
+    fontSize: 22,
     fontFamily: Fonts.black,
     color: Theme.primary,
-    marginRight: 8,
+    marginRight: 6,
   },
   cashInput: {
     flex: 1,
@@ -4652,49 +5219,138 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.black,
     color: Theme.textPrimary,
   },
-  quickCashContainer: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 6,
-    marginBottom: 15,
+  changeBox: {
+    flex: 1,
+    height: 60,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    backgroundColor: "#FFF7ED",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#FFEDD5",
+    justifyContent: "center",
   },
-  quickCashBtn: {
-    minWidth: 54,
-    height: 38,
+  changeLabel: {
+    fontSize: 10,
+    fontFamily: Fonts.black,
+    color: Theme.primary,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    marginBottom: 2,
+  },
+  changeValue: {
+    fontSize: 22,
+    fontFamily: Fonts.black,
+    color: Theme.primary,
+  },
+  quickCashGrid: {
+    flexDirection: "column",
+    gap: 10,
+  },
+  quickCashRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  quickCashGridBtn: {
+    flex: 1,
+    height: 56,
     backgroundColor: "#fff",
-    borderRadius: 8,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: Theme.border,
     justifyContent: "center",
     alignItems: "center",
-    paddingHorizontal: 10,
+    ...Theme.shadowSm,
   },
   activeQuickCashBtn: {
     backgroundColor: Theme.primaryLight,
     borderColor: Theme.primaryBorder,
   },
+  quickCashExactBtn: {
+    backgroundColor: "#FFF7ED",
+    borderColor: "#FDBA74",
+    borderWidth: 1,
+  },
+  activeQuickCashExactBtn: {
+    backgroundColor: "#FFEDD5",
+    borderColor: Theme.primary,
+  },
+  quickCashExactText: {
+    fontSize: 16,
+    fontFamily: Fonts.black,
+    color: Theme.primary,
+  },
   quickCashText: {
-    fontSize: 13,
+    fontSize: 16,
     fontFamily: Fonts.black,
     color: Theme.textPrimary,
   },
   activeQuickCashText: { color: Theme.primary },
-  changeBox: {
-    padding: 12,
-    backgroundColor: Theme.primaryLight,
+  quickCashClearBtn: {
+    backgroundColor: "#EF4444",
+    borderColor: "#DC2626",
+    borderWidth: 1,
+  },
+  quickCashClearText: {
+    fontSize: 16,
+    fontFamily: Fonts.black,
+    color: "#fff",
+  },
+  keypadCol: {
+    flex: 1,
+    backgroundColor: "#FAFAFA",
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: Theme.primaryBorder,
-    marginBottom: 15,
+    borderColor: "#E5E7EB",
+    padding: 12,
   },
-  changeLabel: {
-    fontSize: 9,
-    fontFamily: Fonts.black,
-    color: Theme.primary,
-    textTransform: "uppercase",
+  keypadHeader: {
+    marginBottom: 8,
+    paddingHorizontal: 2,
+  },
+  keypadTitle: {
+    fontSize: 11,
+    fontFamily: Fonts.bold,
+    color: "#9CA3AF",
     letterSpacing: 0.5,
   },
-  changeValue: { fontSize: 26, fontFamily: Fonts.black, color: Theme.primary },
+  keypadGrid: {
+    flexDirection: "column",
+    gap: 8,
+  },
+  keypadRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  keypadBtn: {
+    flex: 1,
+    height: 52,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    justifyContent: "center",
+    alignItems: "center",
+    ...Theme.shadowSm,
+  },
+  keypadBtnText: {
+    fontSize: 18,
+    fontFamily: Fonts.bold,
+    color: "#D97706",
+  },
+  keypadClearBtn: {
+    backgroundColor: "#FEF2F2",
+    borderColor: "#FECACA",
+  },
+  keypadClearBtnText: {
+    fontSize: 15,
+    fontFamily: Fonts.bold,
+    color: "#EF4444",
+  },
+  keypadBackspaceBtn: {
+    backgroundColor: "#FFF7ED",
+    borderColor: "#FFEDD5",
+  },
   completeBtn: {
     height: 50,
     backgroundColor: Theme.primary,
@@ -4706,6 +5362,21 @@ const styles = StyleSheet.create({
     ...Theme.shadowLg,
   },
   completeBtnText: { fontSize: 16, fontFamily: Fonts.black, color: "#fff" },
+  cancelBillBtn: {
+    height: 48,
+    backgroundColor: Theme.danger || "#DC2626",
+    borderRadius: 14,
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 8,
+    ...Theme.shadowSm,
+  },
+  cancelBillBtnText: {
+    fontSize: 15,
+    fontFamily: Fonts.black,
+    color: "#fff",
+  },
   splitToggleBtn: {
     height: 50,
     backgroundColor: "transparent",
@@ -5308,5 +5979,112 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontFamily: Fonts.medium,
     color: Theme.textPrimary,
+  },
+  cancelConfirmOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.65)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 20,
+  },
+  cancelConfirmBox: {
+    backgroundColor: Theme.bgCard,
+    borderRadius: 24,
+    padding: 24,
+    width: "100%",
+    maxWidth: 420,
+    alignItems: "center",
+    ...Theme.shadowLg,
+  },
+  cancelConfirmIconWrap: {
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    backgroundColor: Theme.danger + "15",
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 16,
+  },
+  cancelConfirmTitle: {
+    fontSize: 20,
+    fontFamily: Fonts.black,
+    color: Theme.textPrimary,
+    textAlign: "center",
+    marginBottom: 6,
+  },
+  cancelConfirmDesc: {
+    fontSize: 14,
+    fontFamily: Fonts.medium,
+    color: Theme.textSecondary,
+    textAlign: "center",
+    marginBottom: 16,
+  },
+  cancelConfirmDetails: {
+    width: "100%",
+    backgroundColor: Theme.bgNav,
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: Theme.border,
+    marginBottom: 12,
+  },
+  cancelConfirmRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: Theme.border,
+  },
+  cancelConfirmLabel: {
+    fontSize: 12,
+    fontFamily: Fonts.bold,
+    color: Theme.textMuted,
+    textTransform: "uppercase",
+  },
+  cancelConfirmVal: {
+    fontSize: 14,
+    fontFamily: Fonts.black,
+    color: Theme.textPrimary,
+  },
+  cancelConfirmWarning: {
+    fontSize: 12,
+    fontFamily: Fonts.bold,
+    color: Theme.danger,
+    textAlign: "center",
+    marginBottom: 20,
+  },
+  cancelConfirmBtnRow: {
+    flexDirection: "row",
+    gap: 12,
+    width: "100%",
+  },
+  cancelConfirmBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  cancelConfirmBtnBack: {
+    backgroundColor: Theme.bgNav,
+    borderWidth: 1,
+    borderColor: Theme.border,
+  },
+  cancelConfirmBtnBackText: {
+    fontSize: 14,
+    fontFamily: Fonts.bold,
+    color: Theme.textPrimary,
+  },
+  cancelConfirmBtnDanger: {
+    backgroundColor: Theme.danger,
+    ...Theme.shadowSm,
+  },
+  cancelConfirmBtnDangerText: {
+    fontSize: 14,
+    fontFamily: Fonts.bold,
+    color: "#fff",
   },
 });

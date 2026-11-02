@@ -4,6 +4,12 @@ const { sql } = require("../config/db");
 const SYNC_SPECS = [
   // 1. Settlements & Payments
   {
+    table: "PrintMaster",
+    keys: ["PrinterId"],
+    omitIdentity: true,
+    updateIfExists: true
+  },
+  {
     table: "SettlementHeader",
     keys: ["SettlementID"],
     fallbackKeys: ["BillNo"],
@@ -146,56 +152,6 @@ const SYNC_SPECS = [
     keys: ["LogId"],
     fallbackKeys: ["OrderId", "CreatedOn"],
     omitIdentity: true
-  },
-
-  // 4. Members & Loyalty
-  {
-    table: "MemberMaster",
-    keys: ["MemberId"],
-    omitIdentity: true,
-    updateIfExists: true
-  },
-  {
-    table: "RewardPointDetails",
-    keys: ["MemberId", "SettlementId", "BillNo"],
-    omitIdentity: true
-  },
-  {
-    table: "LoyaltyCustomer",
-    keys: ["LoyaltyCustomerId"],
-    fallbackKeys: ["Phone"],
-    omitIdentity: true,
-    updateIfExists: true
-  },
-  {
-    table: "LoyaltyVisit",
-    keys: ["LoyaltyVisitId"],
-    omitIdentity: true
-  },
-  {
-    table: "CustomerDishLoyaltyState",
-    keys: ["CustomerId", "RuleId"],
-    omitIdentity: true,
-    updateIfExists: true
-  },
-
-  // 5. Credit Customers
-  {
-    table: "CreditCustomerMaster",
-    keys: ["CustomerId"],
-    omitIdentity: true,
-    updateIfExists: true
-  },
-  {
-    table: "CustomerCreditTransactions",
-    keys: ["TransactionId"],
-    dateCol: "CreatedDate",
-    omitIdentity: true
-  },
-  {
-    table: "CustomerCreditAllocations",
-    keys: ["AllocationId"],
-    omitIdentity: true
   }
 ];
 
@@ -214,7 +170,7 @@ async function pushTable(localPool, remotePool, spec) {
     `).catch(() => ({ recordset: [] }));
 
     if (!rColsRes.recordset || rColsRes.recordset.length === 0) {
-      return { table, pushed: 0 };
+      return { table, inserted: 0, updated: 0, skipped: 0, failed: 0, pushed: 0 };
     }
 
     const rColMap = new Map(rColsRes.recordset.map(c => [c.COLUMN_NAME.toLowerCase(), c]));
@@ -225,7 +181,7 @@ async function pushTable(localPool, remotePool, spec) {
       activeKeys = fallbackKeys.filter(k => rColMap.has(k.toLowerCase()));
     }
     if (activeKeys.length === 0) {
-      return { table, pushed: 0 };
+      return { table, inserted: 0, updated: 0, skipped: 0, failed: 0, pushed: 0 };
     }
 
     const keyColsSql = activeKeys.map(k => `[${k}]`).join(", ");
@@ -239,7 +195,7 @@ async function pushTable(localPool, remotePool, spec) {
     const rKeySet = new Set(rKeyRes.recordset.map(r => makeKey(r)));
     const missing = lKeyRes.recordset.filter(r => !rKeySet.has(makeKey(r)));
 
-    let pushed = 0;
+    let inserted = 0, updated = 0, skipped = 0, failed = 0;
 
     // 3. Push missing records (in batches of 50 for max network throughput)
     const BATCH_SIZE = 50;
@@ -279,7 +235,21 @@ async function pushTable(localPool, remotePool, spec) {
           return `[${k}] = @chk_${idx}`;
         }).join(" AND ");
 
-        const insertSql = `
+        const updateAssignments = insertCols
+          .filter(k => !activeKeys.some(ak => ak.toLowerCase() === k.toLowerCase()))
+          .map((k, idx) => `[${k}] = @p_${idx}`)
+          .join(", ");
+
+        const insertSql = updateIfExists && updateAssignments.length > 0 ? `
+          IF NOT EXISTS (SELECT 1 FROM [dbo].[${table}] WHERE ${whereCheck})
+          BEGIN
+            INSERT INTO [dbo].[${table}] (${colList}) VALUES (${valList});
+          END
+          ELSE
+          BEGIN
+            UPDATE [dbo].[${table}] SET ${updateAssignments} WHERE ${whereCheck};
+          END
+        ` : `
           IF NOT EXISTS (SELECT 1 FROM [dbo].[${table}] WHERE ${whereCheck})
           BEGIN
             INSERT INTO [dbo].[${table}] (${colList}) VALUES (${valList});
@@ -287,15 +257,20 @@ async function pushTable(localPool, remotePool, spec) {
         `;
 
         try {
-          await insertReq.query(insertSql);
-          pushed++;
+          const qRes = await insertReq.query(insertSql);
+          const affected = (qRes && qRes.rowsAffected && qRes.rowsAffected[0]) || 0;
+          if (affected > 0) {
+            inserted++;
+          } else {
+            skipped++;
+          }
         } catch (err) {
-          // Non-fatal warning
+          failed++;
         }
       }
     }
 
-    // 4. Update if exists (for BusinessDayLog Day End updates, MemberMaster balance updates)
+    // 4. Update if exists (for BusinessDayLog Day End updates, OrderSequences, PrintMaster)
     if (updateIfExists && lKeyRes.recordset.length > 0) {
       if (table === "BusinessDayLog") {
         for (const lRow of lKeyRes.recordset) {
@@ -303,7 +278,7 @@ async function pushTable(localPool, remotePool, spec) {
           const lLogRes = await localPool.request().input("d", bDate).query("SELECT TOP 1 * FROM BusinessDayLog WHERE BusinessDate = @d");
           const lLog = lLogRes.recordset[0];
           if (lLog && lLog.EndedAt) {
-            await remotePool.request()
+            const upRes = await remotePool.request()
               .input("d", bDate)
               .input("endedAt", lLog.EndedAt)
               .input("endedBy", lLog.EndedBy || 'admin')
@@ -311,65 +286,78 @@ async function pushTable(localPool, remotePool, spec) {
                 UPDATE BusinessDayLog 
                 SET EndedAt = @endedAt, EndedBy = @endedBy 
                 WHERE BusinessDate = @d AND (EndedAt IS NULL OR EndedAt <> @endedAt)
-              `).catch(() => {});
+              `).catch(() => ({ rowsAffected: [0] }));
+            if (upRes.rowsAffected && upRes.rowsAffected[0] > 0) {
+              updated++;
+            } else {
+              skipped++;
+            }
           }
-        }
-      } else if (table === "MemberMaster") {
-        const topRecentMembers = await localPool.request().query("SELECT TOP 20 MemberId, Name, Phone, Balance, CurrentBalance, CreditLimit, Promocode, Promoamount FROM MemberMaster").catch(() => ({ recordset: [] }));
-        for (const m of topRecentMembers.recordset) {
-          await remotePool.request()
-            .input("mid", m.MemberId)
-            .input("name", m.Name)
-            .input("phone", m.Phone)
-            .input("bal", m.Balance)
-            .input("currBal", m.CurrentBalance)
-            .input("cLim", m.CreditLimit)
-            .input("promo", m.Promocode)
-            .input("pAmt", m.Promoamount)
-            .query(`
-              UPDATE MemberMaster 
-              SET Name = @name, Phone = @phone, Balance = @bal, CurrentBalance = @currBal,
-                  CreditLimit = @cLim, Promocode = @promo, Promoamount = @pAmt
-              WHERE MemberId = @mid
-            `).catch(() => {});
-        }
-      } else if (table === "CreditCustomerMaster") {
-        const topRecentCreditCusts = await localPool.request().query("SELECT TOP 20 CustomerId, Name, Phone, Balance, CurrentBalance, CreditLimit FROM CreditCustomerMaster").catch(() => ({ recordset: [] }));
-        for (const c of topRecentCreditCusts.recordset) {
-          await remotePool.request()
-            .input("cid", c.CustomerId)
-            .input("name", c.Name)
-            .input("phone", c.Phone)
-            .input("bal", c.Balance)
-            .input("currBal", c.CurrentBalance)
-            .input("cLim", c.CreditLimit)
-            .query(`
-              UPDATE CreditCustomerMaster 
-              SET Name = @name, Phone = @phone, Balance = @bal, CurrentBalance = @currBal, CreditLimit = @cLim
-              WHERE CustomerId = @cid
-            `).catch(() => {});
         }
       } else if (table === "OrderSequences") {
         const localSeqs = await localPool.request().query("SELECT TOP 50 RestaurantId, SequenceDate, LastNumber FROM OrderSequences").catch(() => ({ recordset: [] }));
         for (const seq of localSeqs.recordset) {
-          await remotePool.request()
+          const upRes = await remotePool.request()
             .input("rid", seq.RestaurantId)
             .input("sdate", seq.SequenceDate)
             .input("lnum", seq.LastNumber)
             .query(`
               IF EXISTS (SELECT 1 FROM OrderSequences WHERE RestaurantId = @rid AND SequenceDate = @sdate)
-                UPDATE OrderSequences SET LastNumber = @lnum WHERE RestaurantId = @rid AND SequenceDate = @sdate;
+                UPDATE OrderSequences SET LastNumber = @lnum WHERE RestaurantId = @rid AND SequenceDate = @sdate AND LastNumber <> @lnum;
               ELSE
                 INSERT INTO OrderSequences (RestaurantId, SequenceDate, LastNumber) VALUES (@rid, @sdate, @lnum);
-            `).catch(() => {});
+            `).catch(() => ({ rowsAffected: [0] }));
+          if (upRes.rowsAffected && upRes.rowsAffected[0] > 0) {
+            updated++;
+          } else {
+            skipped++;
+          }
+        }
+      } else if (table === "PrintMaster") {
+        const localPrinters = await localPool.request().query("SELECT PrinterId, PrinterName, PrinterPath, PrinterIP, PrinterType, PrintSection, KitchenTypeName, KitchenTypeValue, IsActive, PrintCopy, IsEnabled FROM PrintMaster").catch(() => ({ recordset: [] }));
+        for (const pr of localPrinters.recordset) {
+          const upRes = await remotePool.request()
+            .input("pid", pr.PrinterId)
+            .input("pname", pr.PrinterName)
+            .input("ppath", pr.PrinterPath)
+            .input("pip", pr.PrinterIP)
+            .input("ptype", pr.PrinterType)
+            .input("psec", pr.PrintSection)
+            .input("ktname", pr.KitchenTypeName)
+            .input("ktval", pr.KitchenTypeValue)
+            .input("act", pr.IsActive ? 1 : 0)
+            .input("copy", pr.PrintCopy)
+            .input("en", pr.IsEnabled ? 1 : 0)
+            .query(`
+              IF EXISTS (SELECT 1 FROM PrintMaster WHERE PrinterId = @pid)
+              BEGIN
+                UPDATE PrintMaster 
+                SET PrinterName = @pname, PrinterPath = @ppath, PrinterIP = @pip,
+                    PrinterType = @ptype, PrintSection = @psec, KitchenTypeName = @ktname,
+                    KitchenTypeValue = @ktval, IsActive = @act, PrintCopy = @copy, IsEnabled = @en
+                WHERE PrinterId = @pid 
+                  AND (PrinterName <> @pname OR PrinterPath <> @ppath OR PrinterIP <> @pip OR IsActive <> @act);
+              END
+              ELSE
+              BEGIN
+                INSERT INTO PrintMaster (PrinterId, PrinterName, PrinterPath, PrinterIP, PrinterType, PrintSection, KitchenTypeName, KitchenTypeValue, IsActive, PrintCopy, IsEnabled)
+                VALUES (@pid, @pname, @ppath, @pip, @ptype, @psec, @ktname, @ktval, @act, @copy, @en);
+              END
+            `).catch(() => ({ rowsAffected: [0] }));
+          if (upRes.rowsAffected && upRes.rowsAffected[0] > 0) {
+            updated++;
+          } else {
+            skipped++;
+          }
         }
       }
     }
 
-    return { table, pushed };
+    const pushed = inserted + updated;
+    return { table, inserted, updated, skipped, failed, pushed };
   } catch (err) {
     console.warn(`⚠️ [SalesPush] Error pushing table ${table}:`, err.message);
-    return { table, pushed: 0 };
+    return { table, inserted: 0, updated: 0, skipped: 0, failed: 1, pushed: 0 };
   }
 }
 
@@ -406,33 +394,44 @@ async function mirrorBusinessDateEntry(localPool, remotePool) {
 let lastSalesPushTime = 0;
 const SALES_PUSH_THROTTLE_MS = 3000;
 
+let isSalesPushing = false;
+
 // Main execution function: Pushes all sales, settlements, day end, reports, members & credit
 async function pushAllSalesAndOperationalToRemote(localPool, remotePool, force = false) {
   if (!localPool || !remotePool) return false;
-
-  const now = Date.now();
-  if (!force && (now - lastSalesPushTime < SALES_PUSH_THROTTLE_MS)) {
-    return true; // Throttle redundant back-to-back execution
+  if (isSalesPushing) {
+    return true; // Another sales push cycle is currently active
   }
-  lastSalesPushTime = now;
+  isSalesPushing = true;
 
-  let totalPushed = 0;
-  for (const spec of SYNC_SPECS) {
-    const res = await pushTable(localPool, remotePool, spec);
-    totalPushed += res.pushed;
+  try {
+    const now = Date.now();
+    if (!force && (now - lastSalesPushTime < SALES_PUSH_THROTTLE_MS)) {
+      return true; // Throttle redundant back-to-back execution
+    }
+    lastSalesPushTime = now;
+
+    let totalPushed = 0;
+    for (const spec of SYNC_SPECS) {
+      const res = await pushTable(localPool, remotePool, spec);
+      totalPushed += res.pushed;
+    }
+
+    // Mirror DateEntry
+    await mirrorBusinessDateEntry(localPool, remotePool);
+
+    if (totalPushed > 0) {
+      console.log(`⚡ [SalesPush] Successfully pushed ${totalPushed} sales/settlement/operational records to Remote Cloud DB!`);
+    }
+    return true;
+  } finally {
+    isSalesPushing = false;
   }
-
-  // Mirror DateEntry
-  await mirrorBusinessDateEntry(localPool, remotePool);
-
-  if (totalPushed > 0) {
-    console.log(`⚡ [SalesPush] Successfully pushed ${totalPushed} sales/settlement/operational records to Remote Cloud DB!`);
-  }
-  return true;
 }
 
 module.exports = {
   pushAllSalesAndOperationalToRemote,
   mirrorBusinessDateEntry,
+  pushTable,
   SYNC_SPECS
 };

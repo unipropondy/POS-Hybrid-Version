@@ -13,6 +13,9 @@ try {
 }
 
 
+// Concurrency mutex for Day End to prevent race conditions or double-clicks
+let isDayEndRunning = false;
+
 // ============================================
 // 📊 DAY START / DAY END BUSINESS WORKFLOW
 // ============================================
@@ -23,6 +26,9 @@ router.post("/day-start", async (req, res) => {
       return res.status(400).json({ error: "StartDate is required" });
     }
     const pool = getPool();
+    if (!pool) {
+      return res.status(500).json({ error: "Local database pool unavailable" });
+    }
 
     // Check if there is already an active business day
     const activeDayRes = await pool.request().query("SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC");
@@ -36,38 +42,49 @@ router.post("/day-start", async (req, res) => {
       });
     }
 
-    // Clear previous active records
-    await pool.request().query("DELETE FROM DateEntry");
+    // Use transaction for Day Start to guarantee atomicity
+    const transaction = new sql.Transaction(pool);
+    await transaction.begin();
 
-    // Insert new business day record (using Singapore time UTC+8)
-    await pool.request()
-      .input("username", sql.VarChar(30), username || "admin")
-      .input("startDate", sql.Date, startDate)
-      .input("createdBy", sql.VarChar(30), username || "admin")
-      .query(`
-        INSERT INTO DateEntry (username, StartDate, CreatedBy, CreatedDate)
-        VALUES (@username, @startDate, @createdBy, DATEADD(MINUTE, 480, GETUTCDATE()))
-      `);
+    try {
+      // Clear previous active records
+      await transaction.request().query("DELETE FROM DateEntry");
 
-    // Log Day Start in BusinessDayLog (using Singapore time UTC+8)
-    await pool.request()
-      .input("username", sql.VarChar(30), username || "admin")
-      .input("startDate", sql.Date, startDate)
-      .query(`
-        IF EXISTS(SELECT 1 FROM BusinessDayLog WHERE BusinessDate = @startDate)
-          UPDATE BusinessDayLog SET StartedAt = DATEADD(MINUTE, 480, GETUTCDATE()), StartedBy = @username, EndedAt = NULL, EndedBy = NULL WHERE BusinessDate = @startDate
-        ELSE
-          INSERT INTO BusinessDayLog (BusinessDate, StartedAt, StartedBy) VALUES (@startDate, DATEADD(MINUTE, 480, GETUTCDATE()), @username)
-      `);
+      // Insert new business day record (using Singapore time UTC+8)
+      await transaction.request()
+        .input("username", sql.VarChar(30), username || "admin")
+        .input("startDate", sql.Date, startDate)
+        .input("createdBy", sql.VarChar(30), username || "admin")
+        .query(`
+          INSERT INTO DateEntry (username, StartDate, CreatedBy, CreatedDate)
+          VALUES (@username, @startDate, @createdBy, DATEADD(MINUTE, 480, GETUTCDATE()))
+        `);
 
-    // Record append-only audit trail (using Singapore time UTC+8)
-    await pool.request()
-      .input("username", sql.VarChar(30), username || "admin")
-      .input("startDate", sql.Date, startDate)
-      .query(`
-        INSERT INTO BusinessDayAuditLog (BusinessDate, EventType, EventTime, ActionBy)
-        VALUES (@startDate, 'DAY_START', DATEADD(MINUTE, 480, GETUTCDATE()), @username)
-      `);
+      // Log Day Start in BusinessDayLog (using Singapore time UTC+8)
+      await transaction.request()
+        .input("username", sql.VarChar(30), username || "admin")
+        .input("startDate", sql.Date, startDate)
+        .query(`
+          IF EXISTS(SELECT 1 FROM BusinessDayLog WHERE BusinessDate = @startDate)
+            UPDATE BusinessDayLog SET StartedAt = DATEADD(MINUTE, 480, GETUTCDATE()), StartedBy = @username, EndedAt = NULL, EndedBy = NULL WHERE BusinessDate = @startDate
+          ELSE
+            INSERT INTO BusinessDayLog (BusinessDate, StartedAt, StartedBy) VALUES (@startDate, DATEADD(MINUTE, 480, GETUTCDATE()), @username)
+        `);
+
+      // Record append-only audit trail (using Singapore time UTC+8)
+      await transaction.request()
+        .input("username", sql.VarChar(30), username || "admin")
+        .input("startDate", sql.Date, startDate)
+        .query(`
+          INSERT INTO BusinessDayAuditLog (BusinessDate, EventType, EventTime, ActionBy)
+          VALUES (@startDate, 'DAY_START', DATEADD(MINUTE, 480, GETUTCDATE()), @username)
+        `);
+
+      await transaction.commit();
+    } catch (txErr) {
+      try { await transaction.rollback(); } catch (_) {}
+      throw txErr;
+    }
 
     const io = req.app.get('io');
     if (io) io.emit('settlement_updated', { action: 'day_started' });
@@ -86,41 +103,74 @@ router.post("/day-start", async (req, res) => {
 });
 
 router.post("/day-end", async (req, res) => {
+  if (isDayEndRunning) {
+    return res.status(409).json({ error: "Day End is already in progress. Please wait." });
+  }
+  isDayEndRunning = true;
+
   try {
     const pool = getPool();
-
-    // Fetch active start date before deleting DateEntry
-    const activeDayRes = await pool.request().query("SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC");
-    let activeStartDate = activeDayRes.recordset[0]?.StartDate;
-    if (!activeStartDate && req.body?.businessDate) {
-      activeStartDate = req.body.businessDate;
+    if (!pool) {
+      return res.status(500).json({ error: "Local database pool unavailable" });
     }
 
+    // 1. Begin a dedicated Transaction & acquire an Exclusive Application Lock across all Node.js instances
+    const transaction = new sql.Transaction(pool);
+    await transaction.begin();
+
+    let activeStartDate = null;
+    let bonusResult = null;
     const actionUser = req.body?.username || 'admin';
 
-    // Log Day End in BusinessDayLog (using Singapore time UTC+8)
-    if (activeStartDate) {
-      await pool.request()
-        .input("startDate", sql.Date, activeStartDate)
-        .input("username", sql.VarChar(30), actionUser)
-        .query(`
-          IF EXISTS (SELECT 1 FROM BusinessDayLog WHERE BusinessDate = @startDate)
-            UPDATE BusinessDayLog 
-            SET EndedAt = DATEADD(MINUTE, 480, GETUTCDATE()), EndedBy = @username 
-            WHERE BusinessDate = @startDate
-          ELSE
-            INSERT INTO BusinessDayLog (BusinessDate, StartedAt, StartedBy, EndedAt, EndedBy)
-            VALUES (@startDate, DATEADD(MINUTE, 480, GETUTCDATE()), @username, DATEADD(MINUTE, 480, GETUTCDATE()), @username)
-        `);
+    try {
+      const lockReq = new sql.Request(transaction);
+      const lockRes = await lockReq.query(`
+        DECLARE @res INT;
+        EXEC @res = sp_getapplock @Resource = 'POS_DAY_END_WORKFLOW', @LockMode = 'Exclusive', @LockOwner = 'Transaction', @LockTimeout = 0;
+        SELECT @res AS LockResult;
+      `);
 
-      // Record append-only audit trail (using Singapore time UTC+8)
-      await pool.request()
-        .input("startDate", sql.Date, activeStartDate)
-        .input("username", sql.VarChar(30), actionUser)
-        .query(`
-          INSERT INTO BusinessDayAuditLog (BusinessDate, EventType, EventTime, ActionBy)
-          VALUES (@startDate, 'DAY_END', DATEADD(MINUTE, 480, GETUTCDATE()), @username)
-        `);
+      if (lockRes.recordset[0]?.LockResult < 0) {
+        await transaction.rollback();
+        return res.status(409).json({ error: "Day End is currently being processed by another instance. Please wait." });
+      }
+
+      // 2. Fetch active start date within locked transaction
+      const activeDayRes = await new sql.Request(transaction).query("SELECT TOP 1 StartDate FROM DateEntry WITH (UPDLOCK, HOLDLOCK) ORDER BY CreatedDate DESC");
+      if (activeDayRes.recordset.length === 0) {
+        await transaction.rollback();
+        return res.status(400).json({ error: 'No active business day found. Day End has already been completed or day is not started.' });
+      }
+      activeStartDate = activeDayRes.recordset[0].StartDate;
+
+    // === DAY END VALIDATION GATE ===
+    // Verify that Opening Amount, Cash Out, and Closing Amount have been explicitly confirmed for activeStartDate
+    if (!activeStartDate) {
+      await transaction.rollback();
+      return res.status(400).json({ error: 'No active business day found to end.' });
+    }
+    const formattedActiveDate = activeStartDate instanceof Date ? activeStartDate.toISOString().split('T')[0] : String(activeStartDate).split('T')[0];
+
+    const confirmCheckReq = new sql.Request(transaction);
+    confirmCheckReq.input('activeDate', sql.Date, formattedActiveDate);
+    const confirmCheckRes = await confirmCheckReq.query(`
+      SELECT OpeningConfirmed, CashOutConfirmed, ClosingConfirmed
+      FROM SettlementDayConfirmation WITH (UPDLOCK, HOLDLOCK)
+      WHERE BusinessDate = @activeDate
+    `);
+
+    const confirmationRecord = confirmCheckRes.recordset[0];
+    if (!confirmationRecord || !confirmationRecord.OpeningConfirmed || !confirmationRecord.CashOutConfirmed || !confirmationRecord.ClosingConfirmed) {
+      const missing = [];
+      if (!confirmationRecord || !confirmationRecord.OpeningConfirmed) missing.push('Opening Amount');
+      if (!confirmationRecord || !confirmationRecord.CashOutConfirmed) missing.push('Cash Out');
+      if (!confirmationRecord || !confirmationRecord.ClosingConfirmed) missing.push('Closing Amount');
+      await transaction.rollback();
+      return res.status(400).json({
+        error: `Cannot perform Day End. The following required settlement steps have not been confirmed: ${missing.join(', ')}.`,
+        missingSteps: missing,
+        confirmations: confirmationRecord || { OpeningConfirmed: false, CashOutConfirmed: false, ClosingConfirmed: false }
+      });
     }
 
     // 1. Finalize artist bonus transactions for the active business day
@@ -135,27 +185,71 @@ router.post("/day-end", async (req, res) => {
     }
 
     // 2. Archive active restaurant orders into historical tables (proc_RestaurantOrder)
-    //    CRITICAL: Must execute BEFORE DateEntry is cleared, because proc_RestaurantOrder filters by (SELECT StartDate FROM DateEntry)
-    try {
-      console.log('[DayEnd] Executing proc_RestaurantOrder to archive active day orders...');
-      await pool.request().execute("proc_RestaurantOrder");
-      console.log('[DayEnd] ✅ proc_RestaurantOrder executed successfully');
-    } catch (procErr) {
-      console.warn('[DayEnd] ⚠️ proc_RestaurantOrder warning:', procErr.message);
-    }
+    //    CRITICAL: Must execute BEFORE DateEntry is cleared, because proc_RestaurantOrder filters by (SELECT StartDate FROM DateEntry).
+    //    If order archiving fails, Day End MUST NOT report success or clear DateEntry; DateEntry is preserved for safe retry.
+    console.log('[DayEnd] Executing proc_RestaurantOrder to archive active day orders...');
+    await pool.request().execute("proc_RestaurantOrder");
+    console.log('[DayEnd] ✅ proc_RestaurantOrder executed successfully');
 
-    // Also execute proc_RestaurantOrder on remote cloud DB if connected and online (before DateEntry is cleared)
-    try {
-      const { connectRemote } = require("../config/db");
-      const remotePool = await connectRemote();
-      if (remotePool && remotePool.connected) {
-        await remotePool.request().execute("proc_RestaurantOrder").catch(() => {});
-        console.log('[DayEnd] ✅ proc_RestaurantOrder executed on Remote Cloud DB');
+    // Also attempt proc_RestaurantOrder on remote cloud DB asynchronously in background so cloud connectivity/latency cannot block local Day End
+    (async () => {
+      try {
+        const { connectRemote } = require("../config/db");
+        const remotePool = await connectRemote();
+        if (remotePool && remotePool.connected) {
+          await remotePool.request().execute("proc_RestaurantOrder").catch((err) => {
+            console.warn('[DayEnd] Remote proc_RestaurantOrder execution warning:', err.message);
+          });
+          console.log('[DayEnd] ✅ proc_RestaurantOrder executed on Remote Cloud DB');
+        }
+      } catch (cloudErr) {
+        console.warn('[DayEnd] Remote Cloud DB unreachable for proc_RestaurantOrder (non-blocking):', cloudErr.message);
       }
-    } catch (_) {}
+    })();
 
-    // 3. Clear active business day — this officially ends the day
-    await pool.request().query("DELETE FROM DateEntry");
+    // 3. Atomically perform all business-day closing updates and DELETE FROM DateEntry inside the locked Transaction
+      if (activeStartDate) {
+        // Log Day End in BusinessDayLog (using Singapore time UTC+8)
+        // If BusinessDayLog exists, only set EndedAt if it is not already set, preserving the original closing timestamp
+        await transaction.request()
+          .input("startDate", sql.Date, activeStartDate)
+          .input("username", sql.VarChar(30), actionUser)
+          .query(`
+            IF EXISTS (SELECT 1 FROM BusinessDayLog WHERE BusinessDate = @startDate)
+              UPDATE BusinessDayLog 
+              SET EndedAt = ISNULL(EndedAt, DATEADD(MINUTE, 480, GETUTCDATE())), 
+                  EndedBy = ISNULL(EndedBy, @username) 
+              WHERE BusinessDate = @startDate
+            ELSE
+              INSERT INTO BusinessDayLog (BusinessDate, StartedAt, StartedBy, EndedAt, EndedBy)
+              VALUES (@startDate, DATEADD(MINUTE, 480, GETUTCDATE()), @username, DATEADD(MINUTE, 480, GETUTCDATE()), @username)
+          `);
+
+        // Record append-only audit trail only if DateEntry was actively present to prevent duplicate DAY_END logs on repeated requests
+        if (activeDayRes.recordset.length > 0) {
+          await transaction.request()
+            .input("startDate", sql.Date, activeStartDate)
+            .input("username", sql.VarChar(30), actionUser)
+            .query(`
+              INSERT INTO BusinessDayAuditLog (BusinessDate, EventType, EventTime, ActionBy)
+              VALUES (@startDate, 'DAY_END', DATEADD(MINUTE, 480, GETUTCDATE()), @username)
+            `);
+        }
+      }
+
+      // Officially clear active business day record from Local DateEntry
+      await transaction.request().query("DELETE FROM DateEntry");
+
+      await transaction.commit();
+      console.log('[DayEnd] ✅ Day End successfully committed to Local Database');
+    } catch (dayEndErr) {
+      try {
+        await transaction.rollback();
+      } catch (rbErr) {
+        // Transaction may already be rolled back
+      }
+      throw dayEndErr;
+    }
 
     // Notify all connected clients to refresh settlement data
     const io = req.app.get('io');
@@ -175,6 +269,8 @@ router.post("/day-end", async (req, res) => {
   } catch (err) {
     console.error("Day End Error:", err);
     res.status(500).json({ error: err.message });
+  } finally {
+    isDayEndRunning = false;
   }
 });
 
@@ -212,7 +308,11 @@ router.get("/users-settlement", async (req, res) => {
         ISNULL(u.UserCode, '-') AS UserCode,
         ISNULL(g.UserGroupName, 'Cashier') AS RoleName
       FROM UserMaster u
-      LEFT JOIN UserGroupMaster g ON u.UserGroupid = g.UserGroupId
+      LEFT JOIN (
+        SELECT UserGroupId, MAX(UserGroupName) AS UserGroupName
+        FROM UserGroupMaster
+        GROUP BY UserGroupId
+      ) g ON u.UserGroupid = g.UserGroupId
       WHERE UPPER(LTRIM(RTRIM(ISNULL(g.UserGroupName, '')))) IN ('ADMIN', 'CASHIER', 'ADMINISTRATOR', 'SUPERADMIN')
          OR UPPER(LTRIM(RTRIM(ISNULL(u.UserName, '')))) IN ('ADMIN', 'UNIPRO', 'OWNER', 'CASHIER')
       ORDER BY u.UserName ASC
@@ -544,6 +644,29 @@ router.post('/opening-cash', authenticateToken, async (req, res) => {
           VALUES (@outletId, @settlementDate, @cashierName, @openingCashJSON, @openingCashTotal, GETDATE());
       `);
 
+    // Mark Opening as confirmed in SettlementDayConfirmation
+    try {
+      const confirmReq = pool.request();
+      confirmReq.input('bDate', sql.Date, settlementDate);
+      confirmReq.input('opAmt', sql.Decimal(18, 2), total || 0);
+      confirmReq.input('userBy', sql.NVarChar(50), cashierName || req.user?.userName || req.user?.username || 'Admin');
+      await confirmReq.query(`
+        MERGE SettlementDayConfirmation AS target
+        USING (SELECT @bDate AS BusinessDate) AS source
+        ON (target.BusinessDate = source.BusinessDate)
+        WHEN MATCHED THEN
+          UPDATE SET OpeningConfirmed = 1, OpeningConfirmedAt = GETDATE(), OpeningConfirmedBy = @userBy, OpeningAmount = @opAmt, UpdatedAt = GETDATE()
+        WHEN NOT MATCHED THEN
+          INSERT (BusinessDate, OpeningConfirmed, OpeningConfirmedAt, OpeningConfirmedBy, OpeningAmount, CreatedAt, UpdatedAt)
+          VALUES (@bDate, 1, GETDATE(), @userBy, @opAmt, GETDATE(), GETDATE());
+      `);
+    } catch (confErr) {
+      console.warn('Error recording Opening confirmation in /opening-cash:', confErr.message);
+    }
+
+    const io = req.app.get('io');
+    if (io) io.emit('settlement_updated', { action: 'opening_cash_saved' });
+
     res.json({ success: true, message: 'Opening cash saved' });
   } catch (err) {
     console.error('Save opening cash error:', err);
@@ -621,6 +744,29 @@ router.post('/physical-cash', authenticateToken, async (req, res) => {
           INSERT (OutletId, SettlementDate, PhysicalCashJSON, PhysicalCashTotal, CreatedAt)
           VALUES (@outletId, @settlementDate, @physicalCashJSON, @physicalCashTotal, GETDATE());
       `);
+
+    // Mark Closing as confirmed in SettlementDayConfirmation
+    try {
+      const confirmReq = pool.request();
+      confirmReq.input('bDate', sql.Date, settlementDate);
+      confirmReq.input('clAmt', sql.Decimal(18, 2), total || 0);
+      confirmReq.input('userBy', sql.NVarChar(50), req.user?.userName || req.user?.username || 'Admin');
+      await confirmReq.query(`
+        MERGE SettlementDayConfirmation AS target
+        USING (SELECT @bDate AS BusinessDate) AS source
+        ON (target.BusinessDate = source.BusinessDate)
+        WHEN MATCHED THEN
+          UPDATE SET ClosingConfirmed = 1, ClosingConfirmedAt = GETDATE(), ClosingConfirmedBy = @userBy, ClosingAmount = @clAmt, UpdatedAt = GETDATE()
+        WHEN NOT MATCHED THEN
+          INSERT (BusinessDate, ClosingConfirmed, ClosingConfirmedAt, ClosingConfirmedBy, ClosingAmount, CreatedAt, UpdatedAt)
+          VALUES (@bDate, 1, GETDATE(), @userBy, @clAmt, GETDATE(), GETDATE());
+      `);
+    } catch (confErr) {
+      console.warn('Error recording Closing confirmation in /physical-cash:', confErr.message);
+    }
+
+    const io = req.app.get('io');
+    if (io) io.emit('settlement_updated', { action: 'physical_cash_saved' });
 
     res.json({ success: true });
   } catch (err) {
@@ -850,6 +996,21 @@ router.post('/save-denominations', authenticateToken, async (req, res) => {
             INSERT (OutletId, SettlementDate, CashierName, OpeningCashJSON, OpeningCashTotal, CreatedAt)
             VALUES (@outletId, @settlementDate, @cashierName, @openingCashJSON, @openingCashTotal, GETDATE());
         `);
+
+        const confirmOpenReq = new sql.Request(transaction);
+        confirmOpenReq.input('bDate', sql.Date, targetDate);
+        confirmOpenReq.input('opAmt', sql.Decimal(18, 2), totalAmount);
+        confirmOpenReq.input('userBy', sql.NVarChar(50), createdBy || 'Admin');
+        await confirmOpenReq.query(`
+          MERGE SettlementDayConfirmation AS target
+          USING (SELECT @bDate AS BusinessDate) AS source
+          ON (target.BusinessDate = source.BusinessDate)
+          WHEN MATCHED THEN
+            UPDATE SET OpeningConfirmed = 1, OpeningConfirmedAt = GETDATE(), OpeningConfirmedBy = @userBy, OpeningAmount = @opAmt, UpdatedAt = GETDATE()
+          WHEN NOT MATCHED THEN
+            INSERT (BusinessDate, OpeningConfirmed, OpeningConfirmedAt, OpeningConfirmedBy, OpeningAmount, CreatedAt, UpdatedAt)
+            VALUES (@bDate, 1, GETDATE(), @userBy, @opAmt, GETDATE(), GETDATE());
+        `);
       } else if (recordType === 'CLOSE') {
         const setRequest = new sql.Request(transaction);
         setRequest.input('outletId', sql.Int, parsedOutletId);
@@ -865,6 +1026,21 @@ router.post('/save-denominations', authenticateToken, async (req, res) => {
           WHEN NOT MATCHED THEN
             INSERT (OutletId, SettlementDate, PhysicalCashJSON, PhysicalCashTotal, CreatedAt)
             VALUES (@outletId, @settlementDate, @physicalCashJSON, @physicalCashTotal, GETDATE());
+        `);
+
+        const confirmCloseReq = new sql.Request(transaction);
+        confirmCloseReq.input('bDate', sql.Date, targetDate);
+        confirmCloseReq.input('clAmt', sql.Decimal(18, 2), totalAmount);
+        confirmCloseReq.input('userBy', sql.NVarChar(50), createdBy || 'Admin');
+        await confirmCloseReq.query(`
+          MERGE SettlementDayConfirmation AS target
+          USING (SELECT @bDate AS BusinessDate) AS source
+          ON (target.BusinessDate = source.BusinessDate)
+          WHEN MATCHED THEN
+            UPDATE SET ClosingConfirmed = 1, ClosingConfirmedAt = GETDATE(), ClosingConfirmedBy = @userBy, ClosingAmount = @clAmt, UpdatedAt = GETDATE()
+          WHEN NOT MATCHED THEN
+            INSERT (BusinessDate, ClosingConfirmed, ClosingConfirmedAt, ClosingConfirmedBy, ClosingAmount, CreatedAt, UpdatedAt)
+            VALUES (@bDate, 1, GETDATE(), @userBy, @clAmt, GETDATE(), GETDATE());
         `);
       }
 
@@ -1119,26 +1295,52 @@ router.post('/cash-out', authenticateToken, async (req, res) => {
     const randId = Math.floor(1000 + Math.random() * 9000);
     const cashOutNo = `CO-${dateStr}-${randId}`;
 
-    const result = await pool.request()
-      .input('CashOutNo', sql.VarChar, cashOutNo)
-      .input('Amount', sql.Decimal(18, 2), amount)
-      .input('Reason', sql.VarChar, reason || '')
-      .input('Remarks', sql.VarChar, remarks || '')
-      .input('PaymentMode', sql.VarChar, paymentMode || 'Cash')
-      .input('ReferenceNo', sql.VarChar, referenceNo || '')
-      .input('TerminalCode', sql.VarChar, terminalCode || '')
-      .input('CreatedBy', sql.VarChar, createdBy)
-      .input('targetDate', sql.Date, targetDate)
-      .input('AttachmentUrl', sql.VarChar(500), attachmentUrl || null)
-      .query(`
+    const transaction = new sql.Transaction(pool);
+    await transaction.begin();
+
+    try {
+      const insertReq = new sql.Request(transaction);
+      insertReq.input('CashOutNo', sql.VarChar, cashOutNo);
+      insertReq.input('Amount', sql.Decimal(18, 2), amount);
+      insertReq.input('Reason', sql.VarChar, reason || '');
+      insertReq.input('Remarks', sql.VarChar, remarks || '');
+      insertReq.input('PaymentMode', sql.VarChar, paymentMode || 'Cash');
+      insertReq.input('ReferenceNo', sql.VarChar, referenceNo || '');
+      insertReq.input('TerminalCode', sql.VarChar, terminalCode || '');
+      insertReq.input('CreatedBy', sql.VarChar, createdBy);
+      insertReq.input('targetDate', sql.Date, targetDate);
+      insertReq.input('AttachmentUrl', sql.VarChar(500), attachmentUrl || null);
+
+      const result = await insertReq.query(`
         INSERT INTO CashOutEntry (CashOutNo, CashOutDate, Amount, Reason, Remarks, PaymentMode, ReferenceNo, TerminalCode, CreatedBy, CreatedOn, start_date, AttachmentUrl)
         OUTPUT inserted.*
         VALUES (@CashOutNo, @targetDate, @Amount, @Reason, @Remarks, @PaymentMode, @ReferenceNo, @TerminalCode, @CreatedBy, @targetDate, @targetDate, @AttachmentUrl)
       `);
 
-    const io = req.app.get('io');
-    if (io) io.emit('settlement_updated', { action: 'cash_out_added' });
-    res.json({ success: true, data: result.recordset[0] });
+      // Atomically mark CashOutConfirmed for targetDate in SettlementDayConfirmation
+      const confirmReq = new sql.Request(transaction);
+      confirmReq.input('bDate', sql.Date, targetDate);
+      confirmReq.input('userBy', sql.NVarChar(50), createdBy || 'Admin');
+      await confirmReq.query(`
+        MERGE SettlementDayConfirmation AS target
+        USING (SELECT @bDate AS BusinessDate) AS source
+        ON (target.BusinessDate = source.BusinessDate)
+        WHEN MATCHED THEN
+          UPDATE SET CashOutConfirmed = 1, CashOutConfirmedAt = GETDATE(), CashOutConfirmedBy = @userBy, UpdatedAt = GETDATE()
+        WHEN NOT MATCHED THEN
+          INSERT (BusinessDate, CashOutConfirmed, CashOutConfirmedAt, CashOutConfirmedBy, CreatedAt, UpdatedAt)
+          VALUES (@bDate, 1, GETDATE(), @userBy, GETDATE(), GETDATE());
+      `);
+
+      await transaction.commit();
+
+      const io = req.app.get('io');
+      if (io) io.emit('settlement_updated', { action: 'cash_out_added' });
+      res.json({ success: true, data: result.recordset[0] });
+    } catch (txErr) {
+      await transaction.rollback();
+      throw txErr;
+    }
   } catch (err) {
     console.error('Error creating cash out entry:', err);
     res.status(500).json({ error: err.message });
@@ -1191,20 +1393,60 @@ router.delete('/cash-out/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
     const pool = getPool();
-    const result = await pool.request()
-      .input('CashOutId', sql.UniqueIdentifier, id)
-      .query(`
-        DELETE FROM CashOutEntry
-        WHERE CashOutId = @CashOutId
-      `);
+    const transaction = new sql.Transaction(pool);
+    await transaction.begin();
 
-    if (result.rowsAffected[0] === 0) {
-      return res.status(404).json({ error: 'Cash out entry not found' });
+    try {
+      // Find the entry first so we know its start_date / CashOutDate
+      const findRes = await new sql.Request(transaction)
+        .input('CashOutId', sql.UniqueIdentifier, id)
+        .query('SELECT CashOutId, start_date, CashOutDate FROM CashOutEntry WHERE CashOutId = @CashOutId');
+
+      if (findRes.recordset.length === 0) {
+        await transaction.rollback();
+        return res.status(404).json({ error: 'Cash out entry not found' });
+      }
+
+      const row = findRes.recordset[0];
+      const entryDate = row.start_date || row.CashOutDate;
+
+      // Delete the entry
+      await new sql.Request(transaction)
+        .input('CashOutId', sql.UniqueIdentifier, id)
+        .query('DELETE FROM CashOutEntry WHERE CashOutId = @CashOutId');
+
+      // Check remaining CashOutEntry rows for this business date
+      if (entryDate) {
+        const remainingRes = await new sql.Request(transaction)
+          .input('eDate', sql.Date, entryDate)
+          .query(`
+            SELECT COUNT(*) AS remainingCount 
+            FROM CashOutEntry 
+            WHERE COALESCE(CAST(CashOutDate as DATE), start_date) = @eDate
+          `);
+
+        const remaining = remainingRes.recordset[0]?.remainingCount || 0;
+        if (remaining === 0) {
+          // Reset CashOutConfirmed to 0 in SettlementDayConfirmation
+          await new sql.Request(transaction)
+            .input('eDate', sql.Date, entryDate)
+            .query(`
+              UPDATE SettlementDayConfirmation
+              SET CashOutConfirmed = 0, CashOutConfirmedAt = NULL, CashOutConfirmedBy = NULL, UpdatedAt = GETDATE()
+              WHERE BusinessDate = @eDate
+            `);
+        }
+      }
+
+      await transaction.commit();
+
+      const io = req.app.get('io');
+      if (io) io.emit('settlement_updated', { action: 'cash_out_deleted' });
+      res.json({ success: true, message: 'Cash out entry deleted successfully' });
+    } catch (txErr) {
+      await transaction.rollback();
+      throw txErr;
     }
-
-    const io = req.app.get('io');
-    if (io) io.emit('settlement_updated', { action: 'cash_out_deleted' });
-    res.json({ success: true, message: 'Cash out entry deleted successfully' });
   } catch (err) {
     console.error('Error deleting cash out entry:', err);
     res.status(500).json({ error: err.message });
@@ -1759,3 +2001,94 @@ router.post('/artist-target', authenticateToken, async (req, res) => {
 });
 
 module.exports = router;
+
+// ============================================
+// 11️⃣.1 GET & POST SETTLEMENT CONFIRMATIONS
+// ============================================
+
+// GET confirmation status for a business date
+router.get('/day-confirmation', authenticateToken, async (req, res) => {
+  try {
+    const { date } = req.query;
+    if (!date) {
+      return res.status(400).json({ error: 'Date parameter is required' });
+    }
+    const pool = getPool();
+    const result = await pool.request()
+      .input('bDate', sql.Date, date)
+      .query(`
+        SELECT 
+          OpeningConfirmed, 
+          OpeningConfirmedAt, 
+          OpeningConfirmedBy, 
+          OpeningAmount,
+          CashOutConfirmed, 
+          CashOutConfirmedAt, 
+          CashOutConfirmedBy,
+          ClosingConfirmed, 
+          ClosingConfirmedAt, 
+          ClosingConfirmedBy, 
+          ClosingAmount
+        FROM SettlementDayConfirmation
+        WHERE BusinessDate = @bDate
+      `);
+
+    const confirmation = result.recordset[0] || {
+      OpeningConfirmed: false,
+      OpeningConfirmedAt: null,
+      OpeningConfirmedBy: null,
+      OpeningAmount: null,
+      CashOutConfirmed: false,
+      CashOutConfirmedAt: null,
+      CashOutConfirmedBy: null,
+      ClosingConfirmed: false,
+      ClosingConfirmedAt: null,
+      ClosingConfirmedBy: null,
+      ClosingAmount: null
+    };
+
+    res.json({ success: true, data: confirmation });
+  } catch (err) {
+    console.error('Error fetching day confirmation:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST explicit cash-out confirmation (especially for 0.00 confirmation)
+router.post('/confirm-cash-out', authenticateToken, async (req, res) => {
+  try {
+    const { date } = req.body;
+    const pool = getPool();
+
+    // Verify active day
+    const activeDayRes = await pool.request().query("SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC");
+    if (activeDayRes.recordset.length === 0) {
+      return res.status(400).json({ error: "No active business date. Please Start Day first." });
+    }
+    const activeStartDate = activeDayRes.recordset[0].StartDate;
+    const targetDate = date ? new Date(date) : activeStartDate;
+    const createdBy = req.user?.userName || req.user?.username || req.user?.id || 'Admin';
+
+    await pool.request()
+      .input('bDate', sql.Date, targetDate)
+      .input('userBy', sql.NVarChar(50), createdBy)
+      .query(`
+        MERGE SettlementDayConfirmation AS target
+        USING (SELECT @bDate AS BusinessDate) AS source
+        ON (target.BusinessDate = source.BusinessDate)
+        WHEN MATCHED THEN
+          UPDATE SET CashOutConfirmed = 1, CashOutConfirmedAt = GETDATE(), CashOutConfirmedBy = @userBy, UpdatedAt = GETDATE()
+        WHEN NOT MATCHED THEN
+          INSERT (BusinessDate, CashOutConfirmed, CashOutConfirmedAt, CashOutConfirmedBy, CreatedAt, UpdatedAt)
+          VALUES (@bDate, 1, GETDATE(), @userBy, GETDATE(), GETDATE());
+      `);
+
+    const io = req.app.get('io');
+    if (io) io.emit('settlement_updated', { action: 'cash_out_confirmed' });
+
+    res.json({ success: true, message: 'Cash Out step confirmed successfully' });
+  } catch (err) {
+    console.error('Error confirming cash out:', err);
+    res.status(500).json({ error: err.message });
+  }
+});

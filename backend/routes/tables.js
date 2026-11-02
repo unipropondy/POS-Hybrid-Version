@@ -71,7 +71,7 @@ router.get("/all", async (req, res) => {
       CAST(DiningSection AS VARCHAR(10)) AS DiningSection, LockedByName as lockedByName,
       Status, CONVERT(VARCHAR, StartTime, 126) as StartTime, ISNULL(TotalAmount, 0) as totalAmount, CurrentOrderId as currentOrderId,
       entry_status AS entryStatus, ISNULL(PAYMENT_STATUS, 0) AS paymentStatus, CustomerName as customerName, Pax as pax,
-      TableType, Seats, XSize, YSize, XPos, YPos,
+      TableType, Seats, XSize, YSize, XPos, YPos, SortCode,
       CASE 
         WHEN Status IN (1, 2, 3) AND StartTime IS NOT NULL AND StartTime > '2000-01-01' AND DATEDIFF(MINUTE, StartTime, GETDATE()) >= 60 THEN 1 
         ELSE 0 

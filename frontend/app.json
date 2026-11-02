@@ -14,14 +14,14 @@
         "NSBluetoothAlwaysUsageDescription": "This app needs Bluetooth access to connect to thermal printers for receipts.",
         "ITSAppUsesNonExemptEncryption": false
       },
-      "bundleIdentifier": "com.unipro.pos"
+      "bundleIdentifier": "com.uniprosmart.pos"
     },
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#FF8C00",
         "foregroundImage": "./assets/images/logo_pos.png"
       },
-      "package": "com.unipro.pos",
+      "package": "com.uniprosmart.pos",
       "versionCode": 5,
       "permissions": [
         "INTERNET",

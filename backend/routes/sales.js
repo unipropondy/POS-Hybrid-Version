@@ -50,38 +50,44 @@ const generateRandomBillId = () => {
 };
 
 const normalizeReportPayModeSql = (columnName = "sts.PayMode", settlementIdColumn = "sh.SettlementID") => {
-  const resolvedPayMode = `COALESCE((
-    SELECT TOP 1 LTRIM(RTRIM(pd2.Remarks))
-    FROM (
-      SELECT Remarks, RestaurantBillId FROM PaymentDetailCur WHERE Remarks IS NOT NULL AND LTRIM(RTRIM(Remarks)) <> ''
-      UNION ALL
-      SELECT Remarks, RestaurantBillId FROM PaymentDetail WHERE Remarks IS NOT NULL AND LTRIM(RTRIM(Remarks)) <> ''
-    ) pd2
-    WHERE pd2.RestaurantBillId = ${settlementIdColumn}
-  ), ${columnName})`;
-
+  // Ultra-fast normalization: evaluate PaymentDetail remarks at most once via inline subquery
   const rawSql = `
-    UPPER(ISNULL(
-      (SELECT TOP 1 LTRIM(RTRIM(COALESCE(NULLIF(LTRIM(RTRIM(Description)), ''), PayMode))) 
-       FROM Paymode pm 
-       WHERE LTRIM(RTRIM(pm.PayMode)) = LTRIM(RTRIM(ISNULL(${resolvedPayMode}, '')))
-          OR LTRIM(RTRIM(pm.Description)) = LTRIM(RTRIM(ISNULL(${resolvedPayMode}, '')))
-          OR CAST(pm.Position AS NVARCHAR(10)) = LTRIM(RTRIM(ISNULL(${resolvedPayMode}, '')))
-      ),
-      CASE
-        WHEN UPPER(LTRIM(RTRIM(ISNULL(${resolvedPayMode}, '')))) IN ('YEAHPAY PAYNOW', '7') OR UPPER(${resolvedPayMode}) LIKE '%YEAHPAY%PAYNOW%' THEN 'YEAHPAY PAYNOW'
-        WHEN UPPER(LTRIM(RTRIM(ISNULL(${resolvedPayMode}, '')))) IN ('YEAHPAY CARD', '8') OR UPPER(${resolvedPayMode}) LIKE '%YEAHPAY%CARD%' THEN 'YEAHPAY CARD'
-        WHEN UPPER(LTRIM(RTRIM(ISNULL(${resolvedPayMode}, '')))) IN ('CAS', 'CASH', '1') THEN 'CASH'
-        WHEN UPPER(LTRIM(RTRIM(ISNULL(${resolvedPayMode}, '')))) IN ('CARD', 'VISA', 'MASTER', 'MASTERCARD', 'AMEX', 'DINERS') THEN 'CARD'
-        WHEN (UPPER(LTRIM(RTRIM(ISNULL(${resolvedPayMode}, '')))) IN ('PAYNOW', '3') OR UPPER(${resolvedPayMode}) LIKE '%PAYNOW%') AND UPPER(${resolvedPayMode}) NOT LIKE '%YEAHPAY%' THEN 'PAYNOW'
-        WHEN UPPER(LTRIM(RTRIM(ISNULL(${resolvedPayMode}, '')))) IN ('GRAB', '10') OR UPPER(${resolvedPayMode}) LIKE '%GRAB%' THEN 'GRAB'
-        WHEN UPPER(LTRIM(RTRIM(ISNULL(${resolvedPayMode}, '')))) IN ('FOODPANDA', '9') OR UPPER(${resolvedPayMode}) LIKE '%FOODPANDA%' THEN 'FOODPANDA'
-        WHEN UPPER(LTRIM(RTRIM(ISNULL(${resolvedPayMode}, '')))) IN ('NETS', '2') OR UPPER(${resolvedPayMode}) LIKE '%NETS%' THEN 'NETS'
-        WHEN UPPER(LTRIM(RTRIM(ISNULL(${resolvedPayMode}, '')))) IN ('UPI', '4') OR UPPER(${resolvedPayMode}) LIKE '%UPI%' OR UPPER(${resolvedPayMode}) LIKE '%GPAY%' THEN 'UPI'
-        WHEN UPPER(LTRIM(RTRIM(ISNULL(${resolvedPayMode}, '')))) IN ('MEMBER', '5') OR UPPER(${resolvedPayMode}) LIKE '%MEMBER%' THEN 'MEMBER'
-        ELSE UPPER(LTRIM(RTRIM(ISNULL(${resolvedPayMode}, 'CASH'))))
-      END
-    ))
+    (
+      SELECT COALESCE(
+        (SELECT TOP 1 UPPER(LTRIM(RTRIM(COALESCE(NULLIF(LTRIM(RTRIM(pm.Description)), ''), pm.PayMode)))) 
+         FROM Paymode pm 
+         WHERE LTRIM(RTRIM(pm.PayMode)) = LTRIM(RTRIM(ISNULL(resolved.val, '')))
+            OR LTRIM(RTRIM(pm.Description)) = LTRIM(RTRIM(ISNULL(resolved.val, '')))
+            OR CAST(pm.Position AS NVARCHAR(10)) = LTRIM(RTRIM(ISNULL(resolved.val, '')))
+        ),
+        CASE
+          WHEN UPPER(LTRIM(RTRIM(ISNULL(resolved.val, '')))) IN ('YEAHPAY PAYNOW', '7') OR UPPER(resolved.val) LIKE '%YEAHPAY%PAYNOW%' THEN 'YEAHPAY PAYNOW'
+          WHEN UPPER(LTRIM(RTRIM(ISNULL(resolved.val, '')))) IN ('YEAHPAY CARD', '8') OR UPPER(resolved.val) LIKE '%YEAHPAY%CARD%' THEN 'YEAHPAY CARD'
+          WHEN UPPER(LTRIM(RTRIM(ISNULL(resolved.val, '')))) IN ('CAS', 'CASH', '1') THEN 'CASH'
+          WHEN UPPER(LTRIM(RTRIM(ISNULL(resolved.val, '')))) IN ('CARD', 'VISA', 'MASTER', 'MASTERCARD', 'AMEX', 'DINERS') THEN 'CARD'
+          WHEN (UPPER(LTRIM(RTRIM(ISNULL(resolved.val, '')))) IN ('PAYNOW', '3') OR UPPER(resolved.val) LIKE '%PAYNOW%') AND UPPER(resolved.val) NOT LIKE '%YEAHPAY%' THEN 'PAYNOW'
+          WHEN UPPER(LTRIM(RTRIM(ISNULL(resolved.val, '')))) IN ('GRAB', '10') OR UPPER(resolved.val) LIKE '%GRAB%' THEN 'GRAB'
+          WHEN UPPER(LTRIM(RTRIM(ISNULL(resolved.val, '')))) IN ('FOODPANDA', '9') OR UPPER(resolved.val) LIKE '%FOODPANDA%' THEN 'FOODPANDA'
+          WHEN UPPER(LTRIM(RTRIM(ISNULL(resolved.val, '')))) IN ('NETS', '2') OR UPPER(resolved.val) LIKE '%NETS%' THEN 'NETS'
+          WHEN UPPER(LTRIM(RTRIM(ISNULL(resolved.val, '')))) IN ('UPI', '4') OR UPPER(resolved.val) LIKE '%UPI%' OR UPPER(resolved.val) LIKE '%GPAY%' THEN 'UPI'
+          WHEN UPPER(LTRIM(RTRIM(ISNULL(resolved.val, '')))) IN ('MEMBER', '5') OR UPPER(resolved.val) LIKE '%MEMBER%' THEN 'MEMBER'
+          ELSE UPPER(LTRIM(RTRIM(ISNULL(resolved.val, 'CASH'))))
+        END
+      )
+      FROM (
+        SELECT COALESCE(
+          (SELECT TOP 1 LTRIM(RTRIM(pd2.Remarks))
+           FROM (
+             SELECT Remarks, RestaurantBillId FROM PaymentDetailCur WHERE Remarks IS NOT NULL AND LTRIM(RTRIM(Remarks)) <> ''
+             UNION ALL
+             SELECT Remarks, RestaurantBillId FROM PaymentDetail WHERE Remarks IS NOT NULL AND LTRIM(RTRIM(Remarks)) <> ''
+           ) pd2
+           WHERE pd2.RestaurantBillId = ${settlementIdColumn}
+          ),
+          ${columnName}
+        ) AS val
+      ) resolved
+    )
   `;
 
   return rawSql;
@@ -132,7 +138,7 @@ const resolveBusinessDateColumn = (col) => {
 };
 
 const getReportDateWhereSql = (filter = "daily", saleDateColumn = "sh.LastSettlementDate", date = null, startDate = null, endDate = null) => {
-  if (String(filter).toLowerCase() === "custom" && startDate && endDate) {
+  if (startDate && endDate) {
     return getReportDateWhereSqlForRange(startDate, endDate, saleDateColumn);
   }
 
@@ -593,9 +599,11 @@ router.get("/all", async (req, res) => {
     const records = result.recordset || [];
     let finalRecords = [];
     if (records.length > 0) {
-      const masterOrderIds = records
-        .map(r => r.MasterOrderId)
-        .filter(id => id && id.length > 30);
+      const masterOrderIds = [...new Set(
+        records
+          .map(r => r.MasterOrderId)
+          .filter(id => id && id.length > 30)
+      )];
 
       const mergeMap = {};
       if (masterOrderIds.length > 0) {
@@ -1080,7 +1088,11 @@ router.get("/login-wise-sales", async (req, res) => {
       FROM (
         SELECT CAST(UserId AS NVARCHAR(50)) AS UserId, UserName, FullName, UserCode, UserGroupid FROM UserMaster
       ) u
-      LEFT JOIN UserGroupMaster g ON u.UserGroupid = g.UserGroupId
+      LEFT JOIN (
+        SELECT UserGroupId, MAX(UserGroupName) AS UserGroupName
+        FROM UserGroupMaster
+        GROUP BY UserGroupId
+      ) g ON u.UserGroupid = g.UserGroupId
       LEFT JOIN HeaderTotals h ON (
         TRY_CAST(h.CashierId AS UNIQUEIDENTIFIER) = u.UserId 
         OR CAST(h.CashierId AS NVARCHAR(50)) = u.UserId

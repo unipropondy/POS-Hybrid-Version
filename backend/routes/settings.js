@@ -47,6 +47,14 @@ async function ensureAppSettingsColumns(pool) {
         ALTER TABLE AppSettings ADD EnableVoiceSuccess BIT DEFAULT 1 WITH VALUES;
       IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'EnableNotificationSound')
         ALTER TABLE AppSettings ADD EnableNotificationSound BIT DEFAULT 1 WITH VALUES;
+      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'MenuNavigationMode')
+        ALTER TABLE AppSettings ADD MenuNavigationMode NVARCHAR(20) DEFAULT 'scroll' WITH VALUES;
+      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'QuickServeEnableKOT')
+        ALTER TABLE AppSettings ADD QuickServeEnableKOT BIT DEFAULT 1 WITH VALUES;
+      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'QuickServeEnableKDS')
+        ALTER TABLE AppSettings ADD QuickServeEnableKDS BIT DEFAULT 1 WITH VALUES;
+      IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'QuickServeEnableKDSPrinter')
+        ALTER TABLE AppSettings ADD QuickServeEnableKDSPrinter BIT DEFAULT 1 WITH VALUES;
     `);
     appSettingsSchemaVerified = true;
   } catch (err) {
@@ -75,6 +83,10 @@ router.get("/", async (req, res) => {
       EnableVoiceSuccess: settings?.EnableVoiceSuccess !== undefined ? (settings.EnableVoiceSuccess ? 1 : 0) : 1,
       EnableNotificationSound: settings?.EnableNotificationSound !== undefined ? (settings.EnableNotificationSound ? 1 : 0) : 1,
       EnableQuickServe: settings?.EnableQuickServe !== undefined ? (settings.EnableQuickServe ? 1 : 0) : 1,
+      QuickServeEnableKOT: settings?.QuickServeEnableKOT !== undefined ? (settings.QuickServeEnableKOT ? 1 : 0) : 1,
+      QuickServeEnableKDS: settings?.QuickServeEnableKDS !== undefined ? (settings.QuickServeEnableKDS ? 1 : 0) : 1,
+      QuickServeEnableKDSPrinter: settings?.QuickServeEnableKDSPrinter !== undefined ? (settings.QuickServeEnableKDSPrinter ? 1 : 0) : 1,
+      MenuNavigationMode: settings?.MenuNavigationMode || "scroll",
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -84,7 +96,7 @@ router.get("/", async (req, res) => {
 // 🔹 UPDATE Settings
 router.post("/update", async (req, res) => {
   try {
-    const { upiId, shopName, qrCodeUrl, enableKOT, enableKDS, enableCheckoutBill, enableCheckoutFlow, enableDirectProcessToPay, customerSideDisplay, enableGuestDetailsPopup, enableCashDrawer, SVCIdentification, enableKDSPrint, enableCombo, enableQuickServe, showLoyalty, showRewardPoints, showPromoCode, enableOnlinePayment, enableQROrderAutoPrint, enableComboPrint, enableRequestService, enableCookingInstructions, enableDirectPaymentToProcess, enableSkipSummaryScreen, enableReceiptPrint, enableVoiceSuccess, enableNotificationSound } = req.body;
+    const { upiId, shopName, qrCodeUrl, enableKOT, enableKDS, enableCheckoutBill, enableCheckoutFlow, enableDirectProcessToPay, customerSideDisplay, enableGuestDetailsPopup, enableCashDrawer, SVCIdentification, enableKDSPrint, enableCombo, enableQuickServe, quickServeEnableKOT, quickServeEnableKDS, quickServeEnableKDSPrinter, showLoyalty, showRewardPoints, showPromoCode, enableOnlinePayment, enableQROrderAutoPrint, enableComboPrint, enableRequestService, enableCookingInstructions, enableDirectPaymentToProcess, enableSkipSummaryScreen, enableReceiptPrint, enableVoiceSuccess, enableNotificationSound, menuNavigationMode } = req.body;
     const pool = await poolPromise;
 
     // Snapshot existing app settings before update
@@ -113,6 +125,9 @@ router.post("/update", async (req, res) => {
       .input("SVCIdentification", sql.Bit, SVCIdentification !== undefined ? SVCIdentification : 1)
       .input("EnableCombo", sql.Bit, enableCombo !== undefined ? enableCombo : 1)
       .input("EnableQuickServe", sql.Bit, enableQuickServe !== undefined ? enableQuickServe : 1)
+      .input("QuickServeEnableKOT", sql.Bit, quickServeEnableKOT !== undefined ? quickServeEnableKOT : 1)
+      .input("QuickServeEnableKDS", sql.Bit, quickServeEnableKDS !== undefined ? quickServeEnableKDS : 1)
+      .input("QuickServeEnableKDSPrinter", sql.Bit, quickServeEnableKDSPrinter !== undefined ? quickServeEnableKDSPrinter : 1)
       .input("ShowLoyalty", sql.Bit, showLoyalty !== undefined ? showLoyalty : 1)
       .input("ShowRewardPoints", sql.Bit, showRewardPoints !== undefined ? showRewardPoints : 1)
       .input("ShowPromoCode", sql.Bit, showPromoCode !== undefined ? showPromoCode : 1)
@@ -126,6 +141,7 @@ router.post("/update", async (req, res) => {
       .input("EnableReceiptPrint", sql.Bit, enableReceiptPrint !== undefined ? enableReceiptPrint : 1)
       .input("EnableVoiceSuccess", sql.Bit, enableVoiceSuccess !== undefined ? enableVoiceSuccess : 1)
       .input("EnableNotificationSound", sql.Bit, enableNotificationSound !== undefined ? enableNotificationSound : 1)
+      .input("MenuNavigationMode", sql.NVarChar, menuNavigationMode || "scroll")
       .query(`
         IF EXISTS (SELECT 1 FROM AppSettings)
         BEGIN
@@ -146,6 +162,9 @@ router.post("/update", async (req, res) => {
             SVCIdentification = @SVCIdentification,
             EnableCombo = @EnableCombo,
             EnableQuickServe = @EnableQuickServe,
+            QuickServeEnableKOT = @QuickServeEnableKOT,
+            QuickServeEnableKDS = @QuickServeEnableKDS,
+            QuickServeEnableKDSPrinter = @QuickServeEnableKDSPrinter,
             ShowLoyalty = @ShowLoyalty,
             ShowRewardPoints = @ShowRewardPoints,
             ShowPromoCode = @ShowPromoCode,
@@ -159,6 +178,7 @@ router.post("/update", async (req, res) => {
             EnableReceiptPrint = @EnableReceiptPrint,
             EnableVoiceSuccess = @EnableVoiceSuccess,
             EnableNotificationSound = @EnableNotificationSound,
+            MenuNavigationMode = @MenuNavigationMode,
             UpdatedOn = GETDATE()
         END
         ELSE
@@ -166,14 +186,14 @@ router.post("/update", async (req, res) => {
           IF EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('AppSettings') AND is_identity = 1)
           BEGIN
             SET IDENTITY_INSERT [dbo].[AppSettings] ON;
-            INSERT INTO AppSettings (Id, UPI_ID, ShopName, PayNow_QR_Url, EnableKOT, EnableKDS, EnableCheckoutBill, EnableCheckoutFlow, EnableDirectProcessToPay, CustomerSideDisplay, EnableGuestDetailsPopup, EnableCashDrawer, EnableKDSPrint, SVCIdentification, EnableCombo, EnableQuickServe, ShowLoyalty, ShowRewardPoints, ShowPromoCode, EnableOnlinePayment, EnableQROrderAutoPrint, EnableComboPrint, EnableRequestService, EnableCookingInstructions, EnableDirectPaymentToProcess, EnableSkipSummaryScreen, EnableReceiptPrint, EnableVoiceSuccess, EnableNotificationSound, UpdatedOn)
-            VALUES (1, @UPI, @Shop, @QR, @EnableKOT, @EnableKDS, @EnableCheckoutBill, @EnableCheckoutFlow, @EnableDirectProcessToPay, @CustomerSideDisplay, @EnableGuestDetailsPopup, @EnableCashDrawer, @EnableKDSPrint, @SVCIdentification, @EnableCombo, @EnableQuickServe, @ShowLoyalty, @ShowRewardPoints, @ShowPromoCode, @EnableOnlinePayment, @EnableQROrderAutoPrint, @EnableComboPrint, @EnableRequestService, @EnableCookingInstructions, @EnableDirectPaymentToProcess, @EnableSkipSummaryScreen, @EnableReceiptPrint, @EnableVoiceSuccess, @EnableNotificationSound, GETDATE());
+            INSERT INTO AppSettings (Id, UPI_ID, ShopName, PayNow_QR_Url, EnableKOT, EnableKDS, EnableCheckoutBill, EnableCheckoutFlow, EnableDirectProcessToPay, CustomerSideDisplay, EnableGuestDetailsPopup, EnableCashDrawer, EnableKDSPrint, SVCIdentification, EnableCombo, EnableQuickServe, QuickServeEnableKOT, QuickServeEnableKDS, QuickServeEnableKDSPrinter, ShowLoyalty, ShowRewardPoints, ShowPromoCode, EnableOnlinePayment, EnableQROrderAutoPrint, EnableComboPrint, EnableRequestService, EnableCookingInstructions, EnableDirectPaymentToProcess, EnableSkipSummaryScreen, EnableReceiptPrint, EnableVoiceSuccess, EnableNotificationSound, MenuNavigationMode, UpdatedOn)
+            VALUES (1, @UPI, @Shop, @QR, @EnableKOT, @EnableKDS, @EnableCheckoutBill, @EnableCheckoutFlow, @EnableDirectProcessToPay, @CustomerSideDisplay, @EnableGuestDetailsPopup, @EnableCashDrawer, @EnableKDSPrint, @SVCIdentification, @EnableCombo, @EnableQuickServe, @QuickServeEnableKOT, @QuickServeEnableKDS, @QuickServeEnableKDSPrinter, @ShowLoyalty, @ShowRewardPoints, @ShowPromoCode, @EnableOnlinePayment, @EnableQROrderAutoPrint, @EnableComboPrint, @EnableRequestService, @EnableCookingInstructions, @EnableDirectPaymentToProcess, @EnableSkipSummaryScreen, @EnableReceiptPrint, @EnableVoiceSuccess, @EnableNotificationSound, @MenuNavigationMode, GETDATE());
             SET IDENTITY_INSERT [dbo].[AppSettings] OFF;
           END
           ELSE
           BEGIN
-            INSERT INTO AppSettings (Id, UPI_ID, ShopName, PayNow_QR_Url, EnableKOT, EnableKDS, EnableCheckoutBill, EnableCheckoutFlow, EnableDirectProcessToPay, CustomerSideDisplay, EnableGuestDetailsPopup, EnableCashDrawer, EnableKDSPrint, SVCIdentification, EnableCombo, EnableQuickServe, ShowLoyalty, ShowRewardPoints, ShowPromoCode, EnableOnlinePayment, EnableQROrderAutoPrint, EnableComboPrint, EnableRequestService, EnableCookingInstructions, EnableDirectPaymentToProcess, EnableSkipSummaryScreen, EnableReceiptPrint, EnableVoiceSuccess, EnableNotificationSound, UpdatedOn)
-            VALUES (1, @UPI, @Shop, @QR, @EnableKOT, @EnableKDS, @EnableCheckoutBill, @EnableCheckoutFlow, @EnableDirectProcessToPay, @CustomerSideDisplay, @EnableGuestDetailsPopup, @EnableCashDrawer, @EnableKDSPrint, @SVCIdentification, @EnableCombo, @EnableQuickServe, @ShowLoyalty, @ShowRewardPoints, @ShowPromoCode, @EnableOnlinePayment, @EnableQROrderAutoPrint, @EnableComboPrint, @EnableRequestService, @EnableCookingInstructions, @EnableDirectPaymentToProcess, @EnableSkipSummaryScreen, @EnableReceiptPrint, @EnableVoiceSuccess, @EnableNotificationSound, GETDATE());
+            INSERT INTO AppSettings (Id, UPI_ID, ShopName, PayNow_QR_Url, EnableKOT, EnableKDS, EnableCheckoutBill, EnableCheckoutFlow, EnableDirectProcessToPay, CustomerSideDisplay, EnableGuestDetailsPopup, EnableCashDrawer, EnableKDSPrint, SVCIdentification, EnableCombo, EnableQuickServe, QuickServeEnableKOT, QuickServeEnableKDS, QuickServeEnableKDSPrinter, ShowLoyalty, ShowRewardPoints, ShowPromoCode, EnableOnlinePayment, EnableQROrderAutoPrint, EnableComboPrint, EnableRequestService, EnableCookingInstructions, EnableDirectPaymentToProcess, EnableSkipSummaryScreen, EnableReceiptPrint, EnableVoiceSuccess, EnableNotificationSound, MenuNavigationMode, UpdatedOn)
+            VALUES (1, @UPI, @Shop, @QR, @EnableKOT, @EnableKDS, @EnableCheckoutBill, @EnableCheckoutFlow, @EnableDirectProcessToPay, @CustomerSideDisplay, @EnableGuestDetailsPopup, @EnableCashDrawer, @EnableKDSPrint, @SVCIdentification, @EnableCombo, @EnableQuickServe, @QuickServeEnableKOT, @QuickServeEnableKDS, @QuickServeEnableKDSPrinter, @ShowLoyalty, @ShowRewardPoints, @ShowPromoCode, @EnableOnlinePayment, @EnableQROrderAutoPrint, @EnableComboPrint, @EnableRequestService, @EnableCookingInstructions, @EnableDirectPaymentToProcess, @EnableSkipSummaryScreen, @EnableReceiptPrint, @EnableVoiceSuccess, @EnableNotificationSound, @MenuNavigationMode, GETDATE());
           END
         END
       `);
@@ -203,6 +223,9 @@ router.post("/update", async (req, res) => {
       SVCIdentification: SVCIdentification !== undefined ? (SVCIdentification ? 1 : 0) : (oldAppSettings.SVCIdentification ? 1 : 0),
       EnableCombo: enableCombo !== undefined ? (enableCombo ? 1 : 0) : (oldAppSettings.EnableCombo ? 1 : 0),
       EnableQuickServe: enableQuickServe !== undefined ? (enableQuickServe ? 1 : 0) : (oldAppSettings.EnableQuickServe ? 1 : 0),
+      QuickServeEnableKOT: quickServeEnableKOT !== undefined ? (quickServeEnableKOT ? 1 : 0) : (oldAppSettings.QuickServeEnableKOT !== undefined ? (oldAppSettings.QuickServeEnableKOT ? 1 : 0) : 1),
+      QuickServeEnableKDS: quickServeEnableKDS !== undefined ? (quickServeEnableKDS ? 1 : 0) : (oldAppSettings.QuickServeEnableKDS !== undefined ? (oldAppSettings.QuickServeEnableKDS ? 1 : 0) : 1),
+      QuickServeEnableKDSPrinter: quickServeEnableKDSPrinter !== undefined ? (quickServeEnableKDSPrinter ? 1 : 0) : (oldAppSettings.QuickServeEnableKDSPrinter !== undefined ? (oldAppSettings.QuickServeEnableKDSPrinter ? 1 : 0) : 1),
       ShowLoyalty: showLoyalty !== undefined ? (showLoyalty ? 1 : 0) : (oldAppSettings.ShowLoyalty ? 1 : 0),
       ShowRewardPoints: showRewardPoints !== undefined ? (showRewardPoints ? 1 : 0) : (oldAppSettings.ShowRewardPoints ? 1 : 0),
       ShowPromoCode: showPromoCode !== undefined ? (showPromoCode ? 1 : 0) : (oldAppSettings.ShowPromoCode ? 1 : 0),
@@ -215,7 +238,8 @@ router.post("/update", async (req, res) => {
       EnableSkipSummaryScreen: enableSkipSummaryScreen !== undefined ? (enableSkipSummaryScreen ? 1 : 0) : (oldAppSettings.EnableSkipSummaryScreen ? 1 : 0),
       EnableReceiptPrint: enableReceiptPrint !== undefined ? (enableReceiptPrint ? 1 : 0) : (oldAppSettings.EnableReceiptPrint ? 1 : 0),
       EnableVoiceSuccess: enableVoiceSuccess !== undefined ? (enableVoiceSuccess ? 1 : 0) : (oldAppSettings.EnableVoiceSuccess ? 1 : 0),
-      EnableNotificationSound: enableNotificationSound !== undefined ? (enableNotificationSound ? 1 : 0) : (oldAppSettings.EnableNotificationSound ? 1 : 0)
+      EnableNotificationSound: enableNotificationSound !== undefined ? (enableNotificationSound ? 1 : 0) : (oldAppSettings.EnableNotificationSound ? 1 : 0),
+      MenuNavigationMode: menuNavigationMode !== undefined ? menuNavigationMode : (oldAppSettings.MenuNavigationMode || "scroll")
     };
 
     try {

@@ -2,7 +2,10 @@
 
 const path = require("path");
 const fs = require("fs");
-require("dotenv").config({ path: path.resolve(__dirname, ".env") });
+const plainEnvPath = path.resolve(__dirname, ".env");
+if (fs.existsSync(plainEnvPath)) {
+  require("dotenv").config({ path: plainEnvPath });
+}
 
 module.exports = {
     appId: process.env.APP_ID || '',

@@ -4,6 +4,7 @@ import { useFocusEffect, useRouter } from "expo-router";
 import React, { useCallback, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Animated,
   Image,
   KeyboardAvoidingView,
@@ -55,6 +56,9 @@ export default function LoginScreen() {
   const [rememberMe, setRememberMe] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [isLockedError, setIsLockedError] = useState(false);
+  const [canForceUnlock, setCanForceUnlock] = useState(false);
+  const [unlocking, setUnlocking] = useState(false);
   const [serverModalVisible, setServerModalVisible] = useState(false);
 
   useFocusEffect(
@@ -67,12 +71,18 @@ export default function LoginScreen() {
           logout();
         } else {
           const userName = (user.userName || "").trim().toUpperCase();
+          const userRole = (user.role || "").trim().toUpperCase();
+          const roleName = (user.roleName || "").trim().toUpperCase();
+          const isWaiter = userRole === "WAITER" || roleName.includes("WAITER");
+
           if (user.userGroupId === "DFCF23EE-F6F4-4885-8D26-0056C657595F") {
             router.replace("/sales-report");
-          } else if (userName === "KDS") {
+          } else if (userName === "KDS" || userRole === "KDS") {
             router.replace("/kds" as any);
+          } else if (isWaiter) {
+            router.replace("/(tabs)/category" as any);
           } else {
-            router.replace("/order-type" as any);
+            router.replace("/(tabs)/category" as any);
           }
           return;
         }
@@ -121,6 +131,34 @@ export default function LoginScreen() {
     ]).start();
   };
 
+  const handleForceUnlock = async () => {
+    if (!userName.trim()) {
+      setError("Please enter your User ID first to force unlock.");
+      return;
+    }
+    setUnlocking(true);
+    try {
+      const res = await fetch(`${API_URL}/api/auth/force-unlock`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userName: userName.trim() }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setIsLockedError(false);
+        setCanForceUnlock(false);
+        setError("");
+        Alert.alert("Sessions Cleared", "All active sessions have been unlocked. You may now sign in.");
+      } else {
+        setError(data.message || "Failed to unlock account sessions.");
+      }
+    } catch {
+      setError("Could not reach server to unlock account.");
+    } finally {
+      setUnlocking(false);
+    }
+  };
+
   const handleLogin = async () => {
     if (!userName.trim() || !password.trim()) {
       setError("Please enter both User ID and Password.");
@@ -130,12 +168,19 @@ export default function LoginScreen() {
 
     setLoading(true);
     setError("");
+    setIsLockedError(false);
+    setCanForceUnlock(false);
 
     try {
+      const clientSessionId = useAuthStore.getState().sessionId;
       const response = await fetch(`${API_URL}/api/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userName: userName.trim(), password }),
+        body: JSON.stringify({
+          userName: userName.trim(),
+          password,
+          sessionId: clientSessionId || undefined,
+        }),
       });
       const data = await response.json();
 
@@ -146,7 +191,7 @@ export default function LoginScreen() {
           setLoading(false);
           return;
         }
-        setUser(data.user, data.token);
+        setUser(data.user, data.token, null, data.sessionId);
 
         // ✅ Handle Remember Me Persistence
         try {
@@ -169,16 +214,28 @@ export default function LoginScreen() {
         }
 
         // ✅ Role-Based Navigation
-        const role = data.user.role;
+        const role = (data.user.role || "").trim().toUpperCase();
+        const roleName = (data.user.roleName || "").trim().toUpperCase();
+        const isWaiter = role === "WAITER" || roleName.includes("WAITER");
+
         if (data.user.userGroupId === "DFCF23EE-F6F4-4885-8D26-0056C657595F") {
           router.replace("/sales-report");
         } else if (role === "KDS") {
           router.replace("/(tabs)/kds" as any);
+        } else if (isWaiter) {
+          router.replace("/(tabs)/category" as any);
         } else {
-          router.replace("/order-type" as any); // Default for Admin, Manager, Waiter, Cashier
+          router.replace("/(tabs)/category" as any); // Default for Admin, Manager, Cashier
         }
       } else {
-        setError(data.message || "Login failed. Please try again.");
+        if (response.status === 409 || data.isLocked) {
+          setIsLockedError(true);
+          setCanForceUnlock(Boolean(data.canForceUnlock));
+          setError(data.message || `User reached max allowed logins (${data.allowedLogins || 1} device(s)).`);
+        } else {
+          setCanForceUnlock(false);
+          setError(data.message || "Login failed. Please try again.");
+        }
         shakeError();
       }
     } catch (err: any) {
@@ -262,18 +319,51 @@ export default function LoginScreen() {
 
                   {/* Error Banner */}
                   {error !== "" && (
-                    <TouchableOpacity
-                      style={styles.errorBanner}
-                      onPress={() => {
-                        if (error.includes("Server Setup") || error.includes("connect")) {
-                          setServerModalVisible(true);
-                        }
-                      }}
-                      activeOpacity={0.8}
-                    >
-                      <Ionicons name="alert-circle" size={16} color="#DC2626" />
-                      <Text style={styles.errorText}>{error}</Text>
-                    </TouchableOpacity>
+                    <View style={{ marginBottom: 16 }}>
+                      <TouchableOpacity
+                        style={styles.errorBanner}
+                        onPress={() => {
+                          if (error.includes("Server Setup") || error.includes("connect")) {
+                            setServerModalVisible(true);
+                          }
+                        }}
+                        activeOpacity={0.8}
+                      >
+                        <Ionicons name="alert-circle" size={16} color="#DC2626" />
+                        <Text style={styles.errorText}>{error}</Text>
+                      </TouchableOpacity>
+                      {isLockedError && canForceUnlock && (
+                        <TouchableOpacity
+                          style={{
+                            marginTop: 8,
+                            paddingVertical: 10,
+                            paddingHorizontal: 14,
+                            backgroundColor: "#FEF2F2",
+                            borderWidth: 1,
+                            borderColor: "#FCA5A5",
+                            borderRadius: 10,
+                            flexDirection: "row",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            gap: 6,
+                          }}
+                          onPress={handleForceUnlock}
+                          disabled={unlocking}
+                          activeOpacity={0.8}
+                        >
+                          {unlocking ? (
+                            <ActivityIndicator size="small" color="#DC2626" />
+                          ) : (
+                            <>
+                              <Ionicons name="flash-outline" size={16} color="#DC2626" />
+                              <Text style={{ color: "#DC2626", fontWeight: "bold", fontSize: 13 }}>
+                                Force Unlock All Device Sessions
+                              </Text>
+                            </>
+                          )}
+                        </TouchableOpacity>
+                      )}
+                    </View>
                   )}
 
                   {/* User ID */}
@@ -286,7 +376,7 @@ export default function LoginScreen() {
                         placeholder="Enter your User ID"
                         placeholderTextColor={Theme.textMuted}
                         value={userName}
-                        onChangeText={(t) => { setUserName(t); setError(""); }}
+                        onChangeText={(t) => { setUserName(t); setError(""); setIsLockedError(false); setCanForceUnlock(false); }}
                         autoCapitalize="none"
                         autoCorrect={false}
                         returnKeyType="next"

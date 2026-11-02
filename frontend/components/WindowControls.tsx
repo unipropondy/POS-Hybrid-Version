@@ -32,10 +32,14 @@ export default function WindowControls({ buttonStyle, iconSize = 20, showText = 
 
   const handleHome = () => {
     if (isHome) return;
+    let targetSec = "SECTION_1";
     try {
       const { getOrderContext } = require("../stores/orderContextStore");
       const { useTableNavigationStore } = require("../stores/tableNavigationStore");
       const context = getOrderContext();
+      if (context?.section) {
+        targetSec = context.section;
+      }
       if (context && context.tableId) {
         const tblIdStr = String(context.tableId);
         if (pathname.includes("summary")) {
@@ -47,7 +51,7 @@ export default function WindowControls({ buttonStyle, iconSize = 20, showText = 
     } catch (err) {
       console.warn("Failed to save table navigation state:", err);
     }
-    router.replace("/(tabs)/category");
+    router.replace(`/(tabs)/category?section=${targetSec}`);
   };
 
   const handleMinimize = async () => {

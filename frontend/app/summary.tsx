@@ -913,7 +913,8 @@ export default function SummaryScreen() {
             );
           }
         }
-        router.replace("/(tabs)/category");
+        const targetSec = context?.section || "SECTION_1";
+        router.replace(`/(tabs)/category?section=${targetSec}`);
       }, 500);
     } catch (error: any) {
       console.error("Cancel error:", error);
@@ -2687,20 +2688,22 @@ export default function SummaryScreen() {
                       return;
                     }
                     if (isWaiter()) {
-                      router.replace("/(tabs)/category");
+                      const targetSec = context?.section || "SECTION_1";
+                      router.replace(`/(tabs)/category?section=${targetSec}`);
                       return;
                     }
                     const userRole = (user?.role || user?.roleName || "").toUpperCase();
                     const isStaffOrAdmin = ["ADMIN", "MANAGER", "CASHIER", "ADMINISTRATOR", "SUPERADMIN"].includes(userRole);
                     const canPay = isStaffOrAdmin || permissions["OPRSET"]?.canAdd !== false;
                     if (!canPay) {
+                      const targetSec = context?.section || "SECTION_1";
                       if (Platform.OS === 'web') {
-                        router.replace("/(tabs)/category");
+                        router.replace(`/(tabs)/category?section=${targetSec}`);
                       } else {
                         Alert.alert(
                           "Access Denied",
                           "You are not authorized to process payments.",
-                          [{ text: "OK", onPress: () => router.replace("/(tabs)/category") }]
+                          [{ text: "OK", onPress: () => router.replace(`/(tabs)/category?section=${targetSec}`) }]
                         );
                       }
                       return;
@@ -3826,20 +3829,22 @@ export default function SummaryScreen() {
                   onPress={() => {
                     if (isWaiter()) {
                       setShowSplitModal(false);
-                      router.replace("/(tabs)/category");
+                      const targetSec = context?.section || "SECTION_1";
+                      router.replace(`/(tabs)/category?section=${targetSec}`);
                       return;
                     }
                     const userRole = (user?.role || user?.roleName || "").toUpperCase();
                     const isStaffOrAdmin = ["ADMIN", "MANAGER", "CASHIER", "ADMINISTRATOR", "SUPERADMIN"].includes(userRole);
                     const canPay = isStaffOrAdmin || permissions["OPRSET"]?.canAdd !== false;
                     if (!canPay) {
+                      const targetSec = context?.section || "SECTION_1";
                       if (Platform.OS === 'web') {
-                        router.replace("/(tabs)/category");
+                        router.replace(`/(tabs)/category?section=${targetSec}`);
                       } else {
                         Alert.alert(
                           "Access Denied",
                           "You are not authorized to process payments.",
-                          [{ text: "OK", onPress: () => router.replace("/(tabs)/category") }]
+                          [{ text: "OK", onPress: () => router.replace(`/(tabs)/category?section=${targetSec}`) }]
                         );
                       }
                       return;

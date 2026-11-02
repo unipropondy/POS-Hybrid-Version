@@ -45,9 +45,9 @@ import { DisplayState, DEFAULT_STATE } from "./types/DisplayState";
 
 const getLogoUri = (logo: string) => {
   if (!logo) return "";
-  if (logo.startsWith("data:image")) return logo;
-  if (logo.startsWith("http")) return logo;
-  return `${API_URL}${logo.startsWith("/") ? "" : "/"}${logo}`;
+  if (logo.indexOf("data:image") === 0) return logo;
+  if (logo.indexOf("http") === 0) return logo;
+  return `${API_URL}${logo.indexOf("/") === 0 ? "" : "/"}${logo}`;
 };
 
 export default function CustomerDisplayContent() {
@@ -104,9 +104,20 @@ export default function CustomerDisplayContent() {
   };
 
   const [displayState, setDisplayState] = useState<DisplayState>(DEFAULT_STATE);
+  const [cachedLogo, setCachedLogo] = useState<string>("");
   const [floatingFoods, setFloatingFoods] = useState<any[]>([]);
 
-  // â”€â”€â”€ TERMINAL PAIRING STATE â”€â”€â”€
+  // 🛡️ Always resolve most reliable logo source: payload first, then companySettings, then last cached
+  const effectiveLogo = displayState?.companyLogo || companySettings?.companyLogo || cachedLogo;
+  useEffect(() => {
+    if (displayState?.companyLogo && displayState.companyLogo !== cachedLogo) {
+      setCachedLogo(displayState.companyLogo);
+    } else if (companySettings?.companyLogo && companySettings.companyLogo !== cachedLogo) {
+      setCachedLogo(companySettings.companyLogo);
+    }
+  }, [displayState?.companyLogo, companySettings?.companyLogo]);
+
+  // ─── TERMINAL PAIRING STATE ───
   const terminalCode = useTerminalStore((s: any) => s.terminalCode);
   const terminalName = useTerminalStore((s: any) => s.terminalName);
   const isTerminalConfigured = useTerminalStore((s: any) => s.isConfigured);
@@ -252,7 +263,7 @@ export default function CustomerDisplayContent() {
     setTerminalsLoading(true);
     fetch(`${API_URL}/api/terminal`)
       .then((r) => r.json())
-      .then((data) => {
+      .then((data: any) => {
         if (Array.isArray(data)) {
           setTerminals(data);
         } else if (Array.isArray(data?.data)) {
@@ -262,7 +273,7 @@ export default function CustomerDisplayContent() {
         }
       })
       .catch(() => setTerminals([]))
-      .finally(() => setTerminalsLoading(false));
+      .then(() => setTerminalsLoading(false));
   }, [showTerminalModal]);
 
 
@@ -317,7 +328,7 @@ export default function CustomerDisplayContent() {
       const opacity = new Animated.Value(1);
 
       const newItem = { id, icon, x, y, scale, translateY, opacity };
-      setFloatingFoods((prev) => [...prev, newItem].slice(-15)); // Keep max 15 on screen
+      setFloatingFoods((prev: any[]) => [...prev, newItem].slice(-15)); // Keep max 15 on screen
 
       Animated.parallel([
         Animated.spring(scale, {
@@ -339,7 +350,7 @@ export default function CustomerDisplayContent() {
         }),
       ]).start(() => {
         // Clean up from state once finished
-        setFloatingFoods((prev) => prev.filter((item) => item.id !== id));
+        setFloatingFoods((prev: any[]) => prev.filter((item: any) => item.id !== id));
       });
     }, 900);
 
@@ -448,7 +459,7 @@ export default function CustomerDisplayContent() {
               disabled={!selectedTerminalCode}
               onPress={() => {
                 if (!selectedTerminalCode) return;
-                const found = terminals.find((t) => t.TerminalCode === selectedTerminalCode);
+                const found = terminals.find((t: Terminal) => t.TerminalCode === selectedTerminalCode);
                 useTerminalStore
                   .getState()
                   .setTerminal(selectedTerminalCode, found?.TerminalName || selectedTerminalCode);
@@ -482,9 +493,9 @@ export default function CustomerDisplayContent() {
             ]}
           >
             <View style={styles.successIconWrapper}>
-              {companySettings?.companyLogo ? (
+              {effectiveLogo ? (
                 <Image
-                  source={{ uri: getLogoUri(companySettings.companyLogo) }}
+                  source={{ uri: getLogoUri(effectiveLogo) }}
                   style={{ width: 100, height: 100, borderRadius: 50 }}
                   resizeMode="contain"
                 />
@@ -980,7 +991,7 @@ export default function CustomerDisplayContent() {
                     <Text style={styles.splitTitle}>Split Payments</Text>
                   </View>
                   <ScrollView style={styles.splitScroll} showsVerticalScrollIndicator={false}>
-                    {displayState.splitPayments && displayState.splitPayments.map((p, idx) => {
+                    {displayState.splitPayments && displayState.splitPayments.map((p: any, idx: number) => {
                       const isPaid = p.status === "Paid";
                       const isCancelled = p.status === "Cancelled";
                       return (
@@ -1125,11 +1136,11 @@ export default function CustomerDisplayContent() {
                 })()
               ) : (
                 <View style={styles.logoCard}>
-                  {companySettings.companyLogo ? (
+                  {effectiveLogo ? (
                     <View style={styles.logoCircle}>
                       <Image
                         source={{
-                          uri: getLogoUri(companySettings.companyLogo),
+                          uri: getLogoUri(effectiveLogo),
                         }}
                         style={styles.largeRestaurantLogo}
                         resizeMode="contain"
@@ -1178,8 +1189,8 @@ export default function CustomerDisplayContent() {
               showsVerticalScrollIndicator={false}
               style={styles.receiptItemsScroll}
             >
-              {displayState.items.map((item, idx) => {
-                const allItemsHaveSC = displayState.items.every(i => (Number(i.isServiceCharge) === 1 || i.isServiceCharge === true));
+              {displayState.items.map((item: any, idx: number) => {
+                const allItemsHaveSC = displayState.items.every((i: any) => (Number(i.isServiceCharge) === 1 || i.isServiceCharge === true));
                 return (
                   <View
                     key={`${item.lineItemId}-${idx}`}
@@ -1304,7 +1315,7 @@ export default function CustomerDisplayContent() {
                 {displayState.serviceChargeAmount && displayState.serviceChargeAmount > 0 ? (
                   <View style={styles.breakdownItem}>
                     <Text style={styles.breakdownLabel}>
-                      {displayState.items.every(i => (Number(i.isServiceCharge) === 1 || i.isServiceCharge === true)) ? "Service Charge" : "Item Service Charge"} ({displayState.serviceChargePercentage || 0}%)
+                      {displayState.items.every((i: any) => (Number(i.isServiceCharge) === 1 || i.isServiceCharge === true)) ? "Service Charge" : "Item Service Charge"} ({displayState.serviceChargePercentage || 0}%)
                     </Text>
                     <Text style={styles.breakdownValue}>
                       {companySettings.currencySymbol || "$"}
@@ -1380,7 +1391,7 @@ export default function CustomerDisplayContent() {
         </TouchableOpacity>
       )}
       {/* Floating popping food animations */}
-      {floatingFoods.map((item) => (
+      {floatingFoods.map((item: any) => (
         <Animated.View
           key={item.id}
           style={[
@@ -1403,9 +1414,9 @@ export default function CustomerDisplayContent() {
       <View style={styles.idleMainContent}>
         {/* Main Branding Card */}
         <View style={styles.brandingCard}>
-          {companySettings.companyLogo ? (
+          {effectiveLogo ? (
             <Image
-              source={{ uri: getLogoUri(companySettings.companyLogo) }}
+              source={{ uri: getLogoUri(effectiveLogo) }}
               style={styles.logoImage}
               resizeMode="contain"
             />

@@ -1830,17 +1830,18 @@ class UniversalPrinter {
       String(saleData.tableNo || "").toUpperCase().includes("TAKEAWAY") ||
       String(saleData.tableNo || "").toUpperCase().startsWith("TW");
 
+    const effectiveBillNo = saleData.invoiceNumber || saleData.billNo || saleData.orderId || saleData.id || "";
     if (isReceiptTW) {
-      const rawTw = saleData.takeawayNo || (saleData.invoiceNumber || saleData.id ? String(saleData.invoiceNumber || saleData.id).slice(-4) : "");
+      const rawTw = saleData.takeawayNo || (effectiveBillNo ? String(effectiveBillNo).slice(-4) : "");
       const twLabel = (rawTw && String(rawTw) !== "undefined" && String(rawTw).trim() !== "")
         ? `TAKEAWAY #${String(rawTw).replace(/^TW-?/i, "").trim()}`
         : "TAKEAWAY";
-      text += this.formatTwoCols48(`<B>Bill No: ${saleData.invoiceNumber || saleData.id || ""}</B>`, `<B>${twLabel}</B>`);
+      text += this.formatTwoCols48(`<B>Bill No: ${effectiveBillNo}</B>`, `<B>${twLabel}</B>`);
     } else if (saleData.tableNo) {
       const cleanTableNo = String(saleData.tableNo).replace(/\s*\(quick serve\)/gi, "").replace(/^table\s+/gi, "").trim();
-      text += this.formatTwoCols48(`<B>Bill No: ${saleData.invoiceNumber || saleData.id || ""}</B>`, `<B>TABLE: ${cleanTableNo}</B>`);
+      text += this.formatTwoCols48(`<B>Bill No: ${effectiveBillNo}</B>`, `<B>TABLE: ${cleanTableNo}</B>`);
     } else {
-      text += `[L]<B>Bill No: ${saleData.invoiceNumber || saleData.id || ""}</B>\n`;
+      text += `[L]<B>Bill No: ${effectiveBillNo}</B>\n`;
     }
     const dateFormatted = formatToSingaporeDate(saleDate, { day: '2-digit', month: '2-digit', year: 'numeric' });
     text += `[L]<B>Date: ${dateFormatted} ${formatToSingaporeTime(saleDate)}</B>\n`;
@@ -2151,22 +2152,38 @@ class UniversalPrinter {
       if (!text.endsWith("[L]------------------------------------------------\n")) {
         text += "[L]------------------------------------------------\n";
       }
+
+      const isCash = /^(CAS|CASH|CASH\s.*)$/i.test(String(saleData.paymentMethod || "").trim()) ||
+        (saleData.payments && Array.isArray(saleData.payments) && saleData.payments.some((p: any) => /^(CAS|CASH|CASH\s.*)$/i.test(String(p.payMode || p.payModeName || p.Remarks || "").trim())));
+      const cashReceived = Number(saleData.cashPaid ?? saleData.cashReceived ?? saleData.tenderedAmount ?? saleData.paidAmount ?? 0);
+      const changeReturn = Number(saleData.change ?? saleData.changeAmount ?? 0);
+
       if (saleData.payments && Array.isArray(saleData.payments) && saleData.payments.length > 0) {
         text += "[L]<B>Payment Details:</B>\n";
         saleData.payments.forEach((p: any) => {
           let modeText = String(p.payMode || p.payModeName || p.Remarks || "Payment");
           if (modeText.toUpperCase().trim() === "FOC") modeText = "FOC (Discount)";
+          if (modeText.toUpperCase().trim() === "CAS") modeText = "CASH";
           const modeLabel = `  ${modeText}`;
           const amountVal = `${symbol}${parseFloat(p.amount).toFixed(2)}`;
           text += this.formatTwoCols48(`<B>${modeLabel}</B>`, `<B>${amountVal}</B>`);
         });
+        if (isCash && cashReceived > 0) {
+          text += this.formatTwoCols48("<B>  Cash Received:</B>", `<B>${symbol}${cashReceived.toFixed(2)}</B>`);
+          text += this.formatTwoCols48("<B>  Change Return:</B>", `<B>${symbol}${changeReturn.toFixed(2)}</B>`);
+        }
         text += "[L]------------------------------------------------\n";
       } else {
         let methodText = String(saleData.paymentMethod || "Payment");
         if (methodText.toUpperCase().trim() === "FOC") methodText = "FOC (Discount)";
+        if (methodText.toUpperCase().trim() === "CAS") methodText = "CASH";
         const methodLabel = `  ${methodText}`;
         const amountVal = `${symbol}${parseFloat(finalTotal).toFixed(2)}`;
         text += this.formatTwoCols48(`<B>${methodLabel}</B>`, `<B>${amountVal}</B>`);
+        if (isCash && cashReceived > 0) {
+          text += this.formatTwoCols48("<B>  Cash Received:</B>", `<B>${symbol}${cashReceived.toFixed(2)}</B>`);
+          text += this.formatTwoCols48("<B>  Change Return:</B>", `<B>${symbol}${changeReturn.toFixed(2)}</B>`);
+        }
         text += "[L]------------------------------------------------\n";
       }
     }
@@ -2301,15 +2318,36 @@ class UniversalPrinter {
         return false;
       }
 
-      // 2. Check enableKOT & enableKDS / enableKDSPrint settings
+      // 2. Check enableKOT & enableKDS / enableKDSPrint settings (separate for Dine In vs Quick Serve)
       const { useGeneralSettingsStore } = await import("../stores/generalSettingsStore");
-      const { enableKOT, enableKDS, enableKDSPrint, enableComboPrint } = useGeneralSettingsStore.getState().settings;
+      const {
+        enableKOT,
+        enableKDS,
+        enableKDSPrint,
+        quickServeEnableKOT,
+        quickServeEnableKDS,
+        quickServeEnableKDSPrinter,
+        enableComboPrint
+      } = useGeneralSettingsStore.getState().settings;
 
-      const shouldPrintKOT = enableKOT !== false;
-      const shouldPrintKDS = enableKDS !== false && enableKDSPrint !== false;
+      const isQS = !!(
+        orderContext.isQuickServe ||
+        orderContext.isQuick ||
+        orderContext.isQuickServeMode ||
+        String(orderContext.tableNo || "").includes("(quick serve)") ||
+        String(orderContext.tableNo || "").includes("(QS)")
+      );
+
+      const shouldPrintKOT = isQS
+        ? quickServeEnableKOT !== false
+        : enableKOT !== false;
+
+      const shouldPrintKDS = isQS
+        ? quickServeEnableKDSPrinter !== false
+        : (enableKDS !== false && enableKDSPrint !== false);
 
       if (!shouldPrintKOT && !shouldPrintKDS) {
-        if (__DEV__) console.log("🖨️ [UniversalPrinter] Both KOT and KDS printing are disabled in General Settings.");
+        if (__DEV__) console.log(`🖨️ [UniversalPrinter] Both KOT and KDS printing are disabled for ${isQS ? "Quick Serve" : "Dine In"}.`);
         return false;
       }
 
@@ -2485,8 +2523,11 @@ class UniversalPrinter {
         tableNo: header.TableNo || "TAKEAWAY",
         total: Number(header.SysAmount ?? 0),
         paymentMethod: header.PayMode || "CASH",
-        cashPaid: Number(header.SysAmount ?? 0),
-        change: 0,
+        cashPaid: Number(header.TenderedAmount ?? header.CashPaid ?? header.cashPaid ?? header.SysAmount ?? 0),
+        cashReceived: Number(header.TenderedAmount ?? header.CashPaid ?? header.cashPaid ?? header.SysAmount ?? 0),
+        tenderedAmount: Number(header.TenderedAmount ?? header.CashPaid ?? header.cashPaid ?? header.SysAmount ?? 0),
+        change: Number(header.ChangeAmount ?? header.Change ?? header.change ?? 0),
+        changeAmount: Number(header.ChangeAmount ?? header.Change ?? header.change ?? 0),
         items: items.map((i: any) => ({
           name: i.DishName || i.Description,
           price: Number(i.Price || i.PricePerUnit || 0),

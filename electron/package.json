@@ -1,6 +1,6 @@
 {
   "name": "smart-pos",
-  "version": "3.0.0",
+  "version": "3.0.3",
   "description": "Smart POS System",
   "main": "main.js",
   "author": "UniPro Solutions",
@@ -30,7 +30,8 @@
           "**/*",
           "!node_modules/**/*",
           "!logs/*",
-          "!.git/*"
+          "!.git/*",
+          "!*.bak"
         ]
       },
       {
@@ -40,13 +41,6 @@
       {
         "from": "C:/Program Files/nodejs/node.exe",
         "to": "bin/node.exe"
-      },
-      {
-        "from": "../logs",
-        "to": "logs",
-        "filter": [
-          "*.log"
-        ]
       }
     ],
     "win": {

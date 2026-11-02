@@ -11,6 +11,8 @@ import {
   Platform,
   StatusBar,
   useWindowDimensions,
+  FlatList,
+  Pressable,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter, useFocusEffect } from "expo-router";
@@ -18,6 +20,7 @@ import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Fonts } from "@/constants/Fonts";
+import { Theme } from "@/constants/theme";
 import { API_URL } from "@/constants/Config";
 import { useAuthStore } from "@/stores/authStore";
 import { useCartStore, CartItem, getContextId } from "@/stores/cartStore";
@@ -56,12 +59,209 @@ const DEFAULT_DISH_IMAGES = [
 
 const ALL_ITEMS_IMAGE = "https://images.unsplash.com/photo-1555396273-367ea4eb4db5?w=300&auto=format&fit=crop&q=80";
 
+const QuickServeDishCard = React.memo(
+  ({
+    dish,
+    idx,
+    width,
+    cartQty,
+    onPress,
+    isPhone,
+    isTablet,
+    isLandscape,
+    currencySymbol,
+  }: {
+    dish: any;
+    idx: number;
+    width: number;
+    cartQty: number;
+    onPress: (dish: any) => void;
+    isPhone: boolean;
+    isTablet: boolean;
+    isLandscape: boolean;
+    currencySymbol: string;
+  }) => {
+    const isSC =
+      (Number(dish.isServiceCharge) === 1 || dish.isServiceCharge === true) &&
+      useGeneralSettingsStore.getState().settings?.SVCIdentification !== false;
+    const isSoldOut =
+      dish.IsSoldOut === true ||
+      String(dish.IsSoldOut) === "1" ||
+      dish.IsSoldOut === 1 ||
+      dish.isSoldOut === true ||
+      String(dish.isSoldOut) === "1" ||
+      dish.isSoldOut === 1;
+
+    const rawImg = dish.Image || dish.ImagePath || dish.image;
+    const imgUri = getImageUrl(rawImg) || DEFAULT_DISH_IMAGES[idx % DEFAULT_DISH_IMAGES.length];
+    const price = Number(dish.Price || dish.currentcost || 0);
+
+    return (
+      <Pressable
+        style={({ pressed }: { pressed: boolean }) => [
+          styles.dishCard,
+          { width, paddingVertical: 5, paddingHorizontal: 4 },
+          isSC && {
+            borderWidth: 1.5,
+            borderColor: Theme.dangerBorder,
+            backgroundColor: Theme.dangerBg,
+          },
+          !isSC && {
+            borderWidth: 1,
+            borderColor: "#F1F5F9",
+            backgroundColor: "#FFFFFF",
+          },
+          isSoldOut && { opacity: 0.5 },
+          pressed && !isSoldOut && { opacity: 0.85, transform: [{ scale: 0.98 }] },
+        ]}
+        onPress={() => onPress(dish)}
+        disabled={isSoldOut}
+      >
+        {cartQty > 0 && (
+          <View
+            style={[
+              styles.qtyBadge,
+              { width: 18, height: 18, borderRadius: 9 },
+            ]}
+          >
+            <Text
+              style={[
+                styles.qtyBadgeText,
+                { fontSize: 9.5 },
+              ]}
+            >
+              {cartQty}
+            </Text>
+          </View>
+        )}
+
+        <View
+          style={[
+            styles.dishImageWrap,
+            {
+              width: 38,
+              height: 38,
+              marginBottom: 3,
+              borderRadius: 19,
+            },
+          ]}
+        >
+          {imgUri ? (
+            <Image
+              source={{ uri: imgUri }}
+              style={styles.dishImg}
+              contentFit="cover"
+              transition={0}
+              cachePolicy="memory-disk"
+              priority="high"
+              recyclingKey={String(dish.DishId || rawImg || idx)}
+            />
+          ) : (
+            <View
+              style={[
+                styles.dishImg,
+                {
+                  justifyContent: "center",
+                  alignItems: "center",
+                  backgroundColor: Theme.bgMuted,
+                },
+              ]}
+            >
+              <Ionicons
+                name="restaurant-outline"
+                size={20}
+                color={Theme.textMuted}
+              />
+            </View>
+          )}
+
+          {isSoldOut && (
+            <View
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                backgroundColor: "rgba(0,0,0,0.4)",
+                justifyContent: "center",
+                alignItems: "center",
+                borderRadius: 19,
+              }}
+            >
+              <Text
+                style={{
+                  color: "#fff",
+                  fontSize: 8,
+                  fontFamily: Fonts.bold,
+                  textAlign: "center",
+                }}
+              >
+                SOLD OUT
+              </Text>
+            </View>
+          )}
+        </View>
+
+        <Text
+          style={[
+            styles.dishName,
+            { fontSize: 10.5, minHeight: 24, lineHeight: 12 },
+          ]}
+          numberOfLines={2}
+        >
+          {dish.Name}
+        </Text>
+
+        <Text
+          style={[
+            styles.dishPrice,
+            { fontSize: 11.5, marginTop: 1 },
+          ]}
+        >
+          {(() => {
+            return Number(dish.IsOpenItem) === 1 ||
+              dish.IsOpenItem === true ||
+              dish.IsOpenItem === "true" ||
+              dish.IsOpenItem === "1"
+              ? "Open Price"
+              : `${currencySymbol}${price.toFixed(2)}`;
+          })()}
+        </Text>
+
+        {isSoldOut ? (
+          <View
+            style={{
+              backgroundColor: "#EF444422",
+              borderRadius: 4,
+              paddingHorizontal: 5,
+              paddingVertical: 1,
+              marginTop: 2,
+              borderWidth: 1,
+              borderColor: "#EF444444",
+              alignSelf: "center",
+            }}
+          >
+            <Text style={{ fontSize: 9, color: "#EF4444", fontFamily: Fonts.bold }}>
+              SOLD OUT
+            </Text>
+          </View>
+        ) : null}
+      </Pressable>
+    );
+  }
+);
+
 export default function QuickServePOSScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { width } = useWindowDimensions();
+  const { width, height } = useWindowDimensions();
   const isMobile = width < 768;
   const isTablet = width >= 768 && width < 1100;
+  const isLandscape = width > height;
+  const isTabletDevice = Math.min(width, height) >= 500;
+  const isPhoneDevice = !isTabletDevice;
+  const [dishesPanelWidth, setDishesPanelWidth] = useState<number>(0);
 
   // Mobile navigation tab: "order" (Cart/Checkout) | "groups" (Categories/Groups) | "dishes" (Menu Items)
   const [mobileActiveTab, setMobileActiveTab] = useState<"order" | "groups" | "dishes">("dishes");
@@ -109,8 +309,8 @@ export default function QuickServePOSScreen() {
   const showLoyalty = useGeneralSettingsStore((s: any) => s.settings?.showLoyalty !== false);
   const showRewardPoints = useGeneralSettingsStore((s: any) => s.settings?.showRewardPoints !== false);
   const showPromoCode = useGeneralSettingsStore((s: any) => s.settings?.showPromoCode !== false);
-  const enableKOT = useGeneralSettingsStore((s: any) => s.settings?.enableKOT !== false);
-  const enableKDS = useGeneralSettingsStore((s: any) => s.settings?.enableKDS !== false);
+  const quickServeEnableKOT = useGeneralSettingsStore((s: any) => s.settings?.quickServeEnableKOT !== false);
+  const quickServeEnableKDSPrinter = useGeneralSettingsStore((s: any) => s.settings?.quickServeEnableKDSPrinter !== false);
   const enableReceiptPrint = useGeneralSettingsStore((s: any) => s.settings?.enableReceiptPrint !== false);
   const enableCheckoutBill = useGeneralSettingsStore((s: any) => s.settings?.enableCheckoutBill !== false);
   const fetchGeneralSettings = useGeneralSettingsStore((s: any) => s.fetchSettings);
@@ -190,12 +390,36 @@ export default function QuickServePOSScreen() {
     }
   };
 
+  // Helper to sort tables identically to Floor Plan:
+  // 1. DiningSection ascending (1, 2, 3, 4...)
+  // 2. SortCode ascending (if configured)
+  // 3. Natural alphanumeric ordering on label / TableNumber (e.g., 1, 2, 10 or 1A, 1B, 2A)
+  const sortTablesLikeFloorPlan = (a: any, b: any) => {
+    const secA = Number(a.DiningSection || a.diningSection || 1);
+    const secB = Number(b.DiningSection || b.diningSection || 1);
+    if (secA !== secB) return secA - secB;
+
+    const sortA = a.SortCode !== undefined && a.SortCode !== null ? Number(a.SortCode) : null;
+    const sortB = b.SortCode !== undefined && b.SortCode !== null ? Number(b.SortCode) : null;
+    if (sortA !== null && sortB !== null && !isNaN(sortA) && !isNaN(sortB) && sortA !== sortB) {
+      return sortA - sortB;
+    }
+
+    const labelA = String(a.label || a.TableNumber || a.name || "");
+    const labelB = String(b.label || b.TableNumber || b.name || "");
+    return labelA.localeCompare(labelB, undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
+  };
+
   const fetchMasterTablesAndAutoSelectFree = async (keepCurrentIfFree = false) => {
     try {
       const res = await fetch(`${API_URL}/api/tables/all`).then((r) => r.json()).catch(() => []);
       if (Array.isArray(res) && res.length > 0) {
-        setAllMasterTables(res);
-        const freeTables = res.filter(
+        const sorted = [...res].sort(sortTablesLikeFloorPlan);
+        setAllMasterTables(sorted);
+        const freeTables = sorted.filter(
           (t: any) => t.Status === 0 || t.Status === null || t.Status === undefined || String(t.Status) === "0"
         );
 
@@ -210,12 +434,12 @@ export default function QuickServePOSScreen() {
 
         if (!tableToSelect && activeOrderObj?.tableId) {
           const activeId = String(activeOrderObj.tableId);
-          const matched = res.find((t: any) => String(t.id || t.TableId) === activeId);
+          const matched = sorted.find((t: any) => String(t.id || t.TableId) === activeId);
           if (matched) tableToSelect = matched;
         }
 
         if (!tableToSelect) {
-          tableToSelect = freeTables.length > 0 ? freeTables[0] : res[0];
+          tableToSelect = freeTables.length > 0 ? freeTables[0] : sorted[0];
         }
 
         if (tableToSelect) {
@@ -233,14 +457,16 @@ export default function QuickServePOSScreen() {
       list = list.filter((t: any) => t.Status === 0 || !t.Status || String(t.Status) === "0");
     }
     const q = tableSearchQuery.trim().toLowerCase();
-    if (!q) return list;
+    if (q) {
+      list = list.filter((t: any) => {
+        const rawName = String(t.label || t.TableNumber || `Table ${t.id}`).toLowerCase();
+        const numOnly = String(t.label || t.TableNumber || t.id || "").replace(/[^0-9]/g, "");
+        const idStr = String(t.id || t.TableId || "").toLowerCase();
+        return rawName.includes(q) || numOnly.includes(q) || idStr.includes(q);
+      });
+    }
 
-    return list.filter((t: any) => {
-      const rawName = String(t.label || t.TableNumber || `Table ${t.id}`).toLowerCase();
-      const numOnly = String(t.label || t.TableNumber || t.id || "").replace(/[^0-9]/g, "");
-      const idStr = String(t.id || t.TableId || "").toLowerCase();
-      return rawName.includes(q) || numOnly.includes(q) || idStr.includes(q);
-    });
+    return [...list].sort(sortTablesLikeFloorPlan);
   }, [allMasterTables, tableFilterTab, tableSearchQuery]);
 
   const toggleQuickServeMode = (enabled?: boolean) => {
@@ -287,27 +513,62 @@ export default function QuickServePOSScreen() {
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(true);
 
+  // Menu Navigation Mode from General Settings: "scroll" | "prev_next"
+  const menuNavigationMode =
+    useGeneralSettingsStore((s: any) => s.settings?.menuNavigationMode) || "scroll";
+
+  // Dish Group Pagination (when menuNavigationMode === 'prev_next')
+  // 2 columns x 7 rows to display up to 14 dish groups per page
+  const [groupPage, setGroupPage] = useState<number>(1);
+  const GROUPS_PER_PAGE = 14;
+
   // Dish Group Vertical Scroll Navigation Ref and Measurements
   const dishGroupScrollRef = useRef<ScrollView>(null);
   const [dishGroupScrollOffset, setDishGroupScrollOffset] = useState<number>(0);
   const [dishGroupContentHeight, setDishGroupContentHeight] = useState<number>(0);
   const [dishGroupContainerHeight, setDishGroupContainerHeight] = useState<number>(0);
 
+  const handleGroupPageChange = (newPage: number) => {
+    setGroupPage(newPage);
+    if (dishGroupScrollRef.current) {
+      dishGroupScrollRef.current.scrollTo({ y: 0, animated: false });
+      setDishGroupScrollOffset(0);
+    }
+  };
+
   // Filters & Views
   const [vegFilter, setVegFilter] = useState<"all" | "veg" | "non-veg">("all");
   const [sortBy, setSortBy] = useState<string>("NAME_ASC");
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
 
-  // Dish Grid Pagination State & Ref (24 dishes per page: 4 rows × 6 columns)
+  // Dish Grid Pagination State & Ref (16 dishes per page: 4 rows × 4 columns)
   const [dishPage, setDishPage] = useState<number>(1);
-  const dishesScrollRef = useRef<ScrollView>(null);
-  const DISHES_PER_PAGE = 24;
+  const dishesScrollRef = useRef<any>(null);
+  const DISHES_PER_PAGE = 16;
 
-  // Reset pagination to page 1 whenever dish group, category, search or filters change
+  const scrollDishesToTop = () => {
+    if (!dishesScrollRef.current) return;
+    if (typeof dishesScrollRef.current.scrollToOffset === "function") {
+      dishesScrollRef.current.scrollToOffset({ offset: 0, animated: false });
+    } else if (typeof dishesScrollRef.current.scrollTo === "function") {
+      dishesScrollRef.current.scrollTo({ y: 0, animated: false });
+    }
+  };
+
+  // Reset dish pagination to page 1 whenever dish group, category, search or filters change
   useEffect(() => {
     setDishPage(1);
-    dishesScrollRef.current?.scrollTo({ y: 0, animated: false });
+    scrollDishesToTop();
   }, [selectedDishGroupId, selectedGroupId, selectedCategoryId, leftPanelView, searchQuery, vegFilter, sortBy]);
+
+  // Reset group page to 1 when left panel view changes
+  useEffect(() => {
+    setGroupPage(1);
+    if (dishGroupScrollRef.current) {
+      dishGroupScrollRef.current.scrollTo({ y: 0, animated: false });
+      setDishGroupScrollOffset(0);
+    }
+  }, [leftPanelView]);
 
   // Modals & Popups State for POS Flow
   const [modifiers, setModifiers] = useState<any[]>([]);
@@ -907,18 +1168,51 @@ export default function QuickServePOSScreen() {
   const totalDishPages = Math.max(1, Math.ceil(sortedDishes.length / DISHES_PER_PAGE));
   const safeDishPage = Math.min(Math.max(1, dishPage), totalDishPages);
 
-  const paginatedDishes = useMemo(() => {
-    const startIdx = (safeDishPage - 1) * DISHES_PER_PAGE;
-    return sortedDishes.slice(startIdx, startIdx + DISHES_PER_PAGE);
-  }, [sortedDishes, safeDishPage]);
+  // In Previous/Next mode, slice to 16 items per page. In Scroll mode, show all filtered items.
+  const displayedDishes = useMemo(() => {
+    if (menuNavigationMode === "prev_next") {
+      const startIdx = (safeDishPage - 1) * DISHES_PER_PAGE;
+      return sortedDishes.slice(startIdx, startIdx + DISHES_PER_PAGE);
+    }
+    return sortedDishes;
+  }, [menuNavigationMode, sortedDishes, safeDishPage]);
 
   const handlePageChange = (newPage: number) => {
     setDishPage(newPage);
-    dishesScrollRef.current?.scrollTo({ y: 0, animated: false });
+    scrollDishesToTop();
   };
+
+  // Dish Group Pagination Calculations (2 cols x 7 rows = 14 groups per page)
+  const totalGroupPages = Math.max(1, Math.ceil(allDishGroups.length / GROUPS_PER_PAGE));
+  const safeGroupPage = Math.min(Math.max(1, groupPage), totalGroupPages);
+
+  // In Previous/Next mode, slice groups to GROUPS_PER_PAGE. In Scroll mode, show all groups.
+  const displayedDishGroups = useMemo(() => {
+    if (menuNavigationMode === "prev_next") {
+      const startIdx = (safeGroupPage - 1) * GROUPS_PER_PAGE;
+      return allDishGroups.slice(startIdx, startIdx + GROUPS_PER_PAGE);
+    }
+    return allDishGroups;
+  }, [menuNavigationMode, allDishGroups, safeGroupPage]);
 
   // Company Settings & Dynamic Tax Calculations
   const companySettings = useCompanySettingsStore((state: any) => state.settings);
+  const currencySymbol = companySettings?.currencySymbol || "$";
+
+  const gap = isPhoneDevice ? (isLandscape ? 8 : 6) : 6;
+  const paddingH = isPhoneDevice ? 6 : 8;
+
+  const columns = useMemo(() => {
+    if (isMobile) return isLandscape ? 3 : 2;
+    return 4;
+  }, [isMobile, isLandscape]);
+
+  const cardWidth = useMemo(() => {
+    if (dishesPanelWidth <= 0) return 155;
+    const available = dishesPanelWidth - paddingH * 2;
+    return Math.floor((available - gap * (columns - 1)) / columns);
+  }, [dishesPanelWidth, columns, gap, paddingH]);
+
   const fetchCompanySettings = useCompanySettingsStore((state: any) => state.fetchSettings);
   const currentOrderContext = useOrderContextStore((state: any) => state.currentOrder);
   const isTakeawayOrder = currentOrderContext?.orderType === "TAKEAWAY";
@@ -1094,7 +1388,7 @@ export default function QuickServePOSScreen() {
     });
 
     // Prepare Dishes snapshot for right panel mirroring (up to 12 visible dishes)
-    const mirrorDishes = (paginatedDishes && paginatedDishes.length > 0 ? paginatedDishes : sortedDishes).slice(0, 12).map((d: any, idx: number) => {
+    const mirrorDishes = (displayedDishes && displayedDishes.length > 0 ? displayedDishes : sortedDishes).slice(0, 12).map((d: any, idx: number) => {
       const rawImg = d.Image || d.ImagePath || d.image;
       const imgUri = getImageUrl(rawImg) || DEFAULT_DISH_IMAGES[idx % DEFAULT_DISH_IMAGES.length];
       return {
@@ -1184,7 +1478,7 @@ export default function QuickServePOSScreen() {
     selectedDishGroupId,
     selectedCategoryId,
     leftPanelView,
-    paginatedDishes,
+    displayedDishes,
     allDishGroups,
     activePaymodes,
     cartQtyMap,
@@ -1358,6 +1652,7 @@ export default function QuickServePOSScreen() {
     };
 
     addToCartGlobal(cartItem as any);
+    if (searchQuery) setSearchQuery("");
   };
 
   const addWithModifiers = () => {
@@ -1430,6 +1725,7 @@ export default function QuickServePOSScreen() {
     setSelectedModifierQuantities({});
     setShowCustomModModal(false);
     setActiveOpenMod(null);
+    if (searchQuery) setSearchQuery("");
   };
 
   const confirmOpenItemPrice = () => {
@@ -1717,6 +2013,7 @@ export default function QuickServePOSScreen() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "X-Request-ID": quickServeToken || `QS-${Date.now()}`,
           ...(useAuthStore.getState().token ? { Authorization: `Bearer ${useAuthStore.getState().token}` } : {}),
         },
         body: JSON.stringify(saleData),
@@ -1767,6 +2064,8 @@ export default function QuickServePOSScreen() {
 
       const receiptPrintData = {
         ...saleData,
+        id: generatedBillNo,
+        invoiceNumber: generatedBillNo,
         orderId: generatedBillNo,
         billNo: generatedBillNo,
         items: currentCartSnapshot,
@@ -1788,8 +2087,8 @@ export default function QuickServePOSScreen() {
         // 1. KDS Alert via Socket
         const liveSettings = useGeneralSettingsStore.getState().settings || {};
         const isKDSEnabled = liveSettings.enableKDS !== false;
-        const isKOTEnabled = liveSettings.enableKOT !== false;
-        const isKDSPrintEnabled = isKDSEnabled && liveSettings.enableKDSPrint !== false;
+        const isKOTEnabled = liveSettings.quickServeEnableKOT !== false;
+        const isKDSPrintEnabled = liveSettings.quickServeEnableKDSPrinter !== false;
         const isReceiptPrintEnabled = liveSettings.enableReceiptPrint !== false;
 
         if (isKDSEnabled && socket) {
@@ -1983,25 +2282,35 @@ export default function QuickServePOSScreen() {
       <View style={styles.topNavbar}>
         <View style={styles.navLeft}>
           <TouchableOpacity
-            style={styles.hamburgerBtn}
+            style={styles.logoWrap}
             onPress={() => {
-              if (router.canGoBack()) {
-                router.back();
-              } else {
-                router.replace("/order-type");
-              }
+              // Navigating from Quick Serve to Floor Plan (Dine In) must explicitly initialize Section 1
+              router.replace("/(tabs)/category?section=SECTION_1");
             }}
-            activeOpacity={0.7}
+            activeOpacity={0.8}
           >
-            <Ionicons name="arrow-back" size={22} color="#1E293B" />
-          </TouchableOpacity>
-
-          <View style={styles.logoWrap}>
-            <Ionicons name="flash" size={22} color="#FF5A16" style={{ marginRight: 6 }} />
+            <View
+              style={{
+                width: 32,
+                height: 32,
+                borderRadius: 16,
+                backgroundColor: "#FF5E1A",
+                alignItems: "center",
+                justifyContent: "center",
+                marginRight: 8,
+                shadowColor: "#FF5E1A",
+                shadowOffset: { width: 0, height: 2 },
+                shadowOpacity: 0.3,
+                shadowRadius: 4,
+                elevation: 3,
+              }}
+            >
+              <Ionicons name="flash" size={18} color="#FFFFFF" />
+            </View>
             <Text style={styles.logoTitle}>
-              Quick Serve <Text style={{ color: "#FF5A16" }}>POS</Text>
+              Quick Serve <Text style={{ color: "#FF5E1A" }}>POS</Text>
             </Text>
-          </View>
+          </TouchableOpacity>
         </View>
 
         {/* SEARCH BAR (Hidden on tiny mobile or compacted) */}
@@ -2705,13 +3014,14 @@ export default function QuickServePOSScreen() {
                     contentContainerStyle={styles.dishGroupScrollContent}
                     showsVerticalScrollIndicator={false}
                     nestedScrollEnabled
+                    scrollEnabled={menuNavigationMode === "scroll"}
                     onScroll={(e) => setDishGroupScrollOffset(e.nativeEvent.contentOffset.y)}
                     scrollEventThrottle={16}
                     onContentSizeChange={(_w, h) => setDishGroupContentHeight(h)}
                     onLayout={(e) => setDishGroupContainerHeight(e.nativeEvent.layout.height)}
                   >
                     <View style={styles.dishGroupGrid}>
-                      {allDishGroups.map((group) => {
+                      {displayedDishGroups.map((group) => {
                         const isGroupActive = leftPanelView === "dishgroup" && String(selectedDishGroupId) === String(group.DishGroupId);
                         const groupName = group.DishGroupName;
                         const count = getDishGroupCount(group);
@@ -2761,39 +3071,101 @@ export default function QuickServePOSScreen() {
                     </View>
                   </ScrollView>
 
-                {/* SINGLE UNIFIED UP/DOWN SCROLL BUTTON PILL ON THE RIGHT */}
-                <View style={styles.dishGroupScrollPillContainer}>
-                  <View style={styles.dishGroupScrollPill}>
-                    <TouchableOpacity
-                      style={[styles.singleScrollHalf, isDishGroupAtTop && styles.scrollBtnDisabled]}
-                      onPress={() => scrollDishGroupsVertically("up")}
-                      disabled={isDishGroupAtTop}
-                      activeOpacity={0.7}
-                    >
-                      <Ionicons name="chevron-up" size={14} color={isDishGroupAtTop ? "#CBD5E1" : "#334155"} />
-                    </TouchableOpacity>
+                  {/* SINGLE UNIFIED UP/DOWN SCROLL BUTTON PILL ON THE RIGHT (ONLY IN SCROLL MODE) */}
+                  {menuNavigationMode === "scroll" && (
+                    <View style={styles.dishGroupScrollPillContainer}>
+                      <View style={styles.dishGroupScrollPill}>
+                        <TouchableOpacity
+                          style={[styles.singleScrollHalf, isDishGroupAtTop && styles.scrollBtnDisabled]}
+                          onPress={() => scrollDishGroupsVertically("up")}
+                          disabled={isDishGroupAtTop}
+                          activeOpacity={0.7}
+                        >
+                          <Ionicons name="chevron-up" size={14} color={isDishGroupAtTop ? "#CBD5E1" : "#334155"} />
+                        </TouchableOpacity>
 
-                    <View style={styles.singleScrollDivider} />
+                        <View style={styles.singleScrollDivider} />
 
-                    <TouchableOpacity
-                      style={[styles.singleScrollHalf, isDishGroupAtBottom && styles.scrollBtnDisabled]}
-                      onPress={() => scrollDishGroupsVertically("down")}
-                      disabled={isDishGroupAtBottom}
-                      activeOpacity={0.7}
-                    >
-                      <Ionicons name="chevron-down" size={14} color={isDishGroupAtBottom ? "#CBD5E1" : "#334155"} />
-                    </TouchableOpacity>
-                  </View>
+                        <TouchableOpacity
+                          style={[styles.singleScrollHalf, isDishGroupAtBottom && styles.scrollBtnDisabled]}
+                          onPress={() => scrollDishGroupsVertically("down")}
+                          disabled={isDishGroupAtBottom}
+                          activeOpacity={0.7}
+                        >
+                          <Ionicons name="chevron-down" size={14} color={isDishGroupAtBottom ? "#CBD5E1" : "#334155"} />
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  )}
                 </View>
-              </View>
-            </>
-          )}
-        </View>
+
+                {/* DISH GROUPS PAGINATION BAR (ONLY IN PREVIOUS / NEXT MODE) */}
+                {menuNavigationMode === "prev_next" && allDishGroups.length > 0 && (
+                  <View style={styles.groupsPaginationBar}>
+                    <View style={styles.paginationLeft}>
+                      <TouchableOpacity
+                        style={[styles.paginationBtn, safeGroupPage <= 1 && styles.paginationBtnDisabled]}
+                        onPress={() => {
+                          if (safeGroupPage > 1) handleGroupPageChange(safeGroupPage - 1);
+                        }}
+                        disabled={safeGroupPage <= 1}
+                        activeOpacity={0.8}
+                      >
+                        <Ionicons
+                          name="chevron-back"
+                          size={14}
+                          color={safeGroupPage <= 1 ? "#94A3B8" : "#FF5A16"}
+                        />
+                        <Text style={[styles.paginationBtnText, safeGroupPage <= 1 && styles.paginationBtnTextDisabled]}>
+                          Previous
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+
+                    <View style={styles.paginationCenter}>
+                      <Text style={styles.paginationText}>
+                        Page <Text style={styles.paginationCurrentText}>{safeGroupPage}</Text> of{" "}
+                        <Text style={styles.paginationTotalText}>{totalGroupPages}</Text>
+                      </Text>
+                    </View>
+
+                    <View style={styles.paginationRight}>
+                      <TouchableOpacity
+                        style={[styles.paginationBtn, safeGroupPage >= totalGroupPages && styles.paginationBtnDisabled]}
+                        onPress={() => {
+                          if (safeGroupPage < totalGroupPages) handleGroupPageChange(safeGroupPage + 1);
+                        }}
+                        disabled={safeGroupPage >= totalGroupPages}
+                        activeOpacity={0.8}
+                      >
+                        <Text style={[styles.paginationBtnText, safeGroupPage >= totalGroupPages && styles.paginationBtnTextDisabled]}>
+                          Next
+                        </Text>
+                        <Ionicons
+                          name="chevron-forward"
+                          size={14}
+                          color={safeGroupPage >= totalGroupPages ? "#94A3B8" : "#FF5A16"}
+                        />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                )}
+              </>
+            )}
+          </View>
         )}
 
         {/* ================= COLUMN 3: RIGHT SIDE → DISHES ================= */}
         {(!isMobile || mobileActiveTab === "dishes") && (
-        <View style={[styles.rightDishesColumn, isMobile && styles.rightDishesColumnMobile]}>
+        <View
+          style={[styles.rightDishesColumn, isMobile && styles.rightDishesColumnMobile]}
+          onLayout={(e) => {
+            const w = e.nativeEvent.layout.width;
+            if (w > 0 && Math.abs(w - dishesPanelWidth) > 2) {
+              setDishesPanelWidth(w);
+            }
+          }}
+        >
             {/* DISHES PANEL HEADER & FILTERS */}
             <View style={styles.dishesHeaderRow}>
               <View style={{ flexDirection: "row", alignItems: "center" }}>
@@ -2904,152 +3276,137 @@ export default function QuickServePOSScreen() {
                     : (leftPanelView === "category" ? "Try changing your filter or category" : "Try changing your filter or dish group")}
                 </Text>
               </View>
-            ) : (
-              <ScrollView
-                ref={dishesScrollRef}
-                style={styles.dishesGridScroll}
+            ) : viewMode === "grid" ? (
+              <FlatList
+                ref={dishesScrollRef as any}
+                data={displayedDishes}
+                keyExtractor={(dish, idx) => String(dish.DishId || idx)}
+                numColumns={columns}
+                key={`grid-${columns}`}
+                scrollEnabled={menuNavigationMode === "scroll"}
+                renderItem={({ item, index }) => {
+                  const qtyInCart = cartQtyMap[String(item.DishId)] || 0;
+                  return (
+                    <QuickServeDishCard
+                      dish={item}
+                      idx={index}
+                      width={cardWidth}
+                      cartQty={qtyInCart}
+                      onPress={handleDishClick}
+                      isPhone={isPhoneDevice}
+                      isTablet={isTabletDevice}
+                      isLandscape={isLandscape}
+                      currencySymbol={currencySymbol}
+                    />
+                  );
+                }}
+                columnWrapperStyle={columns > 1 ? { gap, marginBottom: 5 } : undefined}
+                style={{ flex: 1 }}
                 contentContainerStyle={styles.dishesGridContainer}
-                showsVerticalScrollIndicator={false}
-              >
-                {viewMode === "grid" ? (
-                  <View style={styles.dishesGrid}>
-                    {paginatedDishes.map((dish, idx) => {
-                      const price = Number(dish.Price || dish.currentcost || 0);
-                      const isSoldOut = Boolean(dish.IsSoldOut);
-                      const rawImg = dish.Image || dish.ImagePath || dish.image;
-                      const imgUri = getImageUrl(rawImg) || DEFAULT_DISH_IMAGES[idx % DEFAULT_DISH_IMAGES.length];
-                      const qtyInCart = cartQtyMap[String(dish.DishId)] || 0;
+                showsVerticalScrollIndicator={menuNavigationMode === "scroll"}
+                removeClippedSubviews={Platform.OS !== "web"}
+                initialNumToRender={16}
+                maxToRenderPerBatch={16}
+              />
+            ) : (
+              <FlatList
+                ref={dishesScrollRef as any}
+                data={displayedDishes}
+                keyExtractor={(dish, idx) => String(dish.DishId || idx)}
+                key="list-1"
+                scrollEnabled={menuNavigationMode === "scroll"}
+                renderItem={({ item, index }) => {
+                  const price = Number(item.Price || item.currentcost || 0);
+                  const isSoldOut = Boolean(item.IsSoldOut);
+                  const rawImg = item.Image || item.ImagePath || item.image;
+                  const imgUri = getImageUrl(rawImg) || DEFAULT_DISH_IMAGES[index % DEFAULT_DISH_IMAGES.length];
+                  const qtyInCart = cartQtyMap[String(item.DishId)] || 0;
 
-                      return (
-                        <View key={dish.DishId || idx} style={[styles.dishCardItem, isMobile && styles.dishCardItemMobile, isTablet && styles.dishCardItemTablet]}>
-                          <TouchableOpacity
-                            style={[styles.dishCard, isSoldOut && styles.dishCardSoldOut]}
-                            onPress={() => handleDishClick(dish)}
-                            activeOpacity={0.88}
-                          >
-                            <View style={styles.dishCoverWrap}>
-                              <Image
-                                source={{ uri: imgUri }}
-                                style={styles.dishCoverImg}
-                                contentFit="cover"
-                              />
+                  return (
+                    <TouchableOpacity
+                      key={item.DishId || index}
+                      style={[styles.dishListRow, isSoldOut && styles.dishCardSoldOut]}
+                      onPress={() => handleDishClick(item)}
+                      activeOpacity={0.85}
+                    >
+                      <View style={styles.dishListThumbWrap}>
+                        <Image source={{ uri: imgUri }} style={styles.dishListThumb} contentFit="cover" />
+                      </View>
 
-                              {isSoldOut ? (
-                                <View style={[styles.tagBadge, { backgroundColor: "#EF4444" }]}>
-                                  <Text style={styles.tagBadgeText}>Sold Out</Text>
-                                </View>
-                              ) : qtyInCart > 0 ? (
-                                <View style={styles.cartQtyBadgeTop}>
-                                  <Text style={styles.cartQtyBadgeTopText}>{qtyInCart}</Text>
-                                </View>
-                              ) : null}
-                            </View>
+                      <View style={styles.dishListInfo}>
+                        <Text style={styles.dishListName} numberOfLines={1}>
+                          {item.Name}
+                        </Text>
+                      </View>
 
-                            <View style={styles.dishCardBody}>
-                              <Text style={styles.dishCardName} numberOfLines={1}>
-                                {dish.Name}
-                              </Text>
+                      <Text style={styles.dishListPrice}>
+                        {currencySymbol}{price.toFixed(2)}
+                      </Text>
 
-                              <View style={styles.dishCardFooter}>
-                                <Text style={styles.dishCardPrice}>${price.toFixed(2)}</Text>
-
-                                <TouchableOpacity
-                                  style={[styles.addPlusBtn, isSoldOut && styles.addPlusBtnDisabled]}
-                                  onPress={() => handleDishClick(dish)}
-                                  disabled={isSoldOut}
-                                  activeOpacity={0.8}
-                                >
-                                  <Ionicons name="add" size={12} color="#FFFFFF" />
-                                </TouchableOpacity>
-                              </View>
-                            </View>
-                          </TouchableOpacity>
+                      {qtyInCart > 0 ? (
+                        <View style={styles.cartQtyBadgeRow}>
+                          <Text style={styles.cartQtyBadgeRowText}>{qtyInCart} in cart</Text>
                         </View>
-                      );
-                    })}
-                  </View>
-                ) : (
-                  <View style={styles.dishesList}>
-                    {paginatedDishes.map((dish, idx) => {
-                      const price = Number(dish.Price || dish.currentcost || 0);
-                      const isSoldOut = Boolean(dish.IsSoldOut);
-                      const rawImg = dish.Image || dish.ImagePath || dish.image;
-                      const imgUri = getImageUrl(rawImg) || DEFAULT_DISH_IMAGES[idx % DEFAULT_DISH_IMAGES.length];
-                      const qtyInCart = cartQtyMap[String(dish.DishId)] || 0;
-
-                      return (
+                      ) : (
                         <TouchableOpacity
-                          key={dish.DishId || idx}
-                          style={[styles.dishListRow, isSoldOut && styles.dishCardSoldOut]}
-                          onPress={() => handleDishClick(dish)}
-                          activeOpacity={0.85}
+                          style={[styles.addPlusBtn, isSoldOut && styles.addPlusBtnDisabled]}
+                          onPress={() => handleDishClick(item)}
+                          disabled={isSoldOut}
+                          activeOpacity={0.8}
                         >
-                          <View style={styles.dishListThumbWrap}>
-                            <Image source={{ uri: imgUri }} style={styles.dishListThumb} contentFit="cover" />
-                          </View>
-
-                          <View style={styles.dishListInfo}>
-                            <Text style={styles.dishListName} numberOfLines={1}>
-                              {dish.Name}
-                            </Text>
-                          </View>
-
-                          <Text style={styles.dishListPrice}>${price.toFixed(2)}</Text>
-
-                          {qtyInCart > 0 ? (
-                            <View style={styles.cartQtyBadgeRow}>
-                              <Text style={styles.cartQtyBadgeTopText}>{qtyInCart} in cart</Text>
-                            </View>
-                          ) : (
-                            <TouchableOpacity
-                              style={[styles.addPlusBtn, isSoldOut && styles.addPlusBtnDisabled]}
-                              onPress={() => handleDishClick(dish)}
-                              disabled={isSoldOut}
-                              activeOpacity={0.8}
-                            >
-                              <Ionicons name="add" size={18} color="#FFFFFF" />
-                            </TouchableOpacity>
-                          )}
+                          <Ionicons name="add" size={18} color="#FFFFFF" />
                         </TouchableOpacity>
-                      );
-                    })}
-                  </View>
-                )}
-              </ScrollView>
+                      )}
+                    </TouchableOpacity>
+                  );
+                }}
+                contentContainerStyle={styles.dishesListContainer}
+                showsVerticalScrollIndicator={menuNavigationMode === "scroll"}
+              />
             )}
 
-            {/* DISHES BOTTOM PAGINATION BAR */}
-            {totalDishPages > 1 && (
+            {/* QUICK SERVE PAGINATION BAR (ONLY IN PREVIOUS / NEXT MODE) */}
+            {menuNavigationMode === "prev_next" && sortedDishes.length > 0 && (
               <View style={styles.dishesPaginationBar}>
-                {/* Left: Back button (visible when on subsequent pages) */}
                 <View style={styles.paginationLeft}>
-                  {safeDishPage > 1 ? (
-                    <TouchableOpacity
-                      style={styles.paginationBtn}
-                      onPress={() => handlePageChange(safeDishPage - 1)}
-                      activeOpacity={0.8}
-                    >
-                      <Ionicons name="arrow-back" size={14} color="#FF5A16" />
-                      <Text style={styles.paginationBtnText}>Back</Text>
-                    </TouchableOpacity>
-                  ) : null}
+                  <TouchableOpacity
+                    style={[styles.paginationBtn, safeDishPage <= 1 && styles.paginationBtnDisabled]}
+                    onPress={() => handlePageChange(safeDishPage - 1)}
+                    disabled={safeDishPage <= 1}
+                    activeOpacity={0.8}
+                  >
+                    <Ionicons name="chevron-back" size={16} color={safeDishPage <= 1 ? "#94A3B8" : "#FF5A16"} />
+                    <Text style={[styles.paginationBtnText, safeDishPage <= 1 && styles.paginationBtnTextDisabled]}>
+                      Previous
+                    </Text>
+                  </TouchableOpacity>
                 </View>
 
-                {/* Center: Empty - NO page info or dish count text */}
-                <View style={styles.paginationCenter} />
+                <View style={styles.paginationCenter}>
+                  <Text style={styles.paginationText}>
+                    Page <Text style={styles.paginationCurrentText}>{safeDishPage}</Text> of{" "}
+                    <Text style={styles.paginationTotalText}>{totalDishPages}</Text>
+                    {sortedDishes.length > 0 && (
+                      <Text style={styles.paginationSubtext}>
+                        {"  "}({Math.min(sortedDishes.length, (safeDishPage - 1) * DISHES_PER_PAGE + 1)}-
+                        {Math.min(sortedDishes.length, safeDishPage * DISHES_PER_PAGE)} of {sortedDishes.length})
+                      </Text>
+                    )}
+                  </Text>
+                </View>
 
-                {/* Right: Next button (visible when more dishes remain) */}
                 <View style={styles.paginationRight}>
-                  {safeDishPage < totalDishPages ? (
-                    <TouchableOpacity
-                      style={[styles.paginationBtn, styles.paginationBtnPrimary]}
-                      onPress={() => handlePageChange(safeDishPage + 1)}
-                      activeOpacity={0.8}
-                    >
-                      <Text style={styles.paginationBtnPrimaryText}>Next</Text>
-                      <Ionicons name="arrow-forward" size={14} color="#FFFFFF" />
-                    </TouchableOpacity>
-                  ) : null}
+                  <TouchableOpacity
+                    style={[styles.paginationBtn, safeDishPage >= totalDishPages && styles.paginationBtnDisabled]}
+                    onPress={() => handlePageChange(safeDishPage + 1)}
+                    disabled={safeDishPage >= totalDishPages}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={[styles.paginationBtnText, safeDishPage >= totalDishPages && styles.paginationBtnTextDisabled]}>
+                      Next
+                    </Text>
+                    <Ionicons name="chevron-forward" size={16} color={safeDishPage >= totalDishPages ? "#94A3B8" : "#FF5A16"} />
+                  </TouchableOpacity>
                 </View>
               </View>
             )}
@@ -3593,6 +3950,9 @@ export default function QuickServePOSScreen() {
         onClose={() => {
           setShowComboModal(false);
           setComboDish(null);
+        }}
+        onSuccess={() => {
+          if (searchQuery) setSearchQuery("");
         }}
         dish={comboDish}
         kitchenName={comboDish?.KitchenTypeName || categories.find((k) => k.CategoryId === selectedCategoryId)?.KitchenTypeName || "KITCHEN"}
@@ -5605,81 +5965,74 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   dishesGridContainer: {
-    padding: 3,
-    paddingBottom: 3,
+    paddingHorizontal: 8,
+    paddingTop: 6,
+    paddingBottom: 4,
     flexGrow: 1,
-    height: "100%",
-    display: "flex",
-    flexDirection: "column",
   },
-  dishesGrid: {
-    flex: 1,
-    height: "100%",
-    flexDirection: "row",
-    flexWrap: "wrap",
-    alignContent: "flex-start",
-    gap: 4,
-  },
-  dishCardItem: {
-    width: (Platform.OS === "web" ? "calc(16.666% - 3.5px)" : "15.5%") as any,
-    height: (Platform.OS === "web" ? "calc(25% - 3px)" : undefined) as any,
-  },
-  dishCardItemTablet: {
-    width: (Platform.OS === "web" ? "calc(25% - 4px)" : "23.5%") as any,
-    height: 140,
-  },
-  dishCardItemMobile: {
-    width: (Platform.OS === "web" ? "calc(50% - 3px)" : "48%") as any,
-    height: 160,
+  dishesListContainer: {
+    paddingHorizontal: 8,
+    paddingTop: 6,
+    paddingBottom: 4,
+    flexGrow: 1,
   },
   dishCard: {
-    height: "100%",
-    backgroundColor: "#FFFFFF",
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-    overflow: "hidden",
-    display: "flex",
-    flexDirection: "column",
-    justifyContent: "space-between",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.04,
-    shadowRadius: 2,
-    elevation: 2,
+    position: "relative",
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    padding: 4,
+    alignItems: "center",
+    ...Theme.shadowSm,
   },
   dishCardSoldOut: {
     opacity: 0.5,
   },
-  dishCoverWrap: {
-    flex: 1,
-    minHeight: 32,
-    width: "100%",
-    backgroundColor: "#F8FAFC",
-    position: "relative",
+  dishImageWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     overflow: "hidden",
+    marginBottom: 2,
+    backgroundColor: Theme.bgMain,
   },
-  dishCoverImg: {
+  dishImg: {
     width: "100%",
     height: "100%",
   },
-  vegIndicatorBadge: {
-    position: "absolute",
-    top: 2,
-    left: 2,
-    width: 10,
-    height: 10,
-    borderRadius: 2,
-    borderWidth: 1,
-    backgroundColor: "#FFFFFF",
-    alignItems: "center",
-    justifyContent: "center",
-    zIndex: 5,
+  dishName: {
+    fontSize: 10,
+    fontFamily: Fonts.black,
+    color: Theme.textPrimary,
+    textAlign: "center",
+    minHeight: 22,
+    lineHeight: 11,
   },
-  vegIndicatorDot: {
-    width: 4,
-    height: 4,
-    borderRadius: 2,
+  dishPrice: {
+    fontSize: 11,
+    fontFamily: Fonts.black,
+    color: Theme.primary,
+    marginTop: 1,
+    textAlign: "center",
+  },
+  qtyBadge: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    backgroundColor: Theme.primary,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    justifyContent: "center",
+    alignItems: "center",
+    zIndex: 10,
+    borderWidth: 2,
+    borderColor: "#fff",
+    ...Theme.shadowSm,
+  },
+  qtyBadgeText: {
+    color: "#fff",
+    fontFamily: Fonts.black,
+    fontSize: 13,
   },
   tagBadge: {
     position: "absolute",
@@ -5695,46 +6048,6 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.bold,
     color: "#FFFFFF",
   },
-  cartQtyBadgeTop: {
-    position: "absolute",
-    top: 2,
-    right: 2,
-    backgroundColor: "#FF5A16",
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    alignItems: "center",
-    justifyContent: "center",
-    zIndex: 10,
-  },
-  cartQtyBadgeTopText: {
-    color: "#FFFFFF",
-    fontSize: 8,
-    fontFamily: Fonts.bold,
-  },
-
-  dishCardBody: {
-    paddingHorizontal: 5,
-    paddingVertical: 2.5,
-    flexShrink: 0,
-  },
-  dishCardName: {
-    fontSize: 10.5,
-    fontFamily: Fonts.bold,
-    color: "#0F172A",
-    lineHeight: 13,
-  },
-  dishCardFooter: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginTop: 1,
-  },
-  dishCardPrice: {
-    fontSize: 11,
-    fontFamily: Fonts.bold,
-    color: "#FF5A16",
-  },
   addPlusBtn: {
     width: 20,
     height: 20,
@@ -5745,6 +6058,20 @@ const styles = StyleSheet.create({
   },
   addPlusBtnDisabled: {
     backgroundColor: "#94A3B8",
+  },
+
+  /* DISH GROUPS BOTTOM PAGINATION BAR */
+  groupsPaginationBar: {
+    height: 34,
+    flexShrink: 0,
+    borderTopWidth: 1,
+    borderTopColor: "#E2E8F0",
+    backgroundColor: "#FFFFFF",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 8,
+    zIndex: 10,
   },
 
   /* DISHES BOTTOM PAGINATION BAR */
@@ -5808,6 +6135,13 @@ const styles = StyleSheet.create({
   paginationTotalText: {
     fontFamily: Fonts.bold,
     color: "#0F172A",
+  },
+  paginationBtnDisabled: {
+    backgroundColor: "#F1F5F9",
+    borderColor: "#E2E8F0",
+  },
+  paginationBtnTextDisabled: {
+    color: "#94A3B8",
   },
   paginationSubtext: {
     fontSize: 11,
@@ -6113,6 +6447,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 8,
+  },
+  cartQtyBadgeRowText: {
+    color: "#FFFFFF",
+    fontSize: 12,
+    fontFamily: Fonts.bold,
   },
 
   /* TABLE SELECTION MODAL STYLES */

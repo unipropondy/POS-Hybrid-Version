@@ -656,6 +656,7 @@ export default function SettlementScreen() {
     }
   };
 
+
   const handleDayEnd = () => {
     if (!dayLog || !dayLog.StartedAt) {
       showToast({
@@ -673,6 +674,18 @@ export default function SettlementScreen() {
       });
       return;
     }
+    if (!isDayEndEligible) {
+      const missing: string[] = [];
+      if (!dayConfirmation?.OpeningConfirmed) missing.push("Opening Amount");
+      if (!dayConfirmation?.CashOutConfirmed) missing.push("Cash Out");
+      if (!dayConfirmation?.ClosingConfirmed) missing.push("Closing Amount");
+      showToast({
+        type: "warning",
+        message: "Settlement Incomplete",
+        subtitle: `Please confirm: ${missing.join(", ")} before ending the day.`,
+      });
+      return;
+    }
     setShowConfirmModal(true);
   };
 
@@ -684,6 +697,21 @@ export default function SettlementScreen() {
   const [loginWiseSales, setLoginWiseSales] = useState<any[]>([]);
   const [selectedCashierId, setSelectedCashierId] = useState<string>("ALL");
   const [showUserDropdown, setShowUserDropdown] = useState(false);
+
+  // Distinct sanitized users for user-wise settlement selection
+  const distinctUsers = useMemo(() => {
+    if (!Array.isArray(loginWiseSales)) return [];
+    const seen = new Map<string, any>();
+    loginWiseSales.forEach((op) => {
+      if (!op) return;
+      const id = String(op.CashierId || op.UserId || op.UserCode || op.UserLogin || "").trim();
+      if (!id) return;
+      if (!seen.has(id)) {
+        seen.set(id, op);
+      }
+    });
+    return Array.from(seen.values());
+  }, [loginWiseSales]);
 
   // Cash Out State
   const [cashOutEntries, setCashOutEntries] = useState<any[]>([]);
@@ -781,6 +809,26 @@ export default function SettlementScreen() {
     EndedAt: string | null;
     EndedBy: string | null;
   } | null>(null);
+  const [dayConfirmation, setDayConfirmation] = useState<{
+    OpeningConfirmed: boolean;
+    OpeningConfirmedAt: string | null;
+    OpeningAmount: number | null;
+    CashOutConfirmed: boolean;
+    CashOutConfirmedAt: string | null;
+    ClosingConfirmed: boolean;
+    ClosingConfirmedAt: string | null;
+    ClosingAmount: number | null;
+  }>({
+    OpeningConfirmed: false,
+    OpeningConfirmedAt: null,
+    OpeningAmount: null,
+    CashOutConfirmed: false,
+    CashOutConfirmedAt: null,
+    ClosingConfirmed: false,
+    ClosingConfirmedAt: null,
+    ClosingAmount: null,
+  });
+  const [activeBusinessDateStr, setActiveBusinessDateStr] = useState<string>("");
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [historyLogs, setHistoryLogs] = useState<any[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
@@ -820,6 +868,20 @@ export default function SettlementScreen() {
   // the wrong date (e.g. Sept 30 instead of Oct 1) since getSingaporeTimeTodayRange()
   // returns UTC+8 midnight which is 21:30 in IST = previous calendar day.
   const getLocalDateStr = (d: Date) => getSingaporeDateString(d);
+
+  // Day End Enable / Disable Validation (Computed after state and helpers are initialized)
+  const currentDateStr = getLocalDateStr(selectedDate);
+  const isSelectedDateActiveDay = Boolean(
+    activeBusinessDateStr && activeBusinessDateStr === currentDateStr,
+  );
+  const isDayEndEligible = Boolean(
+    dayLog?.StartedAt &&
+    !dayLog?.EndedAt &&
+    isSelectedDateActiveDay &&
+    dayConfirmation?.OpeningConfirmed &&
+    dayConfirmation?.CashOutConfirmed &&
+    dayConfirmation?.ClosingConfirmed
+  );
 
   const formatDateTime = (date: Date) => {
     const d = date.getDate().toString().padStart(2, "0");
@@ -870,6 +932,7 @@ export default function SettlementScreen() {
         try {
           const res = await API.get(`/settlement/active-day`);
           if (res.data?.success && res.data?.active && res.data?.startDate) {
+            setActiveBusinessDateStr(res.data.startDate);
             const parts = res.data.startDate.split("-");
             if (parts.length === 3) {
               initialDate = new Date(
@@ -905,9 +968,7 @@ export default function SettlementScreen() {
 
         // 3. Fetch dishes
         try {
-          const res = await API.get(`/settlement/artist-list`, {
-            headers: { Authorization: `Bearer ${token}` },
-          });
+          const res = await API.get(`/settlement/artist-list`);
           setDishList(res.data.data || []);
         } catch (err) {
           console.error("Error loading dishes:", err);
@@ -1051,6 +1112,9 @@ export default function SettlementScreen() {
       const dayLogRes = await API.get(
         `/settlement/day-log?date=${dateStr}`,
       ).catch(() => ({ data: null }));
+      const dayConfirmRes = await API.get(
+        `/settlement/day-confirmation?date=${dateStr}`,
+      ).catch(() => ({ data: null }));
       const usersSettleRes = await API.get(
         `/settlement/users-settlement?fromDate=${dateStr}&toDate=${endDateStr}`,
         {
@@ -1076,6 +1140,20 @@ export default function SettlementScreen() {
       setCashInEntries(cashInRes.data?.data || []);
       setCashBoxEntries(cashBoxRes.data?.data || []);
       setDayLog(dayLogRes.data?.data || null);
+      if (dayConfirmRes.data?.success && dayConfirmRes.data?.data) {
+        setDayConfirmation(dayConfirmRes.data.data);
+      } else {
+        setDayConfirmation({
+          OpeningConfirmed: false,
+          OpeningConfirmedAt: null,
+          OpeningAmount: null,
+          CashOutConfirmed: false,
+          CashOutConfirmedAt: null,
+          ClosingConfirmed: false,
+          ClosingConfirmedAt: null,
+          ClosingAmount: null,
+        });
+      }
 
       let finalUsers: any[] = [];
       if (
@@ -1376,6 +1454,7 @@ export default function SettlementScreen() {
           setOpeningCash(totalOpening.toString());
         }
         setShowLov(false);
+        await fetchData();
         Alert.alert(
           "Success",
           `${lovMode === "OPEN" ? "Opening" : "Closing"} cash denominations saved.`,
@@ -1453,10 +1532,51 @@ export default function SettlementScreen() {
   };
 
   const handleSaveCashOut = () => {
-    if (!cashOutForm.Amount || parseFloat(cashOutForm.Amount) <= 0) {
-      Alert.alert("Validation", "Please enter a valid amount");
+    const rawAmt = (cashOutForm.Amount || "").trim();
+    const parsedAmt = parseFloat(rawAmt);
+    if (rawAmt === "" || isNaN(parsedAmt) || parsedAmt < 0) {
+      Alert.alert("Validation", "Please enter a valid amount (0.00 or higher)");
       return;
     }
+
+    if (parsedAmt === 0 && !cashOutForm.CashOutId) {
+      // Direct explicit 0.00 confirmation without creating empty transaction row
+      const confirmZero = async () => {
+        try {
+          setLoading(true);
+          const dateStr = getLocalDateStr(selectedDate);
+          const res = await API.post(
+            `/settlement/confirm-cash-out`,
+            { date: dateStr },
+            {
+              headers: { Authorization: `Bearer ${useAuthStore.getState().token}` },
+            },
+          );
+          if (res.data.success) {
+            setCashOutForm({
+              CashOutId: "",
+              Amount: "",
+              Reason: "",
+              Remarks: "",
+              PaymentMode: "Cash",
+              ReferenceNo: "",
+              AttachmentUrl: "",
+            });
+            setShowCashOutModal(false);
+            await fetchData();
+            Alert.alert("Success", "Cash Out step confirmed ($0.00)");
+          }
+        } catch (err: any) {
+          console.error("❌ CONFIRM CASH OUT ZERO ERROR", err);
+          Alert.alert("Error", err.response?.data?.error || "Failed to confirm cash out");
+        } finally {
+          setLoading(false);
+        }
+      };
+      confirmZero();
+      return;
+    }
+
     if (cashOutForm.CashOutId) {
       promptPassword(
         "Edit Cash Out",
@@ -2720,14 +2840,16 @@ export default function SettlementScreen() {
                 </TouchableOpacity>
 
                 <TouchableOpacity
+                  disabled={!isDayEndEligible}
                   style={{
-                    backgroundColor: "#ef4444",
+                    backgroundColor: isDayEndEligible ? "#ef4444" : "#94a3b8",
                     paddingVertical: 6,
                     paddingHorizontal: 10,
                     borderRadius: 10,
                     flexDirection: "row",
                     alignItems: "center",
                     gap: 4,
+                    opacity: isDayEndEligible ? 1 : 0.65,
                   }}
                   onPress={handleDayEnd}
                 >
@@ -2928,8 +3050,9 @@ export default function SettlementScreen() {
               </TouchableOpacity>
 
               <TouchableOpacity
+                disabled={!isDayEndEligible}
                 style={{
-                  backgroundColor: "#ef4444",
+                  backgroundColor: isDayEndEligible ? "#ef4444" : "#94a3b8",
                   flexDirection: "row",
                   alignItems: "center",
                   justifyContent: "center",
@@ -2937,11 +3060,12 @@ export default function SettlementScreen() {
                   paddingHorizontal: 16,
                   paddingVertical: 8,
                   borderRadius: 10,
-                  elevation: 2,
+                  elevation: isDayEndEligible ? 2 : 0,
                   shadowColor: "#000",
                   shadowOffset: { width: 0, height: 1 },
-                  shadowOpacity: 0.2,
+                  shadowOpacity: isDayEndEligible ? 0.2 : 0,
                   shadowRadius: 1.41,
+                  opacity: isDayEndEligible ? 1 : 0.65,
                 }}
                 onPress={handleDayEnd}
               >
@@ -3317,8 +3441,9 @@ export default function SettlementScreen() {
                     </TouchableOpacity>
 
                     {/* Individual Users Options (Admin & Cashier usergroups only) */}
-                    {loginWiseSales
+                    {distinctUsers
                       .filter((op) => {
+                        if (!op) return false;
                         const role = String(op.RoleName || "").toUpperCase();
                         const login = String(op.UserLogin || "").toUpperCase();
                         const name = String(op.CashierName || "").toUpperCase();
@@ -3345,8 +3470,9 @@ export default function SettlementScreen() {
                           return false;
                         return true;
                       })
-                      .map((op) => {
-                        const isSel = selectedCashierId === op.CashierId;
+                      .map((op, idx) => {
+                        const cashierIdStr = String(op.CashierId || `user-${idx}`);
+                        const isSel = String(selectedCashierId) === cashierIdStr;
                         const userNetSales = Number(
                           op.TotalNetSales ??
                           op.TotalSales ??
@@ -3355,9 +3481,9 @@ export default function SettlementScreen() {
                         );
                         return (
                           <TouchableOpacity
-                            key={`settle-dropdown-op-${op.CashierId}`}
+                            key={`settle-dropdown-op-${cashierIdStr}-${idx}`}
                             onPress={() => {
-                              setSelectedCashierId(op.CashierId);
+                              setSelectedCashierId(cashierIdStr);
                               setShowUserDropdown(false);
                             }}
                             style={{
@@ -3480,12 +3606,15 @@ export default function SettlementScreen() {
                   >
                     Opening Amount
                   </Text>
+                  {dayConfirmation?.OpeningConfirmed && (
+                    <Ionicons name="checkmark-circle" size={14} color="#16a34a" />
+                  )}
                 </View>
                 <Text
                   style={{
                     fontFamily: Fonts.black,
                     fontSize: isTablet ? 22 : 16,
-                    color: Theme.textPrimary,
+                    color: dayConfirmation?.OpeningConfirmed ? Theme.textPrimary : Theme.textMuted,
                     marginTop: 5,
                   }}
                   numberOfLines={1}
@@ -3614,12 +3743,15 @@ export default function SettlementScreen() {
                   >
                     Cash Out
                   </Text>
+                  {dayConfirmation?.CashOutConfirmed && (
+                    <Ionicons name="checkmark-circle" size={14} color="#16a34a" />
+                  )}
                 </View>
                 <Text
                   style={{
                     fontFamily: Fonts.black,
                     fontSize: isTablet ? 22 : 16,
-                    color: Theme.danger,
+                    color: dayConfirmation?.CashOutConfirmed ? Theme.danger : Theme.textMuted,
                     marginTop: 5,
                   }}
                   numberOfLines={1}
@@ -3725,12 +3857,15 @@ export default function SettlementScreen() {
                   >
                     Closing Amount
                   </Text>
+                  {dayConfirmation?.ClosingConfirmed && (
+                    <Ionicons name="checkmark-circle" size={14} color="#16a34a" />
+                  )}
                 </View>
                 <Text
                   style={{
                     fontFamily: Fonts.black,
                     fontSize: isTablet ? 22 : 16,
-                    color: Theme.primaryDark,
+                    color: dayConfirmation?.ClosingConfirmed ? Theme.primaryDark : Theme.textMuted,
                     marginTop: 5,
                   }}
                   numberOfLines={1}

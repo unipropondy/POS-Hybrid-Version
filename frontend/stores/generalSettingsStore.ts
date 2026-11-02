@@ -17,6 +17,9 @@ export interface GeneralSettings {
   enableKDSPrint: boolean;
   enableCombo: boolean;
   enableQuickServe: boolean;
+  quickServeEnableKOT: boolean;
+  quickServeEnableKDS: boolean;
+  quickServeEnableKDSPrinter: boolean;
   showLoyalty: boolean;
   showRewardPoints: boolean;
   showPromoCode: boolean;
@@ -30,6 +33,7 @@ export interface GeneralSettings {
   enableReceiptPrint: boolean;
   enableVoiceSuccess: boolean;
   enableNotificationSound: boolean;
+  menuNavigationMode: "scroll" | "prev_next";
 }
 
 interface GeneralSettingsState {
@@ -55,6 +59,9 @@ export const useGeneralSettingsStore = create<GeneralSettingsState>()(
         enableKDSPrint: true,
         enableCombo: true,
         enableQuickServe: true,
+        quickServeEnableKOT: true,
+        quickServeEnableKDS: true,
+        quickServeEnableKDSPrinter: true,
         showLoyalty: true,
         showRewardPoints: true,
         showPromoCode: true,
@@ -68,6 +75,7 @@ export const useGeneralSettingsStore = create<GeneralSettingsState>()(
         enableReceiptPrint: true,
         enableVoiceSuccess: true,
         enableNotificationSound: true,
+        menuNavigationMode: "scroll",
       },
       loading: false,
 
@@ -93,6 +101,9 @@ export const useGeneralSettingsStore = create<GeneralSettingsState>()(
                 enableKDSPrint: data.EnableKDSPrint !== undefined ? Boolean(data.EnableKDSPrint) : true,
                 enableCombo: data.EnableCombo !== undefined ? Boolean(data.EnableCombo) : true,
                 enableQuickServe: data.EnableQuickServe !== undefined ? Boolean(data.EnableQuickServe) : true,
+                quickServeEnableKOT: data.QuickServeEnableKOT !== undefined ? Boolean(data.QuickServeEnableKOT) : true,
+                quickServeEnableKDS: data.QuickServeEnableKDS !== undefined ? Boolean(data.QuickServeEnableKDS) : true,
+                quickServeEnableKDSPrinter: data.QuickServeEnableKDSPrinter !== undefined ? Boolean(data.QuickServeEnableKDSPrinter) : true,
                 showLoyalty: data.ShowLoyalty !== undefined ? Boolean(data.ShowLoyalty) : true,
                 showRewardPoints: data.ShowRewardPoints !== undefined ? Boolean(data.ShowRewardPoints) : true,
                 showPromoCode: data.ShowPromoCode !== undefined ? Boolean(data.ShowPromoCode) : true,
@@ -106,6 +117,7 @@ export const useGeneralSettingsStore = create<GeneralSettingsState>()(
                 enableReceiptPrint: data.EnableReceiptPrint !== undefined ? Boolean(data.EnableReceiptPrint) : true,
                 enableVoiceSuccess: data.EnableVoiceSuccess !== undefined ? Boolean(data.EnableVoiceSuccess) : true,
                 enableNotificationSound: data.EnableNotificationSound !== undefined ? Boolean(data.EnableNotificationSound) : true,
+                menuNavigationMode: (data.MenuNavigationMode === "prev_next" || data.MenuNavigationMode === "prevNext") ? "prev_next" : (data.MenuNavigationMode || state.settings.menuNavigationMode || "scroll"),
               },
             }));
           }
@@ -144,6 +156,9 @@ export const useGeneralSettingsStore = create<GeneralSettingsState>()(
             enableKDSPrint: updatedSettings.enableKDSPrint,
             enableCombo: updatedSettings.enableCombo,
             enableQuickServe: updatedSettings.enableQuickServe,
+            quickServeEnableKOT: updatedSettings.quickServeEnableKOT,
+            quickServeEnableKDS: updatedSettings.quickServeEnableKDS,
+            quickServeEnableKDSPrinter: updatedSettings.quickServeEnableKDSPrinter,
             showLoyalty: updatedSettings.showLoyalty,
             showRewardPoints: updatedSettings.showRewardPoints,
             showPromoCode: updatedSettings.showPromoCode,
@@ -157,6 +172,7 @@ export const useGeneralSettingsStore = create<GeneralSettingsState>()(
             enableReceiptPrint: updatedSettings.enableReceiptPrint,
             enableVoiceSuccess: updatedSettings.enableVoiceSuccess,
             enableNotificationSound: updatedSettings.enableNotificationSound,
+            menuNavigationMode: updatedSettings.menuNavigationMode,
             userName: userInfo?.userName || useAuthStore.getState().user?.userName || useAuthStore.getState().user?.fullName || "",
             userId: userInfo?.userId || useAuthStore.getState().user?.userId || "",
             userRole: userInfo?.userRole || useAuthStore.getState().user?.roleName || useAuthStore.getState().user?.role || ""

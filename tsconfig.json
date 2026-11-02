@@ -6,5 +6,5 @@
     }
   ],
   "compilerOptions": {},
-  "extends": "expo/tsconfig.base"
+  "extends": "./frontend/node_modules/expo/tsconfig.base"
 }

@@ -22,6 +22,11 @@ interface CancelOrderModalProps {
   loadingReasons: boolean;
   isCancelling: boolean;
   maxQty?: number;
+  title?: string;
+  subtitle?: string;
+  billNumber?: string;
+  totalAmount?: string;
+  passwordLabel?: string;
 }
 
 const CancelOrderModal = ({
@@ -32,12 +37,27 @@ const CancelOrderModal = ({
   loadingReasons,
   isCancelling,
   maxQty,
+  title,
+  subtitle,
+  billNumber,
+  totalAmount,
+  passwordLabel,
 }: CancelOrderModalProps) => {
   const [selectedReason, setSelectedReason] = useState<string | null>(null);
   const [customReason, setCustomReason] = useState("");
   const [password, setPassword] = useState("");
   const [voidQty, setVoidQty] = useState("1");
+  const [localError, setLocalError] = useState("");
   const passwordInputRef = React.useRef<any>(null);
+
+  React.useEffect(() => {
+    if (visible) {
+      setSelectedReason(null);
+      setCustomReason("");
+      setPassword("");
+      setLocalError("");
+    }
+  }, [visible]);
 
   const QUICK_REASONS = [
     "Customer changed mind",
@@ -49,6 +69,7 @@ const CancelOrderModal = ({
   const handleReasonSelect = (reason: string) => {
     setSelectedReason(reason);
     setCustomReason("");
+    setLocalError("");
     // Small delay to ensure state updates before focus
     setTimeout(() => {
         passwordInputRef.current?.focus();
@@ -56,10 +77,17 @@ const CancelOrderModal = ({
   };
 
   const handleConfirm = () => {
-    const finalReason = selectedReason === "OTHER" ? customReason : selectedReason;
-    if (finalReason && password) {
-      onConfirm(finalReason, password, maxQty ? parseInt(voidQty) : undefined);
+    const finalReason = selectedReason === "OTHER" ? customReason.trim() : selectedReason?.trim();
+    if (!finalReason) {
+      setLocalError("Please select a cancellation reason above");
+      return;
     }
+    if (!password || !password.trim()) {
+      setLocalError("Please enter your Admin password");
+      return;
+    }
+    setLocalError("");
+    onConfirm(finalReason, password.trim(), maxQty ? parseInt(voidQty) : undefined);
   };
 
   return (
@@ -69,8 +97,46 @@ const CancelOrderModal = ({
         style={styles.modalOverlay}
       >
         <View style={styles.modalContent}>
-          <Text style={styles.modalTitle}>Cancel Order?</Text>
-          <Text style={styles.modalDesc}>Select a reason or enter custom one.</Text>
+          <Text style={styles.modalTitle}>{title || "Cancel Order?"}</Text>
+          <Text style={styles.modalDesc}>{subtitle || "Select a reason or enter custom one."}</Text>
+
+          {(billNumber || totalAmount) && (
+            <View
+              style={{
+                flexDirection: "row",
+                justifyContent: "space-between",
+                alignItems: "center",
+                backgroundColor: Theme.bgNav,
+                borderWidth: 1,
+                borderColor: Theme.border,
+                borderRadius: 14,
+                paddingHorizontal: 14,
+                paddingVertical: 10,
+                marginBottom: 16,
+              }}
+            >
+              {billNumber ? (
+                <View>
+                  <Text style={{ fontSize: 10, fontFamily: Fonts.bold, color: Theme.textMuted, textTransform: "uppercase" }}>
+                    Bill No
+                  </Text>
+                  <Text style={{ fontSize: 15, fontFamily: Fonts.black, color: Theme.textPrimary }}>
+                    {billNumber}
+                  </Text>
+                </View>
+              ) : null}
+              {totalAmount ? (
+                <View style={{ alignItems: "flex-end" }}>
+                  <Text style={{ fontSize: 10, fontFamily: Fonts.bold, color: Theme.textMuted, textTransform: "uppercase" }}>
+                    Amount Due
+                  </Text>
+                  <Text style={{ fontSize: 16, fontFamily: Fonts.black, color: Theme.danger }}>
+                    {totalAmount}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+          )}
 
           {loadingReasons ? (
             <View style={{ paddingVertical: 40, alignItems: "center" }}>
@@ -145,7 +211,10 @@ const CancelOrderModal = ({
                   placeholder="Enter cancellation reason..."
                   placeholderTextColor={Theme.textMuted}
                   value={customReason}
-                  onChangeText={setCustomReason}
+                  onChangeText={(val) => {
+                    setCustomReason(val);
+                    setLocalError("");
+                  }}
                   multiline
                 />
               )}
@@ -157,28 +226,39 @@ const CancelOrderModal = ({
                   { marginBottom: 10, fontWeight: "bold", color: Theme.textPrimary, textAlign: 'left' },
                 ]}
               >
-                Enter Void Password
+                {passwordLabel ? passwordLabel : "Enter Void Password"}
               </Text>
               <TextInput
                 ref={passwordInputRef}
                 style={[styles.customReasonInput, { minHeight: 50, marginTop: 0 }]}
-                placeholder="Void Password"
+                placeholder={passwordLabel ? passwordLabel : "Void Password"}
                 placeholderTextColor={Theme.textMuted}
                 value={password}
-                onChangeText={setPassword}
+                onChangeText={(val) => {
+                  setPassword(val);
+                  setLocalError("");
+                }}
                 secureTextEntry
                 keyboardType="number-pad"
               />
             </ScrollView>
           )}
 
+          {!!localError && (
+            <View style={{ paddingVertical: 6, paddingHorizontal: 12, backgroundColor: Theme.danger + "15", borderRadius: 8, marginTop: 8, borderWidth: 1, borderColor: Theme.danger + "40" }}>
+              <Text style={{ color: Theme.danger, fontSize: 13, fontFamily: Fonts.bold, textAlign: "center" }}>
+                ⚠️ {localError}
+              </Text>
+            </View>
+          )}
+
           <View style={styles.modalActions}>
-            <TouchableOpacity style={styles.modalBtnCancel} onPress={onClose}>
+            <TouchableOpacity style={styles.modalBtnCancel} onPress={onClose} disabled={isCancelling}>
               <Text style={styles.modalBtnTextCancel}>Back</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.modalBtnConfirm, { backgroundColor: Theme.danger }]}
-              disabled={isCancelling || !password || !selectedReason}
+              style={[styles.modalBtnConfirm, { backgroundColor: Theme.danger }, isCancelling && { opacity: 0.7 }]}
+              disabled={isCancelling}
               onPress={handleConfirm}
             >
               {isCancelling ? (

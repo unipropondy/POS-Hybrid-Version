@@ -1481,8 +1481,10 @@ export default React.memo(function CartSidebar({ width = 400 }: CartSidebarProps
 
       if (enableCheckoutFlow !== false) {
         // 🚀 INSTANT REDIRECT: Go back to Floor Plan immediately for hyper-speed UX
-        useOrderContextStore.getState().clearOrderContext();
-        router.replace("/(tabs)/category");
+        // Do NOT clearOrderContext() here! This is checkout request (bill print), NOT final settlement!
+        // Preserve originating section back to Floor Plan:
+        const targetSec = orderContext?.section || "SECTION_1";
+        router.replace(`/(tabs)/category?section=${targetSec}`);
 
         // Fire API call and sync in background
         (async () => {
@@ -1617,7 +1619,8 @@ export default React.memo(function CartSidebar({ width = 400 }: CartSidebarProps
 
     // 3. Close Sidebar & Redirect instantly
     if (!shouldSkipRedirect) {
-      router.replace(`/(tabs)/category?section=${orderContext.section}`);
+      const targetSec = orderContext?.section || "SECTION_1";
+      router.replace(`/(tabs)/category?section=${targetSec}`);
     }
 
     // 4. Handle Server Save in the background
@@ -2025,9 +2028,8 @@ export default React.memo(function CartSidebar({ width = 400 }: CartSidebarProps
                                 }
 
                                 holdOrder(targetOrderId, cart, orderContext);
-                                router.replace(
-                                  `/(tabs)/category?section=${orderContext.section}`,
-                                );
+                                const targetSec = orderContext?.section || "SECTION_1";
+                                router.replace(`/(tabs)/category?section=${targetSec}`);
                               }}
                             >
                               <Ionicons
@@ -2143,9 +2145,8 @@ export default React.memo(function CartSidebar({ width = 400 }: CartSidebarProps
                               }
 
                               holdOrder(targetOrderId, cart, orderContext);
-                              router.replace(
-                                `/(tabs)/category?section=${orderContext.section}`,
-                              );
+                              const targetSec = orderContext?.section || "SECTION_1";
+                              router.replace(`/(tabs)/category?section=${targetSec}`);
                             }}
                           >
                             <Ionicons
@@ -2496,9 +2497,8 @@ export default React.memo(function CartSidebar({ width = 400 }: CartSidebarProps
                           }
 
                           holdOrder(targetOrderId, cart, orderContext);
-                          router.replace(
-                            `/(tabs)/category?section=${orderContext.section}`,
-                          );
+                          const targetSec = orderContext?.section || "SECTION_1";
+                          router.replace(`/(tabs)/category?section=${targetSec}`);
                         }}
                       >
                         <Ionicons
@@ -2584,7 +2584,8 @@ export default React.memo(function CartSidebar({ width = 400 }: CartSidebarProps
                                   subtitle: "Checkout completed successfully.",
                                   duration: 1500,
                                 });
-                                router.replace(`/(tabs)/category?section=${orderContext.section}`);
+                                const targetSec = orderContext?.section || "SECTION_1";
+                                router.replace(`/(tabs)/category?section=${targetSec}`);
                               } else {
                                 showToast({ type: "error", message: "Checkout Failed", subtitle: "Please try again." });
                               }

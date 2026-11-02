@@ -48,6 +48,40 @@ async function initDB(pool) {
       END
     `);
 
+    await runQuery("UserMaster - AllowedLogins, IsLoggedIn, LastHeartbeat, ActiveSessionId", `
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[UserMaster]') AND name = 'AllowedLogins')
+      BEGIN
+        ALTER TABLE [dbo].[UserMaster] ADD [AllowedLogins] [int] NULL DEFAULT 1;
+      END
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[UserMaster]') AND name = 'IsLoggedIn')
+      BEGIN
+        ALTER TABLE [dbo].[UserMaster] ADD [IsLoggedIn] [bit] NULL DEFAULT 0;
+      END
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[UserMaster]') AND name = 'LastHeartbeat')
+      BEGIN
+        ALTER TABLE [dbo].[UserMaster] ADD [LastHeartbeat] [datetime] NULL;
+      END
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[UserMaster]') AND name = 'ActiveSessionId')
+      BEGIN
+        ALTER TABLE [dbo].[UserMaster] ADD [ActiveSessionId] [varchar](100) NULL;
+      END
+    `);
+
+    await runQuery("Create UserSessions", `
+      IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[UserSessions]') AND type in (N'U'))
+      BEGIN
+          CREATE TABLE [dbo].[UserSessions](
+              [SessionId]     [VARCHAR](100) NOT NULL PRIMARY KEY,
+              [UserId]        [VARCHAR](100) NOT NULL,
+              [DeviceName]    [NVARCHAR](100) NULL,
+              [IpAddress]     [VARCHAR](50) NULL,
+              [CreatedAt]     [DATETIME] NULL DEFAULT (GETDATE()),
+              [LastHeartbeat] [DATETIME] NULL DEFAULT (GETDATE())
+          );
+          CREATE INDEX [IX_UserSessions_UserId] ON [dbo].[UserSessions]([UserId]);
+      END
+    `);
+
     await runQuery("Create TableMaster", `
       IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[TableMaster]') AND type in (N'U'))
       BEGIN
@@ -528,6 +562,7 @@ async function initDB(pool) {
     await runQuery("Index - RestaurantOrderDetailCur OrderId", "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_RestaurantOrderDetailCur_OrderId') CREATE INDEX IX_RestaurantOrderDetailCur_OrderId ON [dbo].[RestaurantOrderDetailCur] (OrderId)");
     await runQuery("Index - TableMaster SortCode", "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_TableMaster_SortCode') CREATE INDEX IX_TableMaster_SortCode ON [dbo].[TableMaster] (SortCode)");
     await runQuery("Index - TableMaster TableNumber", "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_TableMaster_TableNumber') CREATE INDEX IX_TableMaster_TableNumber ON [dbo].[TableMaster] (TableNumber)");
+    await runQuery("Index - TableMaster DiningSection", "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_TableMaster_DiningSection') CREATE INDEX IX_TableMaster_DiningSection ON [dbo].[TableMaster] (DiningSection)");
     await runQuery("Index - RestaurantOrder Tableno", "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_RestaurantOrder_Tableno') CREATE INDEX IX_RestaurantOrder_Tableno ON [dbo].[RestaurantOrder] (Tableno)");
 
     // 11. CompanySettings
@@ -1190,6 +1225,29 @@ async function initDB(pool) {
               [EventTime] [datetime] NOT NULL DEFAULT GETDATE(),
               [ActionBy] [nvarchar](50) NULL,
               [Remarks] [nvarchar](255) NULL
+          )
+      END
+    `);
+
+    // 19.4 Create SettlementDayConfirmation table for Day End validation gates
+    await runQuery("Create SettlementDayConfirmation table", `
+      IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[SettlementDayConfirmation]') AND type in (N'U'))
+      BEGIN
+          CREATE TABLE [dbo].[SettlementDayConfirmation](
+              [BusinessDate] [date] NOT NULL PRIMARY KEY,
+              [OpeningConfirmed] [bit] NOT NULL DEFAULT 0,
+              [OpeningConfirmedAt] [datetime] NULL,
+              [OpeningConfirmedBy] [nvarchar](50) NULL,
+              [OpeningAmount] [decimal](18, 2) NULL,
+              [CashOutConfirmed] [bit] NOT NULL DEFAULT 0,
+              [CashOutConfirmedAt] [datetime] NULL,
+              [CashOutConfirmedBy] [nvarchar](50) NULL,
+              [ClosingConfirmed] [bit] NOT NULL DEFAULT 0,
+              [ClosingConfirmedAt] [datetime] NULL,
+              [ClosingConfirmedBy] [nvarchar](50) NULL,
+              [ClosingAmount] [decimal](18, 2) NULL,
+              [CreatedAt] [datetime] NOT NULL DEFAULT GETDATE(),
+              [UpdatedAt] [datetime] NOT NULL DEFAULT GETDATE()
           )
       END
     `);

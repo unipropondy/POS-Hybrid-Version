@@ -3,7 +3,7 @@ import "react-native-gesture-handler";
 import "../shims/displayMock";
 import "react-native-get-random-values";
 import "react-native-reanimated";
-import { initClientLogger } from "../utils/clientLogger";
+import { initClientLogger, logger } from "../utils/clientLogger";
 
 initClientLogger();
 
@@ -292,11 +292,19 @@ const POLLING_POLICY: NetworkPolicy = {
   budget: 5000,
 };
 
+const ANALYTICS_POLICY: NetworkPolicy = {
+  timeout: 60000, // 60 seconds to allow deep historical aggregations and exports
+  maxRetries: 1,
+  initialDelay: 500,
+  budget: 90000,
+};
+
 const classifyRequest = (url: string): NetworkPolicy => {
   if (!url) return NORMAL_POLICY;
   if (url.includes("/health")) return HEALTH_POLICY;
   if (url.includes("/yeahpay") || url.includes("yeahpay")) return TERMINAL_POLICY;
   if (url.includes("/api/print-jobs/status") || url.includes("/api/print-jobs/bridge-status")) return POLLING_POLICY;
+  if (url.includes("/api/sales/") || url.includes("/api/reports/")) return ANALYTICS_POLICY;
 
   const criticalKeywords = [
     "checkout",
@@ -469,6 +477,7 @@ class SafeRootErrorBoundary extends React.Component<
   componentDidCatch(error: any, errorInfo: any) {
     try {
       console.warn("🛡️ [SafeRootErrorBoundary] Caught error:", error?.message || error, errorInfo);
+      logger.error(`[SafeRootErrorBoundary] ${error?.message || error}`, errorInfo);
     } catch {}
   }
 
@@ -573,6 +582,16 @@ function RootLayoutContent() {
     warmupAPI();
   }, []);
 
+  // 💓 MULTI-DEVICE SESSION HEARTBEAT
+  useEffect(() => {
+    const auth = useAuthStore.getState();
+    if (auth.isLoggedIn && auth.user?.userId && auth.sessionId) {
+      auth.startHeartbeat();
+    } else {
+      auth.stopHeartbeat();
+    }
+  }, [user?.userId]);
+
   const [fontsLoaded, fontError] = useFonts({
     ...Ionicons.font,
     ...MaterialCommunityIcons.font,
@@ -619,7 +638,7 @@ function RootLayoutContent() {
         if (userName === "KDS") {
           router.replace("/kds" as any);
         } else {
-          router.replace("/order-type" as any);
+          router.replace("/(tabs)/category" as any);
         }
       }
     }

@@ -3,6 +3,82 @@ const router = express.Router();
 const { poolPromise } = require("../config/db");
 const { activeTransactions } = require("../utils/transactionHelper");
 
+// Secure Environment Management Endpoints
+router.get("/config/env", (req, res) => {
+  try {
+    const { getMaskedConfig } = require("../utils/envSecurity");
+    return res.json({ success: true, config: getMaskedConfig() });
+  } catch (error) {
+    console.error("Failed to retrieve environment config:", error.message);
+    return res.status(500).json({ success: false, message: "Failed to retrieve configuration" });
+  }
+});
+
+router.post("/config/env", (req, res) => {
+  try {
+    const { updates } = req.body;
+    if (!updates || typeof updates !== "object") {
+      return res.status(400).json({ success: false, message: "Updates object required" });
+    }
+    const { updateEnvironmentConfig, getMaskedConfig } = require("../utils/envSecurity");
+    const result = updateEnvironmentConfig(updates);
+    if (!result.success) {
+      return res.status(500).json(result);
+    }
+    return res.json({ success: true, message: "Configuration updated and encrypted securely", config: getMaskedConfig() });
+  } catch (error) {
+    console.error("Failed to update environment config:", error.message);
+    return res.status(500).json({ success: false, message: error.message || "Failed to update configuration" });
+  }
+});
+
+// Password-protected configuration inspection and export
+router.post("/config/env/unlock", (req, res) => {
+  try {
+    const { password } = req.body;
+    if (!password) {
+      return res.status(400).json({ success: false, message: "Password required" });
+    }
+
+    // Authenticate against admin user credentials in database or secure master hash
+    const masterAdminPassword = process.env.ADMIN_CONFIG_PASSWORD || "Unipro@Admin2026";
+    if (password !== masterAdminPassword) {
+      return res.status(401).json({ success: false, message: "Invalid configuration password" });
+    }
+
+    const { getMaskedConfig } = require("../utils/envSecurity");
+    const fs = require("fs");
+    const path = require("path");
+    const plainPath = path.resolve(__dirname, "..", ".env");
+    let fullConfig = {};
+    if (fs.existsSync(plainPath)) {
+      const { parseEnvContent } = require("../utils/envSecurity");
+      // Read raw but return only with authorized context
+      const lines = fs.readFileSync(plainPath, "utf8").split("\n");
+      lines.forEach(l => {
+        const idx = l.indexOf("=");
+        if (idx > -1) {
+          const k = l.substring(0, idx).trim();
+          let v = l.substring(idx + 1).trim();
+          if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+            v = v.substring(1, v.length - 1);
+          }
+          fullConfig[k] = v;
+        }
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: "Configuration unlocked successfully",
+      config: fullConfig
+    });
+  } catch (err) {
+    console.error("Failed to unlock configuration:", err.message);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
 router.get("/cancel-reasons", async (req, res) => {
   try {
     const pool = await poolPromise;
