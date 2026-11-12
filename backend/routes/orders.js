@@ -2580,11 +2580,29 @@ router.get("/active-kitchen", async (req, res) => {
         4: "SERVED",
         5: "HOLD",
       };
+      let parsedModifiers = [];
+      if (row.ModifiersJSON) {
+        try {
+          parsedModifiers = typeof row.ModifiersJSON === 'string' ? JSON.parse(row.ModifiersJSON) : row.ModifiersJSON;
+        } catch (_) {
+          parsedModifiers = [];
+        }
+      }
+
+      let parsedCombos = [];
+      if (row.ComboDetailsJSON) {
+        try {
+          parsedCombos = typeof row.ComboDetailsJSON === 'string' ? JSON.parse(row.ComboDetailsJSON) : row.ComboDetailsJSON;
+        } catch (_) {
+          parsedCombos = [];
+        }
+      }
+
       orders[row.orderId].items.push({
         ...row,
         status: statusMap[row.StatusCode],
-        modifiers: row.ModifiersJSON ? JSON.parse(row.ModifiersJSON) : [],
-        comboSelections: row.ComboDetailsJSON ? JSON.parse(row.ComboDetailsJSON) : [],
+        modifiers: Array.isArray(parsedModifiers) ? parsedModifiers : [],
+        comboSelections: Array.isArray(parsedCombos) ? parsedCombos : [],
       });
     });
     res.json({ serverTime: Date.now(), orders: Object.values(orders) });
@@ -2677,11 +2695,29 @@ router.get("/active-sessions", async (req, res) => {
         4: "SERVED",
         5: "HOLD",
       };
+      let parsedModifiers = [];
+      if (row.ModifiersJSON) {
+        try {
+          parsedModifiers = typeof row.ModifiersJSON === 'string' ? JSON.parse(row.ModifiersJSON) : row.ModifiersJSON;
+        } catch (_) {
+          parsedModifiers = [];
+        }
+      }
+
+      let parsedCombos = [];
+      if (row.ComboDetailsJSON) {
+        try {
+          parsedCombos = typeof row.ComboDetailsJSON === 'string' ? JSON.parse(row.ComboDetailsJSON) : row.ComboDetailsJSON;
+        } catch (_) {
+          parsedCombos = [];
+        }
+      }
+
       orders[row.orderId].items.push({
         ...row,
         status: statusMap[row.StatusCode],
-        modifiers: row.ModifiersJSON ? JSON.parse(row.ModifiersJSON) : [],
-        comboSelections: row.ComboDetailsJSON ? JSON.parse(row.ComboDetailsJSON) : [],
+        modifiers: Array.isArray(parsedModifiers) ? parsedModifiers : [],
+        comboSelections: Array.isArray(parsedCombos) ? parsedCombos : [],
       });
     });
     res.json({ serverTime: Date.now(), orders: Object.values(orders) });

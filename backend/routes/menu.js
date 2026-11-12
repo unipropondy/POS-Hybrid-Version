@@ -97,7 +97,7 @@ router.get("/dishgroups/:CategoryId", async (req, res) => {
           WHERE a.IsActive = 1
           AND (
                 a.CategoryId = @CategoryId
-                OR dkt.KitchenTypeName = cm.CategoryName
+                OR (cm.CategoryName IS NOT NULL AND LOWER(RTRIM(LTRIM(dkt.KitchenTypeName))) = LOWER(RTRIM(LTRIM(cm.CategoryName))))
           )
           ORDER BY a.SortCode ASC, [DishGroupName] ASC
       `);

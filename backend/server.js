@@ -50,7 +50,6 @@ try {
 } catch { }
 
 const { writeToLogFile, cleanOldLogs, getDateTag } = require("./utils/logManager");
-const { loadSecureEnvironment } = require("./utils/envSecurity");
 
 function getDailyBackendLogPath() {
   return path.join(backendSubDir, `backend-${getDateTag()}.log`);
@@ -93,8 +92,11 @@ console.warn = (...args) => {
   logToFile(getDailyBackendLogPath(), args.map(a => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" "), "WARN");
 };
 
-// 🔒 Load environment variables with DPAPI protection, fallback recovery, and NTFS hardening
-loadSecureEnvironment();
+// Load plain text environment variables directly via dotenv
+const plainEnvPath = path.resolve(__dirname, ".env");
+if (fs.existsSync(plainEnvPath)) {
+  require("dotenv").config({ path: plainEnvPath });
+}
 
 const { poolPromise } = require("./config/db");
 const { initDB, syncKitchensToPrintMaster } = require("./config/init");

@@ -985,8 +985,15 @@ export default function MenuScreen() {
       setIsInitialLoading(true);
       await fetchMenu();
       const currentKitchens = useMenuStore.getState().kitchens;
+      const currentDishGroups = useMenuStore.getState().dishGroups;
       if (currentKitchens.length > 0) {
-        await loadGroups(currentKitchens[0].CategoryId);
+        // Find first kitchen with available dish groups, or fall back to the first kitchen
+        const firstActiveWithGroups = currentKitchens.find((k: any) => {
+          const g = currentDishGroups[String(k.CategoryId)];
+          return Array.isArray(g) && g.length > 0;
+        });
+        const initialKitchenId = firstActiveWithGroups ? firstActiveWithGroups.CategoryId : currentKitchens[0].CategoryId;
+        await loadGroups(initialKitchenId);
       }
       setIsInitialLoading(false);
     };

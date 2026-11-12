@@ -1,6 +1,6 @@
 {
   "name": "smart-pos",
-  "version": "3.0.3",
+  "version": "3.0.9",
   "description": "Smart POS System",
   "main": "main.js",
   "author": "UniPro Solutions",
@@ -31,7 +31,11 @@
           "!node_modules/**/*",
           "!logs/*",
           "!.git/*",
-          "!*.bak"
+          "!*.bak*",
+          "!*.backup*",
+          "!*.dpapi*",
+          "!.env.key*",
+          "!.env.bak*"
         ]
       },
       {

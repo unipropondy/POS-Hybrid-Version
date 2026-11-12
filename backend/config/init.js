@@ -1261,7 +1261,8 @@ async function initDB(pool) {
               [Description] [nvarchar](100) NOT NULL
           )
       END
-    `);
+
+      `);
 
     // Ensure Description column exists in CashDrawerRemarks
     await runQuery("CashDrawerRemarks - Description", "IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[CashDrawerRemarks]') AND name = 'Description') ALTER TABLE [dbo].[CashDrawerRemarks] ADD [Description] NVARCHAR(100) NOT NULL DEFAULT ''");
@@ -1603,14 +1604,19 @@ async function initDB(pool) {
     `);
 
     // 📦 Stored Procedure: proc_RestaurantOrder (Daily Archiving for Day End)
+    // Ensure procedure stub exists first (100% compatible across all SQL Server versions)
+    await runQuery("Ensure proc_RestaurantOrder stub exists", `
+      IF OBJECT_ID('dbo.proc_RestaurantOrder', 'P') IS NULL
+        EXEC('CREATE PROCEDURE [dbo].[proc_RestaurantOrder] AS BEGIN SET NOCOUNT ON; END');
+    `);
+
     await runQuery("Create proc_RestaurantOrder stored procedure", `
-      EXEC('
-        CREATE OR ALTER PROCEDURE [dbo].[proc_RestaurantOrder]
-        AS
-        BEGIN
-            SET NOCOUNT ON;
-            BEGIN TRY
-                BEGIN TRANSACTION;
+      ALTER PROCEDURE [dbo].[proc_RestaurantOrder]
+      AS
+      BEGIN
+          SET NOCOUNT ON;
+          BEGIN TRY
+              BEGIN TRANSACTION;
 
                 -- Step 1 : Delete old records with NULL OrderNumber
                 DELETE D
@@ -1875,11 +1881,11 @@ async function initDB(pool) {
                 COMMIT TRANSACTION;
             END TRY
             BEGIN CATCH
-                ROLLBACK TRANSACTION;
-                THROW;
+                IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+                DECLARE @ErrMsg NVARCHAR(4000) = ERROR_MESSAGE(), @ErrSev INT = ERROR_SEVERITY(), @ErrState INT = ERROR_STATE();
+                RAISERROR(@ErrMsg, @ErrSev, @ErrState);
             END CATCH
         END
-      ');
     `);
 
     console.log("✅ Database schema and performance indexes are up to date. (Rewards system active)");

@@ -72,7 +72,7 @@ const targetBackendDir = path.join(payloadStageDir, 'backend');
 console.log('✓ Copying backend runtime and assets (this may take a minute)...');
 
 // Helper to copy directory while excluding git and temporary caches
-function copyDirRecursive(src, dest, ignoreList = ['.git', '.cache', 'logs']) {
+function copyDirRecursive(src, dest, ignoreList = ['.git', '.cache', 'logs', '.env.enc', '.env.bak', '.env.key.dpapi']) {
   fs.mkdirSync(dest, { recursive: true });
   const entries = fs.readdirSync(src, { withFileTypes: true });
 

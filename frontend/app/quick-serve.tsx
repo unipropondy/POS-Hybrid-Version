@@ -27,6 +27,7 @@ import { useCartStore, CartItem, getContextId } from "@/stores/cartStore";
 import { useOrderContextStore } from "@/stores/orderContextStore";
 import { useCompanySettingsStore } from "@/stores/companySettingsStore";
 import { useGeneralSettingsStore } from "@/stores/generalSettingsStore";
+import { useMenuStore } from "@/stores/menuStore";
 import { useToast } from "@/components/Toast";
 import StoreSettingsModal from "@/components/payment/StoreSettingsModal";
 import PayNowPaymentModal from "@/components/payment/PayNowPaymentModal";
@@ -36,6 +37,7 @@ import DiscountModal from "@/components/DiscountModal";
 import ItemDiscountModal from "@/components/ItemDiscountModal";
 import { socket } from "@/constants/socket";
 import { CustomerDisplaySync } from "@/utils/CustomerDisplaySync";
+import { useQuickCashStore } from "@/stores/quickCashStore";
 import { SyncStatusBadge } from "@/components/SyncStatusBadge";
 
 const getImageUrl = (imagePath: string | null | undefined) => {
@@ -499,8 +501,10 @@ export default function QuickServePOSScreen() {
   const removeFromCartGlobal = useCartStore((state) => state.removeFromCartGlobal);
   const clearCart = useCartStore((state) => state.clearCart);
 
-  // Categories, Dish Groups, Dishes Data
+  // Categories, Dish Groups, Dishes Data synced with useMenuStore
   const [categories, setCategories] = useState<any[]>([]);
+  const [selectedKitchenId, setSelectedKitchenId] = useState<string>("");
+  const [groups, setGroups] = useState<any[]>([]);
   const [dishGroups, setDishGroups] = useState<any[]>([]);
   const [allDishGroups, setAllDishGroups] = useState<any[]>([]);
   const [dishes, setDishes] = useState<any[]>([]);
@@ -615,6 +619,39 @@ export default function QuickServePOSScreen() {
   const [discountModalVisible, setDiscountModalVisible] = useState<boolean>(false);
   const [tempDiscount, setTempDiscount] = useState<string>("");
   const [isProcessingPayment, setIsProcessingPayment] = useState<boolean>(false);
+  const [showCashModal, setShowCashModal] = useState<boolean>(false);
+  const [cashReceivedInput, setCashReceivedInput] = useState<string>("");
+  const cashInputRef = useRef<TextInput>(null);
+  const quickCashAmounts = useQuickCashStore((s) => s.amounts);
+
+  // Keypad handler for Cash Received popup
+  const handleCashKeypadPress = useCallback((val: string) => {
+    if (val === "clear") {
+      setCashReceivedInput("");
+    } else if (val === "backspace") {
+      setCashReceivedInput((prev) => (prev.length > 0 ? prev.slice(0, -1) : ""));
+    } else if (val === ".") {
+      setCashReceivedInput((prev) => {
+        if (!prev) return "0.";
+        if (prev.includes(".")) return prev;
+        return prev + ".";
+      });
+    } else {
+      setCashReceivedInput((prev) => {
+        if (prev === "0") return val;
+        if (prev.includes(".")) {
+          const parts = prev.split(".");
+          if (parts[1] && parts[1].length >= 2) return prev;
+        }
+        return prev + val;
+      });
+    }
+    if (cashInputRef.current) {
+      cashInputRef.current.focus();
+    }
+  }, []);
+
+
   const [storeSettingsVisible, setStoreSettingsVisible] = useState<boolean>(false);
 
   // Member & Credit Customer Modal State
@@ -887,7 +924,11 @@ export default function QuickServePOSScreen() {
   const handleSelectPaymode = (modeKey: string) => {
     setSelectedPaymentMethod(modeKey);
     const upper = modeKey.toUpperCase().trim();
-    if (upper === "PAYNOW") {
+    if (upper === "CASH") {
+      if (cartItems.length > 0) {
+        openCashReceivedModal();
+      }
+    } else if (upper === "PAYNOW") {
       if (cartItems.length > 0) {
         setShowPayNowModal(true);
       }
@@ -904,54 +945,50 @@ export default function QuickServePOSScreen() {
     }
   };
 
-  // Load Menu Data
+  // Load Menu Data synced with useMenuStore
   useEffect(() => {
-    fetchMenuData();
+    initMenuData();
   }, []);
 
-  const fetchMenuData = async () => {
+  const initMenuData = async () => {
     setLoading(true);
     try {
-      const [catRes, dishRes, groupRes] = await Promise.all([
-        fetch(`${API_URL}/api/menu/kitchens`).then((r) => r.json()).catch(() => []),
-        fetch(`${API_URL}/api/menu/dishes/all`).then((r) => r.json()).catch(() => []),
-        fetch(`${API_URL}/api/menu/dishgroups/all`).then((r) => r.json()).catch(() => []),
-      ]);
+      await useMenuStore.getState().fetchMenu();
+      const store = useMenuStore.getState();
+      const currentKitchens = store.kitchens || [];
+      setCategories(currentKitchens);
+      setDishes(store.allDishes || []);
 
-      const validCats = Array.isArray(catRes) ? catRes : [];
-      const validDishes = Array.isArray(dishRes) ? dishRes : [];
-      let validGroups = Array.isArray(groupRes) ? groupRes : [];
+      // Aggregate all Dish Groups across all Kitchens in EXACT Menu Screen sequence
+      const allMenuGroups: any[] = [];
+      const seenGroupIds = new Set<string>();
 
-      if (validGroups.length === 0 && validDishes.length > 0) {
-        const groupMap = new Map();
-        validDishes.forEach((d: any) => {
-          if (d.DishGroupId && !groupMap.has(d.DishGroupId)) {
-            groupMap.set(d.DishGroupId, {
-              DishGroupId: d.DishGroupId,
-              DishGroupName: d.DishGroupName || d.GroupName || "Group",
-            });
+      for (const k of currentKitchens) {
+        const kIdStr = String(k.CategoryId || k.id);
+        let kGroups = store.dishGroups[kIdStr];
+        if (!kGroups || kGroups.length === 0) {
+          kGroups = await store.fetchGroups(kIdStr);
+        }
+        if (Array.isArray(kGroups)) {
+          for (const g of kGroups) {
+            const gId = String(g.DishGroupId || g.id || "");
+            if (gId && !seenGroupIds.has(gId)) {
+              seenGroupIds.add(gId);
+              allMenuGroups.push(g);
+            }
           }
-        });
-        validGroups = Array.from(groupMap.values());
+        }
       }
 
-      setCategories(validCats);
-      setDishes(validDishes);
-      setAllDishGroups(validGroups);
+      setGroups(allMenuGroups);
+      setDishGroups(allMenuGroups);
+      setAllDishGroups(allMenuGroups);
 
-      // Auto-select first dish group with items on initial load
-      if (validGroups.length > 0) {
-        const firstWithDishes = validGroups.find((g: any) => {
-          const gId = String(g.DishGroupId || "").toLowerCase();
-          return validDishes.some((d: any) => {
-            const dGroupId = String(d.DishGroupId || "").toLowerCase();
-            const dMapped = (d.MappedGroupIds || "").toLowerCase();
-            return dGroupId === gId || dMapped.includes(gId);
-          });
-        }) || validGroups[0];
-        if (firstWithDishes) {
-          setSelectedDishGroupId(firstWithDishes.DishGroupId);
-        }
+      if (allMenuGroups.length > 0) {
+        const firstGId = String(allMenuGroups[0].DishGroupId || allMenuGroups[0].id);
+        setSelectedDishGroupId(firstGId);
+        setSelectedGroupId(Number(firstGId) || null);
+        await selectDishGroup(firstGId);
       }
     } catch (err) {
       console.error("Error fetching menu data:", err);
@@ -961,33 +998,73 @@ export default function QuickServePOSScreen() {
     }
   };
 
-  const handleSelectCategory = async (catId: number | null) => {
-    setSelectedCategoryId(catId);
-    if (catId === null) {
-      setDishGroups([]);
-      setSelectedGroupId(null);
-      return;
+  const selectKitchen = async (kitchenId: string | number) => {
+    const kIdStr = String(kitchenId);
+    setSelectedKitchenId(kIdStr);
+    setSelectedCategoryId(Number(kIdStr) || null);
+    setGroupPage(1);
+    setDishPage(1);
+
+    const store = useMenuStore.getState();
+    let groupsData = store.dishGroups[kIdStr];
+    if (!groupsData || groupsData.length === 0) {
+      groupsData = await store.fetchGroups(kIdStr);
     }
-    try {
-      const res = await fetch(`${API_URL}/api/menu/dishgroups/${catId}`).then((r) => r.json()).catch(() => []);
-      const validGroups = Array.isArray(res) ? res : [];
-      setDishGroups(validGroups);
+
+    const currentGroups = Array.isArray(groupsData) ? groupsData : [];
+    setGroups(currentGroups);
+    setDishGroups(currentGroups);
+
+    // Keep allDishGroups updated for legacy references
+    const allGroupsMap = new Map();
+    currentGroups.forEach((g: any) => allGroupsMap.set(g.DishGroupId, g));
+    setAllDishGroups(currentGroups);
+
+    if (currentGroups.length > 0) {
+      const firstGId = String(currentGroups[0].DishGroupId);
+      setSelectedDishGroupId(firstGId);
+      setSelectedGroupId(Number(firstGId) || null);
+      await selectDishGroup(firstGId);
+    } else {
+      setSelectedDishGroupId(null);
       setSelectedGroupId(null);
-    } catch (err) {
-      console.error("Error fetching category dishgroups:", err);
-      setDishGroups([]);
-      setSelectedGroupId(null);
+    }
+  };
+
+  const selectDishGroup = async (groupId: string | number) => {
+    const gIdStr = String(groupId);
+    setSelectedDishGroupId(gIdStr);
+    setSelectedGroupId(Number(gIdStr) || null);
+    setDishPage(1);
+
+    const store = useMenuStore.getState();
+    const cachedDishes = store.dishesByGroup[gIdStr];
+    if (!cachedDishes || cachedDishes.length === 0) {
+      await store.fetchDishes(gIdStr);
+    }
+  };
+
+  const fetchMenuData = async () => {
+    await initMenuData();
+  };
+
+  const handleSelectCategory = async (catId: number | null) => {
+    if (catId !== null) {
+      await selectKitchen(catId);
     }
   };
 
   const getDishGroupCount = useCallback(
     (group: any) => {
-      const gId = String(group?.DishGroupId || "").toLowerCase();
-      if (!gId) return 0;
-      return dishes.filter((d: any) => {
-        const dGroupId = String(d.DishGroupId || "").toLowerCase();
+      const gIdStr = String(group?.DishGroupId || group?.GroupId || "");
+      if (!gIdStr) return 0;
+      const cached = useMenuStore.getState().dishesByGroup[gIdStr];
+      if (Array.isArray(cached)) return cached.length;
+      const allD = useMenuStore.getState().allDishes || dishes;
+      return allD.filter((d: any) => {
+        const dGroupId = String(d.DishGroupId || "");
         const dMapped = (d.MappedGroupIds || "").toLowerCase();
-        return dGroupId === gId || dMapped.includes(gId);
+        return dGroupId === gIdStr || dMapped.includes(gIdStr.toLowerCase());
       }).length;
     },
     [dishes]
@@ -1089,68 +1166,39 @@ export default function QuickServePOSScreen() {
     if (leftPanelView === "favorites") {
       return favoriteDishes;
     }
-    if (leftPanelView === "category") {
-      if (selectedCategoryId === null && searchQuery.trim() === "") {
-        return [];
-      }
-    } else {
-      if (selectedDishGroupId === null && searchQuery.trim() === "") {
-        return [];
-      }
-    }
 
-    const foundCat = categories.find((c) => String(c.CategoryId) === String(selectedCategoryId));
-    const catIdStr = selectedCategoryId ? String(selectedCategoryId) : "";
-    const catName = (foundCat?.KitchenTypeName || foundCat?.CategoryName || "").toLowerCase();
-    const selGroupIdStr = selectedDishGroupId ? String(selectedDishGroupId).toLowerCase() : "";
-
-    return dishes.filter((dish) => {
-      if (vegFilter === "veg" && !dish.IsVeg) return false;
-      if (vegFilter === "non-veg" && dish.IsVeg) return false;
-
-      if (searchQuery.trim() !== "") {
-        const query = searchQuery.toLowerCase();
+    if (searchQuery.trim() !== "") {
+      const query = searchQuery.toLowerCase().trim();
+      return dishes.filter((dish) => {
+        if (vegFilter === "veg" && !dish.IsVeg) return false;
+        if (vegFilter === "non-veg" && dish.IsVeg) return false;
         const matchesName = dish.Name?.toLowerCase().includes(query);
         const matchesCode = dish.DishCode?.toLowerCase().includes(query);
         return matchesName || matchesCode;
-      }
+      });
+    }
 
-      if (leftPanelView === "dishgroup") {
-        if (selGroupIdStr) {
-          const dishGroupIdStr = String(dish.DishGroupId || "").toLowerCase();
-          const mappedGroupIds = (dish.MappedGroupIds || "").toLowerCase();
-          const matchesGroup =
-            dishGroupIdStr === selGroupIdStr ||
-            mappedGroupIds.includes(selGroupIdStr);
-          if (!matchesGroup) return false;
-        }
-        return true;
-      }
+    const selGroupIdStr = selectedDishGroupId ? String(selectedDishGroupId).toLowerCase() : "";
+    if (!selGroupIdStr) {
+      return [];
+    }
 
-      if (selectedCategoryId !== null && selectedCategoryId !== undefined) {
-        const dishCatId = String(dish.CategoryId || "");
-        const dishKitchenId = String(dish.KitchenTypeId || "");
-        const dishKitchenCode = String(dish.KitchenTypeCode || "");
-        const dishKitchenName = (dish.KitchenTypeName || "").toLowerCase();
-        const validGroupIds = dishGroups.map((g) => String(g.DishGroupId));
+    // Try reading directly from useMenuStore cache for maximum consistency with Menu Screen
+    const cached = useMenuStore.getState().dishesByGroup[String(selectedDishGroupId)];
+    let sourceList = Array.isArray(cached) && cached.length > 0 ? cached : dishes;
 
-        const matchesCategory =
-          (catIdStr && (dishCatId === catIdStr || dishKitchenId === catIdStr || dishKitchenCode === catIdStr)) ||
-          (catName && dishKitchenName && dishKitchenName === catName) ||
-          (validGroupIds.length > 0 && validGroupIds.includes(String(dish.DishGroupId || "")));
+    return sourceList.filter((dish) => {
+      if (vegFilter === "veg" && !dish.IsVeg) return false;
+      if (vegFilter === "non-veg" && dish.IsVeg) return false;
 
-        if (!matchesCategory) return false;
-
-        if (selectedGroupId !== null && selectedGroupId !== undefined) {
-          if (String(dish.DishGroupId || "") !== String(selectedGroupId)) {
-            return false;
-          }
-        }
-      }
-
-      return true;
+      const dishGroupIdStr = String(dish.DishGroupId || "").toLowerCase();
+      const mappedGroupIds = (dish.MappedGroupIds || "").toLowerCase();
+      return (
+        dishGroupIdStr === selGroupIdStr ||
+        mappedGroupIds.includes(selGroupIdStr)
+      );
     });
-  }, [dishes, leftPanelView, selectedCategoryId, selectedGroupId, selectedDishGroupId, searchQuery, dishGroups, vegFilter, categories, favoriteDishes]);
+  }, [dishes, leftPanelView, selectedDishGroupId, searchQuery, vegFilter, favoriteDishes]);
 
   const sortedDishes = useMemo(() => {
     const list = [...filteredDishes];
@@ -1183,17 +1231,18 @@ export default function QuickServePOSScreen() {
   };
 
   // Dish Group Pagination Calculations (2 cols x 7 rows = 14 groups per page)
-  const totalGroupPages = Math.max(1, Math.ceil(allDishGroups.length / GROUPS_PER_PAGE));
+  const currentKitchenGroups = allDishGroups.length > 0 ? allDishGroups : (dishGroups.length > 0 ? dishGroups : groups);
+  const totalGroupPages = Math.max(1, Math.ceil(currentKitchenGroups.length / GROUPS_PER_PAGE));
   const safeGroupPage = Math.min(Math.max(1, groupPage), totalGroupPages);
 
   // In Previous/Next mode, slice groups to GROUPS_PER_PAGE. In Scroll mode, show all groups.
   const displayedDishGroups = useMemo(() => {
     if (menuNavigationMode === "prev_next") {
       const startIdx = (safeGroupPage - 1) * GROUPS_PER_PAGE;
-      return allDishGroups.slice(startIdx, startIdx + GROUPS_PER_PAGE);
+      return currentKitchenGroups.slice(startIdx, startIdx + GROUPS_PER_PAGE);
     }
-    return allDishGroups;
-  }, [menuNavigationMode, allDishGroups, safeGroupPage]);
+    return currentKitchenGroups;
+  }, [menuNavigationMode, currentKitchenGroups, safeGroupPage]);
 
   // Company Settings & Dynamic Tax Calculations
   const companySettings = useCompanySettingsStore((state: any) => state.settings);
@@ -1351,6 +1400,14 @@ export default function QuickServePOSScreen() {
     }
     return Math.max(0, tot);
   }, [subtotal, discountAmount, serviceChargeAmount, totalTakeawayChargesAmount, gstAmount, companySettings]);
+
+  const openCashReceivedModal = useCallback(() => {
+    setCashReceivedInput(finalTotal.toFixed(2));
+    setShowCashModal(true);
+    setTimeout(() => {
+      if (cashInputRef.current) cashInputRef.current.focus();
+    }, 150);
+  }, [finalTotal]);
 
   // ═════════════════════════════════════════════════════════════════════════
   // 🖥️ QUICK SERVE CUSTOMER DISPLAY LIVE SCREEN MIRROR SYNC (VIA PRINT BRIDGE)
@@ -1850,6 +1907,12 @@ export default function QuickServePOSScreen() {
       }
     }
 
+    // 1a. Cash Received popup — display Cash Received modal for CASH payment
+    if (normMethod === "CASH" && !showCashModal) {
+      openCashReceivedModal();
+      return;
+    }
+
     // 1b. PayNow QR popup — show QR, wait for manual confirmation
     if (!skipPayNowCheck && normMethod === "PAYNOW") {
       setShowPayNowModal(true);
@@ -1934,7 +1997,7 @@ export default function QuickServePOSScreen() {
     await executePaymentFinalize();
   };
 
-  const executePaymentFinalize = async () => {
+  const executePaymentFinalize = async (paidCashAmount?: number, changeReturnAmount?: number) => {
     setIsProcessingPayment(true);
     try {
       const activeTableId = selectedTable ? String(selectedTable.id || selectedTable.TableId || "") : "";
@@ -1972,7 +2035,11 @@ export default function QuickServePOSScreen() {
         };
       });
 
-      const saleData = {
+      const isCash = (selectedPaymentMethod || "").toUpperCase().trim() === "CASH";
+      const actualPaid = isCash ? (paidCashAmount !== undefined ? paidCashAmount : finalTotal) : finalTotal;
+      const actualChange = isCash ? (changeReturnAmount !== undefined ? changeReturnAmount : Math.max(0, actualPaid - finalTotal)) : 0;
+
+      const saleData: any = {
         totalAmount: finalTotal,
         subTotal: subtotal,
         discountAmount: discountAmount,
@@ -1991,6 +2058,9 @@ export default function QuickServePOSScreen() {
         memberId: selectedMember?.MemberId || null,
         customerName: selectedMember?.Name || null,
         mobileNo: selectedMember?.Phone || null,
+        cashPaid: actualPaid,
+        tenderedAmount: actualPaid,
+        changeAmount: actualChange,
         items: currentCartSnapshot.map((item: any) => ({
           id: String(item.id || item.DishId),
           DishId: String(item.id || item.DishId),
@@ -2005,6 +2075,8 @@ export default function QuickServePOSScreen() {
           {
             payMode: selectedPaymentMethod,
             amount: finalTotal,
+            tenderedAmount: actualPaid,
+            changeAmount: actualChange,
           },
         ],
       };
@@ -2027,6 +2099,8 @@ export default function QuickServePOSScreen() {
       const generatedBillNo = resJson.billNo || resJson.orderId || quickServeToken;
 
       setIsProcessingPayment(false);
+      setShowCashModal(false);
+      setCashReceivedInput("");
       generatePosOrderId();
       setDiscountPercent(0);
       setCustomAmount("");
@@ -2043,8 +2117,8 @@ export default function QuickServePOSScreen() {
       CustomerDisplaySync.syncPaymentSuccess({
         orderId: generatedBillNo,
         total: finalTotal,
-        paid: finalTotal,
-        change: 0,
+        paid: actualPaid,
+        change: actualChange,
         method: selectedPaymentMethod,
       });
 
@@ -2498,8 +2572,7 @@ export default function QuickServePOSScreen() {
 
       {/* 3-COLUMN MAIN BODY */}
       {quickServeModeEnabled ? (
-        <>
-          <View style={[styles.mainBody3Column, isMobile && styles.mainBodyMobile, isTablet && styles.mainBodyTablet]}>
+        <View style={[styles.mainBody3Column, isMobile && styles.mainBodyMobile, isTablet && styles.mainBodyTablet]}>
             {/* ================= COLUMN 1: LEFT SIDE → CURRENT ORDER / CART ================= */}
             {(!isMobile || mobileActiveTab === "order") && (
             <View style={[styles.leftCartColumn, isMobile && styles.leftCartColumnMobile, isTablet && styles.leftCartColumnTablet]}>
@@ -2862,295 +2935,217 @@ export default function QuickServePOSScreen() {
           {/* ================= COLUMN 2: CENTER → Category / Dish Groups / Favorites ================= */}
           {(!isMobile || mobileActiveTab === "groups") && (
           <View style={[styles.centerGroupsColumn, isMobile && styles.centerGroupsColumnMobile, isTablet && styles.centerGroupsColumnTablet]}>
-            {/* CATEGORY / DISH GROUP HEADER */}
+            {/* DISH GROUPS HEADER */}
             <View style={styles.groupsHeader}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
                 <Ionicons
-                  name={
-                    leftPanelView === "category"
-                      ? "grid-outline"
-                      : "restaurant-outline"
-                  }
+                  name="restaurant-outline"
                   size={16}
                   color="#FF5A16"
                 />
                 <Text style={styles.groupsHeaderTitle}>
-                  {leftPanelView === "category"
-                    ? "Category"
-                    : "Dish Groups"}
+                  Dish Groups
                 </Text>
-              </View>
-
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                {/* CYCLE VIEWS BUTTON */}
-                <TouchableOpacity
-                  style={styles.toggleViewIconBtn}
-                  onPress={toggleLeftPanelView}
-                  activeOpacity={0.7}
-                  accessibilityLabel="Switch View"
-                >
-                  <Ionicons name="swap-horizontal" size={16} color="#FF5A16" />
-                </TouchableOpacity>
               </View>
             </View>
 
-            {leftPanelView === "category" ? (
-              /* CATEGORIES VERTICAL LIST */
-              <ScrollView style={styles.categoriesScroll} showsVerticalScrollIndicator={false}>
-                {categories.map((cat) => {
-                  const isActive = selectedCategoryId === cat.CategoryId;
-                  const catName = cat.KitchenTypeName || cat.CategoryName;
-                  const count = getCategoryCount(cat);
-
-                  return (
-                    <TouchableOpacity
-                      key={cat.CategoryId}
-                      style={[
-                        styles.categoryCard,
-                        isActive && styles.categoryCardActive,
-                      ]}
-                      onPress={() => {
-                        handleSelectCategory(cat.CategoryId);
-                        if (isMobile) setMobileActiveTab("dishes");
-                      }}
-                      activeOpacity={0.85}
-                    >
-                      <Text
-                        style={[
-                          styles.categoryName,
-                          isActive && styles.categoryNameActive,
-                        ]}
-                        numberOfLines={1}
-                      >
-                        {catName}
-                      </Text>
-
-                      <View
-                        style={[
-                          styles.categoryBadge,
-                          isActive && styles.categoryBadgeActive,
-                        ]}
-                      >
-                        <Text
-                          style={[
-                            styles.categoryBadgeText,
-                            isActive && styles.categoryBadgeTextActive,
-                          ]}
-                        >
-                          {count}
-                        </Text>
-                      </View>
-
-                      <Ionicons
-                        name="chevron-forward"
-                        size={16}
-                        color={isActive ? "#FFFFFF" : "#CBD5E1"}
-                        style={{ marginLeft: 4 }}
-                      />
-                    </TouchableOpacity>
-                  );
-                })}
-              </ScrollView>
-            ) : (
-              <>
-                {/* SINGLE FAVORITES BUTTON ROW */}
-                <View style={styles.favoritesButtonRow}>
-                  <TouchableOpacity
+            {/* SINGLE FAVORITES BUTTON ROW */}
+            <View style={styles.favoritesButtonRow}>
+              <TouchableOpacity
+                style={[
+                  styles.favoritesBigBtn,
+                  leftPanelView === "favorites" && styles.favoritesBigBtnActive,
+                ]}
+                onPress={() => {
+                  setLeftPanelView((prev) => (prev === "favorites" ? "dishgroup" : "favorites"));
+                  if (isMobile) setMobileActiveTab("dishes");
+                }}
+                activeOpacity={0.85}
+              >
+                <View
+                  style={[
+                    styles.favoritesIconCircle,
+                    leftPanelView === "favorites" && styles.favoritesIconCircleActive,
+                  ]}
+                >
+                  <Ionicons
+                    name="heart"
+                    size={15}
+                    color={leftPanelView === "favorites" ? "#FFFFFF" : "#E11D48"}
+                  />
+                </View>
+                <Text
+                  style={[
+                    styles.favoritesBigBtnText,
+                    leftPanelView === "favorites" && styles.favoritesBigBtnTextActive,
+                  ]}
+                >
+                  Favorites
+                </Text>
+                {favoriteDishes.length > 0 && (
+                  <View
                     style={[
-                      styles.favoritesBigBtn,
-                      leftPanelView === "favorites" && styles.favoritesBigBtnActive,
+                      styles.favoritesCountBadge,
+                      leftPanelView === "favorites" && styles.favoritesCountBadgeActive,
                     ]}
-                    onPress={() => {
-                      setLeftPanelView((prev) => (prev === "favorites" ? "dishgroup" : "favorites"));
-                      if (isMobile) setMobileActiveTab("dishes");
-                    }}
-                    activeOpacity={0.85}
                   >
-                    <View
-                      style={[
-                        styles.favoritesIconCircle,
-                        leftPanelView === "favorites" && styles.favoritesIconCircleActive,
-                      ]}
-                    >
-                      <Ionicons
-                        name="heart"
-                        size={15}
-                        color={leftPanelView === "favorites" ? "#FFFFFF" : "#E11D48"}
-                      />
-                    </View>
                     <Text
                       style={[
-                        styles.favoritesBigBtnText,
-                        leftPanelView === "favorites" && styles.favoritesBigBtnTextActive,
+                        styles.favoritesCountBadgeText,
+                        leftPanelView === "favorites" && styles.favoritesCountBadgeTextActive,
                       ]}
                     >
-                      Favorites
+                      {favoriteDishes.length}
                     </Text>
-                    {favoriteDishes.length > 0 && (
-                      <View
+                  </View>
+                )}
+              </TouchableOpacity>
+            </View>
+
+            {/* DISH GROUPS VERTICAL LIST WITH UP/DOWN SCROLL BUTTONS */}
+            <View style={styles.dishGroupPanelBody}>
+              <ScrollView
+                ref={dishGroupScrollRef}
+                style={styles.dishGroupScroll}
+                contentContainerStyle={styles.dishGroupScrollContent}
+                showsVerticalScrollIndicator={false}
+                nestedScrollEnabled
+                scrollEnabled={menuNavigationMode === "scroll"}
+                onScroll={(e) => setDishGroupScrollOffset(e.nativeEvent.contentOffset.y)}
+                scrollEventThrottle={16}
+                onContentSizeChange={(_w, h) => setDishGroupContentHeight(h)}
+                onLayout={(e) => setDishGroupContainerHeight(e.nativeEvent.layout.height)}
+              >
+                <View style={styles.dishGroupGrid}>
+                  {displayedDishGroups.map((group) => {
+                    const isGroupActive = leftPanelView === "dishgroup" && String(selectedDishGroupId) === String(group.DishGroupId);
+                    const groupName = group.DishGroupName;
+                    const count = getDishGroupCount(group);
+
+                    return (
+                      <TouchableOpacity
+                        key={group.DishGroupId}
                         style={[
-                          styles.favoritesCountBadge,
-                          leftPanelView === "favorites" && styles.favoritesCountBadgeActive,
+                          styles.dishGroupCard2Col,
+                          isGroupActive && styles.dishGroupCard2ColActive,
                         ]}
+                        onPress={() => {
+                          setLeftPanelView("dishgroup");
+                          setSelectedDishGroupId(group.DishGroupId);
+                          selectDishGroup(group.DishGroupId);
+                          if (isMobile) setMobileActiveTab("dishes");
+                        }}
+                        activeOpacity={0.85}
                       >
                         <Text
                           style={[
-                            styles.favoritesCountBadgeText,
-                            leftPanelView === "favorites" && styles.favoritesCountBadgeTextActive,
+                            styles.dishGroupName2Col,
+                            isGroupActive && styles.dishGroupName2ColActive,
+                          ]}
+                          numberOfLines={2}
+                        >
+                          {groupName}
+                        </Text>
+
+                        <View
+                          style={[
+                            styles.dishGroupBadge2Col,
+                            isGroupActive && styles.dishGroupBadge2ColActive,
                           ]}
                         >
-                          {favoriteDishes.length}
-                        </Text>
-                      </View>
-                    )}
+                          <Text
+                            style={[
+                              styles.dishGroupBadgeText2Col,
+                              isGroupActive && styles.dishGroupBadgeText2ColActive,
+                            ]}
+                          >
+                            {count}
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </ScrollView>
+
+              {/* SINGLE UNIFIED UP/DOWN SCROLL BUTTON PILL ON THE RIGHT (ONLY IN SCROLL MODE) */}
+              {menuNavigationMode === "scroll" && (
+                <View style={styles.dishGroupScrollPillContainer}>
+                  <View style={styles.dishGroupScrollPill}>
+                    <TouchableOpacity
+                      style={[styles.singleScrollHalf, isDishGroupAtTop && styles.scrollBtnDisabled]}
+                      onPress={() => scrollDishGroupsVertically("up")}
+                      disabled={isDishGroupAtTop}
+                      activeOpacity={0.7}
+                    >
+                      <Ionicons name="chevron-up" size={14} color={isDishGroupAtTop ? "#CBD5E1" : "#334155"} />
+                    </TouchableOpacity>
+
+                    <View style={styles.singleScrollDivider} />
+
+                    <TouchableOpacity
+                      style={[styles.singleScrollHalf, isDishGroupAtBottom && styles.scrollBtnDisabled]}
+                      onPress={() => scrollDishGroupsVertically("down")}
+                      disabled={isDishGroupAtBottom}
+                      activeOpacity={0.7}
+                    >
+                      <Ionicons name="chevron-down" size={14} color={isDishGroupAtBottom ? "#CBD5E1" : "#334155"} />
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+            </View>
+
+            {/* DISH GROUPS PAGINATION BAR (ONLY IN PREVIOUS / NEXT MODE) */}
+            {menuNavigationMode === "prev_next" && displayedDishGroups.length > 0 && (
+              <View style={styles.groupsPaginationBar}>
+                <View style={styles.paginationLeft}>
+                  <TouchableOpacity
+                    style={[styles.paginationBtn, safeGroupPage <= 1 && styles.paginationBtnDisabled]}
+                    onPress={() => {
+                      if (safeGroupPage > 1) handleGroupPageChange(safeGroupPage - 1);
+                    }}
+                    disabled={safeGroupPage <= 1}
+                    activeOpacity={0.8}
+                  >
+                    <Ionicons
+                      name="chevron-back"
+                      size={14}
+                      color={safeGroupPage <= 1 ? "#94A3B8" : "#FF5A16"}
+                    />
+                    <Text style={[styles.paginationBtnText, safeGroupPage <= 1 && styles.paginationBtnTextDisabled]}>
+                      Previous
+                    </Text>
                   </TouchableOpacity>
                 </View>
 
-                {/* DISH GROUPS VERTICAL LIST WITH UP/DOWN SCROLL BUTTONS */}
-                <View style={styles.dishGroupPanelBody}>
-                  <ScrollView
-                    ref={dishGroupScrollRef}
-                    style={styles.dishGroupScroll}
-                    contentContainerStyle={styles.dishGroupScrollContent}
-                    showsVerticalScrollIndicator={false}
-                    nestedScrollEnabled
-                    scrollEnabled={menuNavigationMode === "scroll"}
-                    onScroll={(e) => setDishGroupScrollOffset(e.nativeEvent.contentOffset.y)}
-                    scrollEventThrottle={16}
-                    onContentSizeChange={(_w, h) => setDishGroupContentHeight(h)}
-                    onLayout={(e) => setDishGroupContainerHeight(e.nativeEvent.layout.height)}
-                  >
-                    <View style={styles.dishGroupGrid}>
-                      {displayedDishGroups.map((group) => {
-                        const isGroupActive = leftPanelView === "dishgroup" && String(selectedDishGroupId) === String(group.DishGroupId);
-                        const groupName = group.DishGroupName;
-                        const count = getDishGroupCount(group);
-
-                        return (
-                          <TouchableOpacity
-                            key={group.DishGroupId}
-                            style={[
-                              styles.dishGroupCard2Col,
-                              isGroupActive && styles.dishGroupCard2ColActive,
-                            ]}
-                            onPress={() => {
-                              setLeftPanelView("dishgroup");
-                              setSelectedDishGroupId(group.DishGroupId);
-                              if (isMobile) setMobileActiveTab("dishes");
-                            }}
-                            activeOpacity={0.85}
-                          >
-                            <Text
-                              style={[
-                                styles.dishGroupName2Col,
-                                isGroupActive && styles.dishGroupName2ColActive,
-                              ]}
-                              numberOfLines={2}
-                            >
-                              {groupName}
-                            </Text>
-
-                            <View
-                              style={[
-                                styles.dishGroupBadge2Col,
-                                isGroupActive && styles.dishGroupBadge2ColActive,
-                              ]}
-                            >
-                              <Text
-                                style={[
-                                  styles.dishGroupBadgeText2Col,
-                                  isGroupActive && styles.dishGroupBadgeText2ColActive,
-                                ]}
-                              >
-                                {count}
-                              </Text>
-                            </View>
-                          </TouchableOpacity>
-                        );
-                      })}
-                    </View>
-                  </ScrollView>
-
-                  {/* SINGLE UNIFIED UP/DOWN SCROLL BUTTON PILL ON THE RIGHT (ONLY IN SCROLL MODE) */}
-                  {menuNavigationMode === "scroll" && (
-                    <View style={styles.dishGroupScrollPillContainer}>
-                      <View style={styles.dishGroupScrollPill}>
-                        <TouchableOpacity
-                          style={[styles.singleScrollHalf, isDishGroupAtTop && styles.scrollBtnDisabled]}
-                          onPress={() => scrollDishGroupsVertically("up")}
-                          disabled={isDishGroupAtTop}
-                          activeOpacity={0.7}
-                        >
-                          <Ionicons name="chevron-up" size={14} color={isDishGroupAtTop ? "#CBD5E1" : "#334155"} />
-                        </TouchableOpacity>
-
-                        <View style={styles.singleScrollDivider} />
-
-                        <TouchableOpacity
-                          style={[styles.singleScrollHalf, isDishGroupAtBottom && styles.scrollBtnDisabled]}
-                          onPress={() => scrollDishGroupsVertically("down")}
-                          disabled={isDishGroupAtBottom}
-                          activeOpacity={0.7}
-                        >
-                          <Ionicons name="chevron-down" size={14} color={isDishGroupAtBottom ? "#CBD5E1" : "#334155"} />
-                        </TouchableOpacity>
-                      </View>
-                    </View>
-                  )}
+                <View style={styles.paginationCenter}>
+                  <Text style={styles.paginationText}>
+                    Page <Text style={styles.paginationCurrentText}>{safeGroupPage}</Text> of{" "}
+                    <Text style={styles.paginationTotalText}>{totalGroupPages}</Text>
+                  </Text>
                 </View>
 
-                {/* DISH GROUPS PAGINATION BAR (ONLY IN PREVIOUS / NEXT MODE) */}
-                {menuNavigationMode === "prev_next" && allDishGroups.length > 0 && (
-                  <View style={styles.groupsPaginationBar}>
-                    <View style={styles.paginationLeft}>
-                      <TouchableOpacity
-                        style={[styles.paginationBtn, safeGroupPage <= 1 && styles.paginationBtnDisabled]}
-                        onPress={() => {
-                          if (safeGroupPage > 1) handleGroupPageChange(safeGroupPage - 1);
-                        }}
-                        disabled={safeGroupPage <= 1}
-                        activeOpacity={0.8}
-                      >
-                        <Ionicons
-                          name="chevron-back"
-                          size={14}
-                          color={safeGroupPage <= 1 ? "#94A3B8" : "#FF5A16"}
-                        />
-                        <Text style={[styles.paginationBtnText, safeGroupPage <= 1 && styles.paginationBtnTextDisabled]}>
-                          Previous
-                        </Text>
-                      </TouchableOpacity>
-                    </View>
-
-                    <View style={styles.paginationCenter}>
-                      <Text style={styles.paginationText}>
-                        Page <Text style={styles.paginationCurrentText}>{safeGroupPage}</Text> of{" "}
-                        <Text style={styles.paginationTotalText}>{totalGroupPages}</Text>
-                      </Text>
-                    </View>
-
-                    <View style={styles.paginationRight}>
-                      <TouchableOpacity
-                        style={[styles.paginationBtn, safeGroupPage >= totalGroupPages && styles.paginationBtnDisabled]}
-                        onPress={() => {
-                          if (safeGroupPage < totalGroupPages) handleGroupPageChange(safeGroupPage + 1);
-                        }}
-                        disabled={safeGroupPage >= totalGroupPages}
-                        activeOpacity={0.8}
-                      >
-                        <Text style={[styles.paginationBtnText, safeGroupPage >= totalGroupPages && styles.paginationBtnTextDisabled]}>
-                          Next
-                        </Text>
-                        <Ionicons
-                          name="chevron-forward"
-                          size={14}
-                          color={safeGroupPage >= totalGroupPages ? "#94A3B8" : "#FF5A16"}
-                        />
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                )}
-              </>
+                <View style={styles.paginationRight}>
+                  <TouchableOpacity
+                    style={[styles.paginationBtn, safeGroupPage >= totalGroupPages && styles.paginationBtnDisabled]}
+                    onPress={() => {
+                      if (safeGroupPage < totalGroupPages) handleGroupPageChange(safeGroupPage + 1);
+                    }}
+                    disabled={safeGroupPage >= totalGroupPages}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={[styles.paginationBtnText, safeGroupPage >= totalGroupPages && styles.paginationBtnTextDisabled]}>
+                      Next
+                    </Text>
+                    <Ionicons
+                      name="chevron-forward"
+                      size={14}
+                      color={safeGroupPage >= totalGroupPages ? "#94A3B8" : "#FF5A16"}
+                    />
+                  </TouchableOpacity>
+                </View>
+              </View>
             )}
           </View>
         )}
@@ -3178,12 +3173,8 @@ export default function QuickServePOSScreen() {
                 <Text style={styles.dishesHeaderTitle}>
                   {leftPanelView === "favorites"
                     ? "Favorite Dishes"
-                    : leftPanelView === "category"
-                    ? (selectedCategoryId !== null
-                        ? `${categories.find((c) => String(c.CategoryId) === String(selectedCategoryId))?.KitchenTypeName || categories.find((c) => String(c.CategoryId) === String(selectedCategoryId))?.CategoryName || ""} Dishes`
-                        : "Dishes")
                     : (selectedDishGroupId !== null
-                        ? `${allDishGroups.find((g) => String(g.DishGroupId) === String(selectedDishGroupId))?.DishGroupName || "Dish Group"} Dishes`
+                        ? `${groups.find((g) => String(g.DishGroupId) === String(selectedDishGroupId))?.DishGroupName || allDishGroups.find((g) => String(g.DishGroupId) === String(selectedDishGroupId))?.DishGroupName || "Dish Group"} Dishes`
                         : "Dishes")}
                 </Text>
                 {leftPanelView === "favorites" && (
@@ -3212,52 +3203,19 @@ export default function QuickServePOSScreen() {
               </View>
             </View>
 
-            {/* DISH GROUPS SUB-BAR FOR SELECTED CATEGORY (ONLY IN CATEGORY VIEW) */}
-            {leftPanelView === "category" && selectedCategoryId !== null && dishGroups.length > 0 && (
-              <View style={styles.dishGroupPillsBar}>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.dishGroupPillsContent}>
-                  <TouchableOpacity
-                    style={[styles.dishGroupPillBtn, selectedGroupId === null && styles.dishGroupPillBtnActive]}
-                    onPress={() => setSelectedGroupId(null)}
-                  >
-                    <Text style={[styles.dishGroupPillText, selectedGroupId === null && styles.dishGroupPillTextActive]}>
-                      All Groups
-                    </Text>
-                  </TouchableOpacity>
-
-                  {dishGroups.map((group: any) => {
-                    const isGroupActive = String(selectedGroupId) === String(group.DishGroupId);
-                    return (
-                      <TouchableOpacity
-                        key={group.DishGroupId}
-                        style={[styles.dishGroupPillBtn, isGroupActive && styles.dishGroupPillBtnActive]}
-                        onPress={() => setSelectedGroupId(group.DishGroupId)}
-                      >
-                        <Text style={[styles.dishGroupPillText, isGroupActive && styles.dishGroupPillTextActive]}>
-                          {group.DishGroupName}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </ScrollView>
-              </View>
-            )}
-
             {loading ? (
               <View style={styles.loadingState}>
                 <ActivityIndicator size="large" color="#FF5A16" />
                 <Text style={styles.loadingStateText}>Loading Menu Dishes...</Text>
               </View>
-            ) : leftPanelView !== "favorites" && (leftPanelView === "category" ? selectedCategoryId === null : selectedDishGroupId === null) && searchQuery.trim() === "" ? (
+            ) : leftPanelView !== "favorites" && selectedDishGroupId === null && searchQuery.trim() === "" ? (
               <View style={styles.emptyDishesState}>
                 <Ionicons name="restaurant-outline" size={54} color="#CBD5E1" />
                 <Text style={styles.emptyDishesTitle}>
-                  {leftPanelView === "category" ? "Select a Category to view dishes" : "Select a Dish Group to view dishes"}
+                  Select a Dish Group to view dishes
                 </Text>
                 <Text style={styles.emptyDishesSub}>
-                  {leftPanelView === "category"
-                    ? "Click on any category from the Category panel to browse items"
-                    : "Click on any group from the Dish Groups panel to browse items"}
+                  Click on any group from the Dish Groups panel to browse items
                 </Text>
               </View>
             ) : sortedDishes.length === 0 ? (
@@ -3273,7 +3231,7 @@ export default function QuickServePOSScreen() {
                 <Text style={styles.emptyDishesSub}>
                   {leftPanelView === "favorites"
                     ? (searchQuery.trim() ? "No favorite dishes match your search query" : "Dishes with isFavourite = 1 in DishMaster will appear here")
-                    : (leftPanelView === "category" ? "Try changing your filter or category" : "Try changing your filter or dish group")}
+                    : "Try changing your filter or dish group"}
                 </Text>
               </View>
             ) : viewMode === "grid" ? (
@@ -3412,7 +3370,6 @@ export default function QuickServePOSScreen() {
             )}
           </View>
           )}
-        </View>
 
         {/* MOBILE FLOATING CART BAR (Shown on 'dishes' and 'groups' tabs when cart has items) */}
         {isMobile && mobileActiveTab !== "order" && cartItems.length > 0 && (
@@ -3441,7 +3398,7 @@ export default function QuickServePOSScreen() {
             </View>
           </TouchableOpacity>
         )}
-        </>
+        </View>
       ) : (
         /* NORMAL POS TABLE VIEW */
         <View style={styles.normalPosContainer}>
@@ -4650,6 +4607,305 @@ export default function QuickServePOSScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* CASH RECEIVED SCREEN MODAL */}
+      <Modal
+        visible={showCashModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!isProcessingPayment) setShowCashModal(false);
+        }}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => {
+            if (!isProcessingPayment) setShowCashModal(false);
+          }}
+        >
+          <TouchableOpacity
+            activeOpacity={1}
+            style={styles.cashModalContainer}
+            onPress={(e) => e.stopPropagation()}
+          >
+            {/* MODAL HEADER */}
+            <View style={styles.cashModalHeader}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                <View style={styles.cashModalHeaderIcon}>
+                  <Ionicons name="cash" size={20} color="#FF5A16" />
+                </View>
+                <Text style={styles.cashModalTitle}>CASH RECEIVED</Text>
+              </View>
+              <TouchableOpacity
+                style={styles.cashModalCloseBtn}
+                onPress={() => setShowCashModal(false)}
+                disabled={isProcessingPayment}
+              >
+                <Ionicons name="close" size={22} color="#64748B" />
+              </TouchableOpacity>
+            </View>
+
+            {/* CASH SECTION (2 COLUMNS: LEFT = AMOUNTS + QUICK CASH, RIGHT = NUMERIC KEYPAD) */}
+            <View style={styles.cashSectionBody}>
+              {(() => {
+                const enteredCashNum = parseFloat(cashReceivedInput) || 0;
+                const changeAmount = Math.max(0, enteredCashNum - finalTotal);
+                const isInsufficient = enteredCashNum < finalTotal || isNaN(enteredCashNum);
+
+                return (
+                  <>
+                    <View style={styles.cashAndKeypadRow}>
+                      {/* Left Column: Cash Received + Change + Quick Cash */}
+                      <View style={styles.cashLeftCol}>
+                        {/* Side-by-side: Cash Received Input (Left) & Change to Return (Right) */}
+                        <View style={styles.cashAmountsRow}>
+                          <View style={styles.cashInputBox}>
+                            <Text style={styles.currencyPrefix}>{currencySymbol}</Text>
+                            <TextInput
+                              ref={cashInputRef}
+                              style={styles.cashInput}
+                              value={cashReceivedInput}
+                              onChangeText={(text) => {
+                                const sanitized = text.replace(/[^0-9.]/g, "");
+                                const parts = sanitized.split(".");
+                                let clean = parts.length > 2 ? parts[0] + "." + parts.slice(1).join("") : sanitized;
+                                if (clean.includes(".")) {
+                                  const [integerPart, decimalPart] = clean.split(".");
+                                  clean = integerPart + "." + decimalPart.slice(0, 2);
+                                }
+                                setCashReceivedInput(clean);
+                              }}
+                              keyboardType="numeric"
+                              placeholder="0.00"
+                              {...Platform.select({
+                                web: { outlineStyle: "none" } as any,
+                              })}
+                            />
+                          </View>
+
+                          <View style={styles.changeBox}>
+                            <Text style={styles.changeLabel}>CHANGE TO RETURN</Text>
+                            <Text style={styles.changeValue}>
+                              {currencySymbol}
+                              {changeAmount.toFixed(2)}
+                            </Text>
+                          </View>
+                        </View>
+
+                        {/* Quick Cash Buttons in 2 Rows (4 buttons per row) */}
+                        <View style={styles.quickCashGrid}>
+                          {/* Row 1: First 4 Quick Cash amounts ($20, $50, $100, $200) */}
+                          <View style={styles.quickCashRow}>
+                            {quickCashAmounts.slice(0, 4).map((v) => {
+                              const isSelected = parseFloat(cashReceivedInput) === v;
+                              return (
+                                <TouchableOpacity
+                                  key={v}
+                                  style={[
+                                    styles.quickCashGridBtn,
+                                    isSelected && styles.activeQuickCashBtn,
+                                  ]}
+                                  onPress={() => {
+                                    setCashReceivedInput(v.toString());
+                                    if (cashInputRef.current) cashInputRef.current.focus();
+                                  }}
+                                  activeOpacity={0.7}
+                                >
+                                  <Text
+                                    style={[
+                                      styles.quickCashText,
+                                      isSelected && styles.activeQuickCashText,
+                                    ]}
+                                  >
+                                    {currencySymbol}
+                                    {v}
+                                  </Text>
+                                </TouchableOpacity>
+                              );
+                            })}
+                          </View>
+
+                          {/* Row 2: Next 2 Quick Cash amounts ($500, $1000) + Exact + Clear */}
+                          <View style={styles.quickCashRow}>
+                            {quickCashAmounts.slice(4, 6).map((v) => {
+                              const isSelected = parseFloat(cashReceivedInput) === v;
+                              return (
+                                <TouchableOpacity
+                                  key={v}
+                                  style={[
+                                    styles.quickCashGridBtn,
+                                    isSelected && styles.activeQuickCashBtn,
+                                  ]}
+                                  onPress={() => {
+                                    setCashReceivedInput(v.toString());
+                                    if (cashInputRef.current) cashInputRef.current.focus();
+                                  }}
+                                  activeOpacity={0.7}
+                                >
+                                  <Text
+                                    style={[
+                                      styles.quickCashText,
+                                      isSelected && styles.activeQuickCashText,
+                                    ]}
+                                  >
+                                    {currencySymbol}
+                                    {v}
+                                  </Text>
+                                </TouchableOpacity>
+                              );
+                            })}
+
+                            {/* Exact Button */}
+                            {(() => {
+                              const isExact = Math.abs(parseFloat(cashReceivedInput) - finalTotal) < 0.01;
+                              return (
+                                <TouchableOpacity
+                                  style={[
+                                    styles.quickCashGridBtn,
+                                    styles.quickCashExactBtn,
+                                    isExact && styles.activeQuickCashExactBtn,
+                                  ]}
+                                  onPress={() => {
+                                    setCashReceivedInput(finalTotal.toFixed(2));
+                                    if (cashInputRef.current) cashInputRef.current.focus();
+                                  }}
+                                  activeOpacity={0.7}
+                                >
+                                  <Text style={styles.quickCashExactText}>Exact</Text>
+                                </TouchableOpacity>
+                              );
+                            })()}
+
+                            {/* Clear Button */}
+                            <TouchableOpacity
+                              style={[styles.quickCashGridBtn, styles.quickCashClearBtn]}
+                              onPress={() => {
+                                setCashReceivedInput("");
+                                if (cashInputRef.current) cashInputRef.current.focus();
+                              }}
+                              activeOpacity={0.7}
+                            >
+                              <Text style={styles.quickCashClearText}>Clear</Text>
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      </View>
+
+                      {/* Right Column: Numeric Keypad */}
+                      <View style={styles.keypadCol}>
+                        <View style={styles.keypadHeader}>
+                          <Text style={styles.keypadTitle}>NUMERIC KEYPAD</Text>
+                        </View>
+                        <View style={styles.keypadGrid}>
+                          {/* Row 1: 7, 8, 9 */}
+                          <View style={styles.keypadRow}>
+                            {["7", "8", "9"].map((num) => (
+                              <TouchableOpacity
+                                key={num}
+                                style={styles.keypadBtn}
+                                onPress={() => handleCashKeypadPress(num)}
+                                activeOpacity={0.7}
+                              >
+                                <Text style={styles.keypadBtnText}>{num}</Text>
+                              </TouchableOpacity>
+                            ))}
+                          </View>
+
+                          {/* Row 2: 4, 5, 6 */}
+                          <View style={styles.keypadRow}>
+                            {["4", "5", "6"].map((num) => (
+                              <TouchableOpacity
+                                key={num}
+                                style={styles.keypadBtn}
+                                onPress={() => handleCashKeypadPress(num)}
+                                activeOpacity={0.7}
+                              >
+                                <Text style={styles.keypadBtnText}>{num}</Text>
+                              </TouchableOpacity>
+                            ))}
+                          </View>
+
+                          {/* Row 3: 1, 2, 3 */}
+                          <View style={styles.keypadRow}>
+                            {["1", "2", "3"].map((num) => (
+                              <TouchableOpacity
+                                key={num}
+                                style={styles.keypadBtn}
+                                onPress={() => handleCashKeypadPress(num)}
+                                activeOpacity={0.7}
+                              >
+                                <Text style={styles.keypadBtnText}>{num}</Text>
+                              </TouchableOpacity>
+                            ))}
+                          </View>
+
+                          {/* Row 4: . (Decimal), 0, Backspace */}
+                          <View style={styles.keypadRow}>
+                            <TouchableOpacity
+                              style={styles.keypadBtn}
+                              onPress={() => handleCashKeypadPress(".")}
+                              activeOpacity={0.7}
+                            >
+                              <Text style={styles.keypadBtnText}>.</Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity
+                              style={styles.keypadBtn}
+                              onPress={() => handleCashKeypadPress("0")}
+                              activeOpacity={0.7}
+                            >
+                              <Text style={styles.keypadBtnText}>0</Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity
+                              style={[styles.keypadBtn, styles.keypadBackspaceBtn]}
+                              onPress={() => handleCashKeypadPress("backspace")}
+                              activeOpacity={0.7}
+                            >
+                              <Ionicons name="backspace-outline" size={24} color="#EA580C" />
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      </View>
+                    </View>
+
+                    {/* COMPLETE SETTLEMENT BUTTON */}
+                    <TouchableOpacity
+                      style={[
+                        styles.cashCompleteBtn,
+                        (isInsufficient || isProcessingPayment) && styles.cashCompleteBtnDisabled,
+                      ]}
+                      onPress={async () => {
+                        if (isInsufficient) {
+                          toast.showToast({
+                            message: "Insufficient Cash Amount",
+                            subtitle: `Cash received must be at least ${currencySymbol}${finalTotal.toFixed(2)}`,
+                            type: "warning",
+                          });
+                          return;
+                        }
+                        await executePaymentFinalize(enteredCashNum, changeAmount);
+                      }}
+                      disabled={isInsufficient || isProcessingPayment}
+                      activeOpacity={0.88}
+                    >
+                      {isProcessingPayment ? (
+                        <ActivityIndicator size="small" color="#FFFFFF" />
+                      ) : (
+                        <>
+                          <Ionicons name="checkmark-circle" size={22} color="#FFFFFF" style={{ marginRight: 8 }} />
+                          <Text style={styles.cashCompleteBtnText}>Complete Settlement</Text>
+                        </>
+                      )}
+                    </TouchableOpacity>
+                  </>
+                );
+              })()}
+            </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -4798,11 +5054,57 @@ const styles = StyleSheet.create({
   },
 
   /* 3-COLUMN MAIN BODY */
+  main3Column: {
+    flex: 1,
+    paddingHorizontal: 10,
+    paddingTop: 4,
+    paddingBottom: 10,
+    backgroundColor: "#F3F4F6",
+    display: "flex",
+    flexDirection: "column",
+    minHeight: 0,
+    height: "100%",
+  },
+  kitchenTabsBar: {
+    paddingVertical: 2,
+    marginBottom: 6,
+  },
+  catScroll: {
+    gap: 8,
+    alignItems: "center",
+  },
+  catPill: {
+    paddingHorizontal: 14,
+    height: 32,
+    borderRadius: 10,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  catPillActive: {
+    backgroundColor: "#FFF7ED",
+    borderColor: "#FF5A16",
+    borderWidth: 1.5,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  catText: {
+    fontSize: 13,
+    fontFamily: Fonts.bold,
+    color: "#64748B",
+  },
+  catTextActive: {
+    color: "#FF5A16",
+  },
   mainBody3Column: {
     flex: 1,
     flexDirection: "row",
     backgroundColor: "#F3F4F6",
-    padding: 10,
     gap: 10,
     minHeight: 0,
     overflow: "hidden",
@@ -6721,5 +7023,253 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontSize: 16,
     fontFamily: Fonts.bold,
+  },
+
+  /* CASH RECEIVED MODAL STYLES (MATCHING payment.tsx) */
+  cashModalContainer: {
+    width: "95%",
+    maxWidth: 780,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 20,
+    padding: 24,
+    ...Platform.select({
+      ios: {
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 10 },
+        shadowOpacity: 0.15,
+        shadowRadius: 20,
+      },
+      android: { elevation: 16 },
+      web: { boxShadow: "0 20px 40px rgba(0, 0, 0, 0.2)" } as any,
+    }),
+  },
+  cashModalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 20,
+    paddingBottom: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: "#F1F5F9",
+  },
+  cashModalHeaderIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: "#FFF7ED",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  cashModalTitle: {
+    fontSize: 18,
+    fontFamily: Fonts.black,
+    color: "#0F172A",
+    letterSpacing: 0.5,
+  },
+  cashModalCloseBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#F8FAFC",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  cashSectionBody: {
+    flexDirection: "column",
+  },
+  cashAndKeypadRow: {
+    flexDirection: "row",
+    gap: 16,
+    alignItems: "stretch",
+  },
+  cashLeftCol: {
+    flex: 1.35,
+    flexDirection: "column",
+    justifyContent: "space-between",
+  },
+  cashAmountsRow: {
+    flexDirection: "row",
+    gap: 12,
+    marginBottom: 12,
+  },
+  cashInputBox: {
+    flex: 1.3,
+    flexDirection: "row",
+    alignItems: "center",
+    height: 60,
+    backgroundColor: "#F5EFE6",
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    borderWidth: 1,
+    borderColor: "#EADDC8",
+  },
+  currencyPrefix: {
+    fontSize: 22,
+    fontFamily: Fonts.black,
+    color: Theme.primary,
+    marginRight: 6,
+  },
+  cashInput: {
+    flex: 1,
+    fontSize: 24,
+    fontFamily: Fonts.black,
+    color: Theme.textPrimary,
+  },
+  changeBox: {
+    flex: 1,
+    height: 60,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    backgroundColor: "#FFF7ED",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#FFEDD5",
+    justifyContent: "center",
+  },
+  changeLabel: {
+    fontSize: 10,
+    fontFamily: Fonts.black,
+    color: Theme.primary,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    marginBottom: 2,
+  },
+  changeValue: {
+    fontSize: 22,
+    fontFamily: Fonts.black,
+    color: Theme.primary,
+  },
+  quickCashGrid: {
+    flexDirection: "column",
+    gap: 10,
+  },
+  quickCashRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  quickCashGridBtn: {
+    flex: 1,
+    height: 56,
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Theme.border,
+    justifyContent: "center",
+    alignItems: "center",
+    ...Theme.shadowSm,
+  },
+  activeQuickCashBtn: {
+    backgroundColor: Theme.primaryLight,
+    borderColor: Theme.primaryBorder,
+  },
+  quickCashExactBtn: {
+    backgroundColor: "#FFF7ED",
+    borderColor: "#FDBA74",
+    borderWidth: 1,
+  },
+  activeQuickCashExactBtn: {
+    backgroundColor: "#FFEDD5",
+    borderColor: Theme.primary,
+  },
+  quickCashExactText: {
+    fontSize: 16,
+    fontFamily: Fonts.black,
+    color: Theme.primary,
+  },
+  quickCashText: {
+    fontSize: 16,
+    fontFamily: Fonts.black,
+    color: Theme.textPrimary,
+  },
+  activeQuickCashText: { color: Theme.primary },
+  quickCashClearBtn: {
+    backgroundColor: "#EF4444",
+    borderColor: "#DC2626",
+    borderWidth: 1,
+  },
+  quickCashClearText: {
+    fontSize: 16,
+    fontFamily: Fonts.black,
+    color: "#fff",
+  },
+  keypadCol: {
+    flex: 1,
+    backgroundColor: "#FAFAFA",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    padding: 12,
+  },
+  keypadHeader: {
+    marginBottom: 8,
+    paddingHorizontal: 2,
+  },
+  keypadTitle: {
+    fontSize: 11,
+    fontFamily: Fonts.bold,
+    color: "#9CA3AF",
+    letterSpacing: 0.5,
+  },
+  keypadGrid: {
+    flexDirection: "column",
+    gap: 8,
+  },
+  keypadRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  keypadBtn: {
+    flex: 1,
+    height: 52,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    justifyContent: "center",
+    alignItems: "center",
+    ...Theme.shadowSm,
+  },
+  keypadBtnText: {
+    fontSize: 18,
+    fontFamily: Fonts.bold,
+    color: "#D97706",
+  },
+  keypadBackspaceBtn: {
+    backgroundColor: "#FFF7ED",
+    borderColor: "#FFEDD5",
+  },
+  cashCompleteBtn: {
+    marginTop: 20,
+    height: 54,
+    backgroundColor: "#FF5A16",
+    borderRadius: 14,
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    ...Platform.select({
+      ios: {
+        shadowColor: "#FF5A16",
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.35,
+        shadowRadius: 10,
+      },
+      android: { elevation: 6 },
+      web: { boxShadow: "0 6px 16px rgba(255, 90, 22, 0.4)" } as any,
+    }),
+  },
+  cashCompleteBtnDisabled: {
+    backgroundColor: "#CBD5E1",
+    opacity: 0.65,
+    ...Platform.select({
+      web: { boxShadow: "none" } as any,
+      ios: { shadowOpacity: 0 },
+      android: { elevation: 0 },
+    }),
+  },
+  cashCompleteBtnText: {
+    fontSize: 17,
+    fontFamily: Fonts.black,
+    color: "#FFFFFF",
+    letterSpacing: 0.3,
   },
 });
